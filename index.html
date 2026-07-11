@@ -56,8 +56,10 @@
   .switch input:checked + .toggle-track { background: var(--accent); }
   .switch input:checked + .toggle-track .toggle-thumb { transform: translateX(20px); }
 
+  /* visibility (not display) keeps each sidebar's flex slot reserved, so toggling
+     debug mode hides/shows their content without reflowing the other columns */
   body.playing-mode .debug-tools-sidebar,
-  body.playing-mode .visual-tools-sidebar { display: none; }
+  body.playing-mode .visual-tools-sidebar { visibility: hidden; }
 
   .page-content {
     display: flex;
@@ -123,6 +125,11 @@
   }
   .panel h2 { font-size: 1rem; margin: 0 0 10px; color: #ddd; }
   .file-drop {
+    /* The label wraps its text onto two lines via <br>. As an inline element (the
+       default for <label>), a border on content that spans multiple lines gets drawn
+       as separate disconnected fragments per line - that's what caused the stray
+       extra dashed line. Making it block-level gives it one single continuous box. */
+    display: block;
     border: 2px dashed #555;
     border-radius: 8px;
     padding: 18px;
@@ -728,7 +735,6 @@
       <div class="screen-bezel">
         <div class="screen-label"><span>DOT MATRIX</span><span id="fps">0 fps</span></div>
         <canvas id="screen" width="160" height="144"></canvas>
-        <div class="drop-hint">Drop a .gb / .gbc ROM anywhere on the page to load it</div>
       </div>
 
       <!-- Control panel -->
@@ -807,8 +813,7 @@
     <div class="tool-panel" id="panel-tiles">
       <p class="tool-desc">
         Raw contents of tile data (0x8000–0x97FF), decoded as 384 individual 8×8 tiles in
-        the order they sit in VRAM — shown in grayscale, with no palette or tile map applied,
-        so you can see exactly what graphics data has been loaded regardless of how it's used.
+        the order they sit in VRAM — shown in grayscale, with no palette or tile map applied.
       </p>
       <canvas id="tileViewerCanvas" width="128" height="192"></canvas>
     </div>

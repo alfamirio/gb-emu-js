@@ -316,6 +316,65 @@
   .swatch { width: 40px; text-align: center; }
   .swatch .chip { width: 40px; height: 40px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); }
   .swatch .label { font-size: 0.65rem; color: #999; margin-top: 4px; font-family: 'Consolas', monospace; }
+
+  /* ---- CPU step / breakpoint controls ---- */
+  .cpu-debug-controls {
+    margin: 14px 0 6px;
+    padding: 12px 14px;
+    background: #1b1b22;
+    border-radius: 8px;
+  }
+  .cdc-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .cdc-row:last-child { margin-bottom: 0; }
+  .cdc-row label { font-size: 0.75rem; color: #bbb; display: inline-flex; align-items: center; gap: 6px; }
+  .cdc-row input[type="text"] {
+    width: 64px;
+    background: #111;
+    border: 1px solid #444;
+    color: #eee;
+    border-radius: 4px;
+    padding: 5px 7px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.75rem;
+  }
+  .cdc-row input[type="text"]:focus { outline: none; border-color: var(--accent); }
+  button.ui-btn.small { padding: 6px 10px; font-size: 0.75rem; }
+  button.ui-btn.ghost { background: transparent; border: 1px solid #555; color: #bbb; }
+  button.ui-btn.ghost:hover { background: transparent; border-color: #888; color: #fff; }
+  .cdc-status { font-size: 0.75rem; color: #e8c15a; font-family: 'Consolas', monospace; min-height: 1.2em; }
+
+  /* ---- live disassembly / execution trace panels ---- */
+  .disasm-list, .trace-list {
+    background: #111;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.75rem;
+    line-height: 1.65;
+    max-height: 340px;
+    overflow-y: auto;
+  }
+  .disasm-line { padding: 1px 5px; border-radius: 3px; white-space: nowrap; color: #9fd6ff; }
+  .disasm-line.current { background: var(--accent); color: #fff; font-weight: bold; }
+  .trace-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 12px;
+    padding: 2px 5px;
+    border-radius: 3px;
+  }
+  .trace-line.latest { background: #2f2f3a; }
+  .trace-code { color: #7fd67f; white-space: nowrap; flex: 0 0 auto; }
+  .trace-line.latest .trace-code { color: #fff; }
+  .trace-explain {
+    color: #888;
+    font-family: 'Segoe UI', Tahoma, Verdana, sans-serif;
+    font-style: italic;
+    font-size: 0.7rem;
+    white-space: normal;
+  }
+  .trace-empty, .disasm-empty { color: #777; padding: 2px 5px; }
 </style>
 </head>
 <body>
@@ -407,6 +466,22 @@
     <button class="tool-tab" data-tool="tilemap">Tile Map</button>
     <button class="tool-tab" data-tool="oam">Sprites (OAM)</button>
     <button class="tool-tab" data-tool="palettes">Palettes</button>
+    <button class="tool-tab" data-tool="disasm">Disassembler</button>
+    <button class="tool-tab" data-tool="trace">Execution Trace</button>
+  </div>
+
+  <!-- Step / breakpoint controls: shared across the disassembler + trace tabs -->
+  <div class="cpu-debug-controls">
+    <div class="cdc-row">
+      <button class="ui-btn small" id="btnStep" disabled>⏭ Step</button>
+      <button class="ui-btn small" id="btnRunToBP" disabled>▶ Run to breakpoint</button>
+      <button class="ui-btn small ghost" id="btnClearBP" disabled>✕ Clear breakpoints</button>
+    </div>
+    <div class="cdc-row">
+      <label>Break at PC <input type="text" id="bpPCInput" placeholder="e.g. 0150" maxlength="6"></label>
+      <label>Break at opcode <input type="text" id="bpOpInput" placeholder="e.g. C9" maxlength="4"></label>
+    </div>
+    <div class="cdc-status" id="bpStatus">Load a ROM to enable step/breakpoint debugging.</div>
   </div>
 
   <div class="tool-panel" id="panel-tiles">
@@ -443,6 +518,24 @@
   <div class="tool-panel hidden" id="panel-palettes">
     <p class="tool-desc">The current BGP / OBP0 / OBP1 register values, decoded into the four shades they map to.</p>
     <div id="paletteGrid" class="palette-grid"></div>
+  </div>
+
+  <div class="tool-panel hidden" id="panel-disasm">
+    <p class="tool-desc">
+      Live disassembly of the bytes around the program counter, decoded into LR35902 mnemonics
+      (not just raw hex). The highlighted line is the next instruction about to run. Use Step
+      to execute one instruction at a time, or set a breakpoint below and Run to it.
+    </p>
+    <div class="disasm-list" id="disasmList"><div class="disasm-empty">Load a ROM to see disassembly.</div></div>
+  </div>
+
+  <div class="tool-panel hidden" id="panel-trace">
+    <p class="tool-desc">
+      Scrollback of the last instructions the CPU actually executed, oldest first, most recent
+      highlighted at the bottom — with a brief plain-English note on what each one does, useful
+      for seeing how a loop, call, or jump was reached.
+    </p>
+    <div class="trace-list" id="traceList"><div class="trace-empty">No instructions executed yet.</div></div>
   </div>
 </details>
 
@@ -958,6 +1051,237 @@ class CPU {
       this.tick(r === 6 ? 16 : 8);
     }
   }
+}
+
+/* ============================== Disassembler (debug tool) ================================
+   A standalone decoder that mirrors CPU.execute()/executeCB() case-for-case, but only reads
+   bytes (via a caller-supplied readByte function) and never mutates any state. Used by the
+   live disassembly view and the execution trace, so it works whether the bytes come straight
+   from memory (disassembleAt) or from a snapshot captured back when an instruction actually
+   ran (disassembleBytes), which matters if that memory has since changed. ========================================================================================= */
+
+const REG8_NAMES = ['B', 'C', 'D', 'E', 'H', 'L', '(HL)', 'A'];
+const ALU_NAMES  = ['ADD A,', 'ADC A,', 'SUB ', 'SBC A,', 'AND ', 'XOR ', 'OR ', 'CP '];
+const ROT_NAMES  = ['RLC', 'RRC', 'RL', 'RR', 'SLA', 'SRA', 'SWAP', 'SRL'];
+
+// readByte(offset) must return the byte at pc+offset (0, 1, or 2), without side effects.
+function disassembleBytes(readByte, pc) {
+  const b0 = readByte(0);
+  const d8 = () => readByte(1);
+  const d16 = () => readByte(1) | (readByte(2) << 8);
+  const r8 = () => { const v = readByte(1); return v & 0x80 ? v - 256 : v; };
+
+  if (b0 >= 0x40 && b0 <= 0x7F) {
+    if (b0 === 0x76) return { text: 'HALT', length: 1 };
+    const dst = (b0 >> 3) & 7, src = b0 & 7;
+    return { text: `LD ${REG8_NAMES[dst]},${REG8_NAMES[src]}`, length: 1 };
+  }
+  if (b0 >= 0x80 && b0 <= 0xBF) {
+    const op = (b0 >> 3) & 7, src = b0 & 7;
+    return { text: `${ALU_NAMES[op]}${REG8_NAMES[src]}`, length: 1 };
+  }
+  if ((b0 & 0xC7) === 0x04) { const r = (b0 >> 3) & 7; return { text: `INC ${REG8_NAMES[r]}`, length: 1 }; }
+  if ((b0 & 0xC7) === 0x05) { const r = (b0 >> 3) & 7; return { text: `DEC ${REG8_NAMES[r]}`, length: 1 }; }
+  if ((b0 & 0xC7) === 0x06) { const r = (b0 >> 3) & 7; return { text: `LD ${REG8_NAMES[r]},${hex8(d8())}`, length: 2 }; }
+
+  switch (b0) {
+    case 0x00: return { text: 'NOP', length: 1 };
+    case 0x01: return { text: `LD BC,${hex16(d16())}`, length: 3 };
+    case 0x02: return { text: 'LD (BC),A', length: 1 };
+    case 0x03: return { text: 'INC BC', length: 1 };
+    case 0x07: return { text: 'RLCA', length: 1 };
+    case 0x08: return { text: `LD (${hex16(d16())}),SP`, length: 3 };
+    case 0x09: return { text: 'ADD HL,BC', length: 1 };
+    case 0x0A: return { text: 'LD A,(BC)', length: 1 };
+    case 0x0B: return { text: 'DEC BC', length: 1 };
+    case 0x0F: return { text: 'RRCA', length: 1 };
+
+    case 0x10: return { text: 'STOP', length: 1 };
+    case 0x11: return { text: `LD DE,${hex16(d16())}`, length: 3 };
+    case 0x12: return { text: 'LD (DE),A', length: 1 };
+    case 0x13: return { text: 'INC DE', length: 1 };
+    case 0x17: return { text: 'RLA', length: 1 };
+    case 0x18: return { text: `JR ${hex16((pc + 2 + r8()) & 0xFFFF)}`, length: 2 };
+    case 0x19: return { text: 'ADD HL,DE', length: 1 };
+    case 0x1A: return { text: 'LD A,(DE)', length: 1 };
+    case 0x1B: return { text: 'DEC DE', length: 1 };
+    case 0x1F: return { text: 'RRA', length: 1 };
+
+    case 0x20: return { text: `JR NZ,${hex16((pc + 2 + r8()) & 0xFFFF)}`, length: 2 };
+    case 0x21: return { text: `LD HL,${hex16(d16())}`, length: 3 };
+    case 0x22: return { text: 'LD (HL+),A', length: 1 };
+    case 0x23: return { text: 'INC HL', length: 1 };
+    case 0x27: return { text: 'DAA', length: 1 };
+    case 0x28: return { text: `JR Z,${hex16((pc + 2 + r8()) & 0xFFFF)}`, length: 2 };
+    case 0x29: return { text: 'ADD HL,HL', length: 1 };
+    case 0x2A: return { text: 'LD A,(HL+)', length: 1 };
+    case 0x2B: return { text: 'DEC HL', length: 1 };
+    case 0x2F: return { text: 'CPL', length: 1 };
+
+    case 0x30: return { text: `JR NC,${hex16((pc + 2 + r8()) & 0xFFFF)}`, length: 2 };
+    case 0x31: return { text: `LD SP,${hex16(d16())}`, length: 3 };
+    case 0x32: return { text: 'LD (HL-),A', length: 1 };
+    case 0x33: return { text: 'INC SP', length: 1 };
+    case 0x37: return { text: 'SCF', length: 1 };
+    case 0x38: return { text: `JR C,${hex16((pc + 2 + r8()) & 0xFFFF)}`, length: 2 };
+    case 0x39: return { text: 'ADD HL,SP', length: 1 };
+    case 0x3A: return { text: 'LD A,(HL-)', length: 1 };
+    case 0x3B: return { text: 'DEC SP', length: 1 };
+    case 0x3F: return { text: 'CCF', length: 1 };
+
+    case 0xC0: return { text: 'RET NZ', length: 1 };
+    case 0xC1: return { text: 'POP BC', length: 1 };
+    case 0xC2: return { text: `JP NZ,${hex16(d16())}`, length: 3 };
+    case 0xC3: return { text: `JP ${hex16(d16())}`, length: 3 };
+    case 0xC4: return { text: `CALL NZ,${hex16(d16())}`, length: 3 };
+    case 0xC5: return { text: 'PUSH BC', length: 1 };
+    case 0xC6: return { text: `ADD A,${hex8(d8())}`, length: 2 };
+    case 0xC7: return { text: 'RST 0x00', length: 1 };
+    case 0xC8: return { text: 'RET Z', length: 1 };
+    case 0xC9: return { text: 'RET', length: 1 };
+    case 0xCA: return { text: `JP Z,${hex16(d16())}`, length: 3 };
+    case 0xCB: { const op2 = readByte(1); const rr = (op2 >> 3) & 7, r = op2 & 7;
+      if (op2 < 0x40) return { text: `${ROT_NAMES[rr]} ${REG8_NAMES[r]}`, length: 2 };
+      if (op2 < 0x80) return { text: `BIT ${rr},${REG8_NAMES[r]}`, length: 2 };
+      if (op2 < 0xC0) return { text: `RES ${rr},${REG8_NAMES[r]}`, length: 2 };
+      return { text: `SET ${rr},${REG8_NAMES[r]}`, length: 2 }; }
+    case 0xCC: return { text: `CALL Z,${hex16(d16())}`, length: 3 };
+    case 0xCD: return { text: `CALL ${hex16(d16())}`, length: 3 };
+    case 0xCE: return { text: `ADC A,${hex8(d8())}`, length: 2 };
+    case 0xCF: return { text: 'RST 0x08', length: 1 };
+
+    case 0xD0: return { text: 'RET NC', length: 1 };
+    case 0xD1: return { text: 'POP DE', length: 1 };
+    case 0xD2: return { text: `JP NC,${hex16(d16())}`, length: 3 };
+    case 0xD4: return { text: `CALL NC,${hex16(d16())}`, length: 3 };
+    case 0xD5: return { text: 'PUSH DE', length: 1 };
+    case 0xD6: return { text: `SUB ${hex8(d8())}`, length: 2 };
+    case 0xD7: return { text: 'RST 0x10', length: 1 };
+    case 0xD8: return { text: 'RET C', length: 1 };
+    case 0xD9: return { text: 'RETI', length: 1 };
+    case 0xDA: return { text: `JP C,${hex16(d16())}`, length: 3 };
+    case 0xDC: return { text: `CALL C,${hex16(d16())}`, length: 3 };
+    case 0xDE: return { text: `SBC A,${hex8(d8())}`, length: 2 };
+    case 0xDF: return { text: 'RST 0x18', length: 1 };
+
+    case 0xE0: return { text: `LDH (0xFF00+${hex8(d8())}),A`, length: 2 };
+    case 0xE1: return { text: 'POP HL', length: 1 };
+    case 0xE2: return { text: 'LD (0xFF00+C),A', length: 1 };
+    case 0xE5: return { text: 'PUSH HL', length: 1 };
+    case 0xE6: return { text: `AND ${hex8(d8())}`, length: 2 };
+    case 0xE7: return { text: 'RST 0x20', length: 1 };
+    case 0xE8: return { text: `ADD SP,${r8()}`, length: 2 };
+    case 0xE9: return { text: 'JP (HL)', length: 1 };
+    case 0xEA: return { text: `LD (${hex16(d16())}),A`, length: 3 };
+    case 0xEE: return { text: `XOR ${hex8(d8())}`, length: 2 };
+    case 0xEF: return { text: 'RST 0x28', length: 1 };
+
+    case 0xF0: return { text: `LDH A,(0xFF00+${hex8(d8())})`, length: 2 };
+    case 0xF1: return { text: 'POP AF', length: 1 };
+    case 0xF2: return { text: 'LD A,(0xFF00+C)', length: 1 };
+    case 0xF3: return { text: 'DI', length: 1 };
+    case 0xF5: return { text: 'PUSH AF', length: 1 };
+    case 0xF6: return { text: `OR ${hex8(d8())}`, length: 2 };
+    case 0xF7: return { text: 'RST 0x30', length: 1 };
+    case 0xF8: return { text: `LD HL,SP+${r8()}`, length: 2 };
+    case 0xF9: return { text: 'LD SP,HL', length: 1 };
+    case 0xFA: return { text: `LD A,(${hex16(d16())})`, length: 3 };
+    case 0xFB: return { text: 'EI', length: 1 };
+    case 0xFE: return { text: `CP ${hex8(d8())}`, length: 2 };
+    case 0xFF: return { text: 'RST 0x38', length: 1 };
+
+    default: return { text: `DB ${hex8(b0)} (illegal)`, length: 1 };
+  }
+}
+
+// Convenience wrapper that reads live from an MMU (used by the "next instructions" view).
+function disassembleAt(mmu, addr) {
+  return disassembleBytes((off) => mmu.read8((addr + off) & 0xFFFF), addr & 0xFFFF);
+}
+
+// Short, plain-English gloss for a decoded mnemonic, for the execution trace view. Checked
+// against a handful of full-text prefixes first (for addressing modes worth calling out
+// specifically), then falls back to a description keyed on just the base mnemonic word.
+const INSTRUCTION_PREFIX_NOTES = [
+  ['ADD HL,', 'Adds a 16-bit register pair into HL.'],
+  ['ADD SP,', 'Adds a signed offset to the stack pointer.'],
+  ['LD (HL+),A', 'Stores A at (HL), then increments HL — the classic auto-advancing write.'],
+  ['LD (HL-),A', 'Stores A at (HL), then decrements HL — the classic auto-advancing write.'],
+  ['LD A,(HL+)', 'Loads A from (HL), then increments HL.'],
+  ['LD A,(HL-)', 'Loads A from (HL), then decrements HL.'],
+  ['LD HL,SP+', 'Loads HL with SP plus a signed offset (stack-relative addressing).'],
+  ['LD SP,HL', 'Copies HL into the stack pointer.'],
+  ['LD (0xFF00+C),A', 'Stores A into the I/O register selected by C (fast 0xFF00-page write).'],
+  ['LD A,(0xFF00+C)', 'Loads A from the I/O register selected by C (fast 0xFF00-page read).'],
+  ['LD (BC),A', 'Stores A into the address held in BC.'],
+  ['LD (DE),A', 'Stores A into the address held in DE.'],
+  ['LD A,(BC)', 'Loads A from the address held in BC.'],
+  ['LD A,(DE)', 'Loads A from the address held in DE.'],
+];
+const INSTRUCTION_WORD_NOTES = {
+  NOP: 'No operation — does nothing for one cycle.',
+  HALT: 'Halts the CPU until an interrupt occurs, to save power while idle.',
+  STOP: 'Stops the CPU and LCD until a button is pressed (deep low-power mode).',
+  DAA: "Adjusts A after BCD add/sub so it holds a valid two-digit decimal value.",
+  CPL: 'Flips every bit of A (bitwise NOT).',
+  SCF: 'Sets the carry flag.',
+  CCF: 'Flips (complements) the carry flag.',
+  DI: 'Disables interrupts (IME = 0).',
+  EI: 'Enables interrupts, taking effect after the next instruction.',
+  RETI: 'Returns from an interrupt handler and re-enables interrupts.',
+  RET: 'Returns from a subroutine, popping the return address off the stack.',
+  LD: 'Copies a value into a register or memory location.',
+  LDH: 'Loads/stores A via a fast one-byte, 0xFF00-prefixed I/O address.',
+  INC: 'Increments the value by 1.',
+  DEC: 'Decrements the value by 1.',
+  ADD: 'Adds the operand into the destination.',
+  ADC: 'Adds the operand plus the carry flag into A.',
+  SUB: 'Subtracts the operand from A.',
+  SBC: 'Subtracts the operand and the carry flag from A.',
+  AND: 'Bitwise ANDs A with the operand.',
+  OR: 'Bitwise ORs A with the operand.',
+  XOR: 'Bitwise XORs A with the operand.',
+  CP: "Compares A with the operand (like SUB, but discards the result — only flags change).",
+  JP: 'Jumps to the given address.',
+  JR: 'Jumps to a nearby address via a signed 8-bit relative offset.',
+  CALL: 'Calls a subroutine: pushes the return address, then jumps.',
+  RST: 'Calls one of 8 fixed reset vectors — a compact 1-byte CALL.',
+  PUSH: 'Pushes a 16-bit register pair onto the stack.',
+  POP: 'Pops a 16-bit register pair off the stack.',
+  RLCA: "Rotates A left; bit 7 also goes into the carry flag.",
+  RRCA: "Rotates A right; bit 0 also goes into the carry flag.",
+  RLA: 'Rotates A left through the carry flag.',
+  RRA: 'Rotates A right through the carry flag.',
+  RLC: "Rotates left; bit 7 also goes into the carry flag.",
+  RRC: "Rotates right; bit 0 also goes into the carry flag.",
+  RL: 'Rotates left through the carry flag.',
+  RR: 'Rotates right through the carry flag.',
+  SLA: 'Shifts left; 0 comes in at bit 0, bit 7 goes to carry.',
+  SRA: 'Shifts right; bit 7 is preserved, bit 0 goes to carry.',
+  SRL: 'Shifts right; 0 comes in at bit 7, bit 0 goes to carry.',
+  SWAP: 'Swaps the high and low nibbles of the byte.',
+  BIT: 'Tests one bit and sets the zero flag if it is 0.',
+  RES: 'Clears (resets) one bit to 0.',
+  SET: 'Sets one bit to 1.',
+  DB: 'Illegal/unimplemented opcode byte — not a real instruction.',
+};
+const COND_NOTE = { NZ: 'not zero', Z: 'zero', NC: 'no carry', C: 'carry' };
+
+function explainInstruction(mnemonicText) {
+  for (const [prefix, note] of INSTRUCTION_PREFIX_NOTES) {
+    if (mnemonicText.startsWith(prefix)) return note;
+  }
+  const opWord = mnemonicText.split(/[ ,]/)[0];
+  let note = INSTRUCTION_WORD_NOTES[opWord];
+  if (!note) return 'Executes this CPU opcode.';
+  // Conditional control-flow instructions (JP NZ, JR Z, CALL C, RET NC, ...) only act
+  // when the named flag condition holds - worth calling out since it's easy to miss.
+  if (opWord === 'JP' || opWord === 'JR' || opWord === 'CALL' || opWord === 'RET') {
+    const rest = mnemonicText.slice(opWord.length).trim();
+    const condMatch = rest.match(/^(NZ|NC|Z|C)\b/);
+    if (condMatch) note += ` Only taken if ${COND_NOTE[condMatch[1]]}.`;
+  }
+  return note;
 }
 
 /* ==================================== 3. PPU (graphics) ================================= */
@@ -1740,6 +2064,22 @@ class Emulator {
     this._fpsLast = performance.now();
 
     this.romTitle = null; // set in loadROM; used to key save states and warn on mismatched loads
+
+    /* ---- step / breakpoint debugging ---- */
+    this.breakpointPC = null;      // number 0-0xFFFF, or null if unset
+    this.breakpointOpcode = null;  // number 0-0xFF, or null if unset
+    this.breakHitReason = null;    // human-readable reason the emulator last auto-stopped
+    this._bpSkipFirstMatch = false; // avoids instantly re-triggering a PC breakpoint we're already sitting on
+    this.onBreakpointHit = null;   // optional callback(reason), wired up by the UI
+
+    /* ---- execution trace: ring buffer of the last TRACE_SIZE fetched instructions ---- */
+    this.TRACE_SIZE = 500;
+    this.traceAddr = new Uint16Array(this.TRACE_SIZE);
+    this.traceB0 = new Uint8Array(this.TRACE_SIZE);
+    this.traceB1 = new Uint8Array(this.TRACE_SIZE);
+    this.traceB2 = new Uint8Array(this.TRACE_SIZE);
+    this.traceWritePos = 0;
+    this.traceFilled = 0;
   }
 
   requestInterrupt(bit) { this.mmu.io[0x0F] |= (1 << bit); }
@@ -1791,15 +2131,98 @@ class Emulator {
     this.apu.deserialize(state.apu);
   }
 
+  // Runs one CPU instruction (or one HALT tick) and steps the other components the same
+  // number of T-cycles, recording it into the execution trace on the way. Shared by the
+  // normal continuous runFrame() loop and by the single-step debugger.
+  stepInstruction() {
+    // A PC breakpoint fires the moment execution is *about to* fetch the opcode at that
+    // address, so it's checked here rather than after stepping.
+    if (this.breakpointPC !== null && this.cpu.PC === this.breakpointPC) {
+      if (this._bpSkipFirstMatch) { this._bpSkipFirstMatch = false; }
+      else { this.triggerBreakpoint(`PC reached ${hex16(this.breakpointPC)}`); return 0; }
+    }
+
+    const pcBefore = this.cpu.PC;
+    const wasHalted = this.cpu.halted;
+    let opcode = null;
+    if (!wasHalted) {
+      opcode = this.mmu.read8(pcBefore);
+      this.pushTrace(pcBefore, opcode, this.mmu.read8((pcBefore + 1) & 0xFFFF), this.mmu.read8((pcBefore + 2) & 0xFFFF));
+    }
+
+    const cycles = this.cpu.step();
+    this.ppu.step(cycles);
+    this.timer.step(cycles);
+    this.apu.step(cycles);
+
+    if (!wasHalted && this.breakpointOpcode !== null && opcode === this.breakpointOpcode) {
+      this.triggerBreakpoint(`opcode ${hex8(this.breakpointOpcode)} executed at ${hex16(pcBefore)}`);
+    }
+    return cycles;
+  }
+
   runFrame() {
     let cyclesThisFrame = 0;
     while (cyclesThisFrame < Emulator.CYCLES_PER_FRAME) {
-      const cycles = this.cpu.step();
-      this.ppu.step(cycles);
-      this.timer.step(cycles);
-      this.apu.step(cycles);
+      const cycles = this.stepInstruction();
+      if (!this.running) return; // a breakpoint fired mid-frame; stop immediately
       cyclesThisFrame += cycles;
     }
+  }
+
+  // Pauses the emulator and records why, so a breakpoint hit looks the same in the UI as
+  // pressing Pause by hand.
+  triggerBreakpoint(reason) {
+    this.running = false;
+    if (this._rafId) cancelAnimationFrame(this._rafId);
+    this.apu.suspend();
+    this.breakHitReason = reason;
+    this._bpSkipFirstMatch = false;
+    if (this.onBreakpointHit) this.onBreakpointHit(reason);
+  }
+
+  // Executes exactly one instruction while paused, then redraws so the screen/debug views
+  // reflect the new state immediately (no need to wait for the 60fps loop).
+  stepOne() {
+    if (this.running) this.pause();
+    this.stepInstruction();
+    this.draw();
+    this.updateDebug();
+  }
+
+  // Resumes continuous execution, but auto-pauses (via triggerBreakpoint) the moment PC
+  // reaches pcTarget and/or opcodeTarget is fetched. Either may be null to leave it unset.
+  runToBreakpoint(pcTarget, opcodeTarget) {
+    this.breakpointPC = pcTarget;
+    this.breakpointOpcode = opcodeTarget;
+    this._bpSkipFirstMatch = true; // don't instantly stop if we're already sitting on a PC match
+    this.breakHitReason = null;
+    this.start();
+  }
+
+  clearBreakpoints() {
+    this.breakpointPC = null;
+    this.breakpointOpcode = null;
+    this.breakHitReason = null;
+    this._bpSkipFirstMatch = false;
+  }
+
+  pushTrace(addr, b0, b1, b2) {
+    const i = this.traceWritePos;
+    this.traceAddr[i] = addr; this.traceB0[i] = b0; this.traceB1[i] = b1; this.traceB2[i] = b2;
+    this.traceWritePos = (i + 1) % this.TRACE_SIZE;
+    if (this.traceFilled < this.TRACE_SIZE) this.traceFilled++;
+  }
+
+  // Returns trace entries oldest-first, most-recently-executed last.
+  getTraceEntries() {
+    const entries = [];
+    const oldest = this.traceFilled < this.TRACE_SIZE ? 0 : this.traceWritePos;
+    for (let i = 0; i < this.traceFilled; i++) {
+      const idx = (oldest + i) % this.TRACE_SIZE;
+      entries.push({ addr: this.traceAddr[idx], b0: this.traceB0[idx], b1: this.traceB1[idx], b2: this.traceB2[idx] });
+    }
+    return entries;
   }
 
   start() {
@@ -1875,6 +2298,12 @@ const romInfo = document.getElementById('romInfo');
 const btnStart = document.getElementById('btnStart');
 const btnPause = document.getElementById('btnPause');
 const btnReset = document.getElementById('btnReset');
+const btnStep = document.getElementById('btnStep');
+const btnRunToBP = document.getElementById('btnRunToBP');
+const btnClearBP = document.getElementById('btnClearBP');
+const bpPCInput = document.getElementById('bpPCInput');
+const bpOpInput = document.getElementById('bpOpInput');
+const bpStatus = document.getElementById('bpStatus');
 
 let lastROMBytes = null;
 
@@ -1903,6 +2332,8 @@ function handleROMFile(file) {
     emulator.loadROM(bytes);
     romInfo.innerHTML = `<b>${getROMTitle(bytes)}</b><br>Mapper: ${getMBCName(bytes)}<br>Size: ${(bytes.length / 1024).toFixed(0)} KB`;
     btnStart.disabled = false; btnPause.disabled = false; btnReset.disabled = false;
+    btnStep.disabled = false; btnRunToBP.disabled = false; btnClearBP.disabled = false;
+    bpStatus.textContent = 'Ready.';
     updateStateButtons();
     emulator.start();
   };
@@ -1915,9 +2346,62 @@ fileInput.addEventListener('change', (e) => { if (e.target.files[0]) handleROMFi
 ['dragleave', 'drop'].forEach(evt => window.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.remove('drag-over'); }));
 window.addEventListener('drop', (e) => { if (e.dataTransfer.files[0]) handleROMFile(e.dataTransfer.files[0]); });
 
-btnStart.addEventListener('click', () => emulator.start());
-btnPause.addEventListener('click', () => { emulator.pause(); btnPause.textContent = emulator.running ? '⏸ Pause' : '▶ Resume'; });
-btnReset.addEventListener('click', () => { if (lastROMBytes) { emulator.loadROM(lastROMBytes); emulator.start(); } });
+btnStart.addEventListener('click', () => { emulator.start(); btnPause.textContent = '⏸ Pause'; bpStatus.textContent = 'Running.'; });
+btnPause.addEventListener('click', () => {
+  emulator.pause();
+  btnPause.textContent = emulator.running ? '⏸ Pause' : '▶ Resume';
+  bpStatus.textContent = 'Paused.';
+  refreshDebugTools();
+});
+btnReset.addEventListener('click', () => {
+  if (lastROMBytes) {
+    emulator.loadROM(lastROMBytes);
+    emulator.start();
+    btnPause.textContent = '⏸ Pause';
+    bpStatus.textContent = 'Reset.';
+  }
+});
+
+/* ---- step / breakpoint debugger ---- */
+function parseHexValue(str, bits) {
+  if (!str) return null;
+  const trimmed = str.trim();
+  if (!trimmed) return null;
+  const v = parseInt(trimmed.replace(/^0x/i, ''), 16);
+  if (isNaN(v)) return null;
+  return v & (bits === 16 ? 0xFFFF : 0xFF);
+}
+
+emulator.onBreakpointHit = (reason) => {
+  btnPause.textContent = '▶ Resume';
+  bpStatus.textContent = `⏹ Stopped — ${reason}`;
+  refreshDebugTools();
+};
+
+btnStep.addEventListener('click', () => {
+  emulator.stepOne();
+  btnPause.textContent = '▶ Resume';
+  bpStatus.textContent = `Stepped — now at PC=${hex16(emulator.cpu.PC)}`;
+  refreshDebugTools();
+});
+
+btnRunToBP.addEventListener('click', () => {
+  const pcVal = parseHexValue(bpPCInput.value, 16);
+  const opVal = parseHexValue(bpOpInput.value, 8);
+  if (pcVal === null && opVal === null) {
+    bpStatus.textContent = 'Enter a PC and/or opcode (hex) to break on first.';
+    return;
+  }
+  emulator.runToBreakpoint(pcVal, opVal);
+  btnPause.textContent = '⏸ Pause';
+  bpStatus.textContent = 'Running until breakpoint…';
+});
+
+btnClearBP.addEventListener('click', () => {
+  emulator.clearBreakpoints();
+  bpPCInput.value = ''; bpOpInput.value = '';
+  bpStatus.textContent = 'Breakpoints cleared.';
+});
 
 /* ---- sound controls ---- */
 const btnMute = document.getElementById('btnMute');
@@ -1961,6 +2445,8 @@ const tileMapImageData = tileMapCtx.createImageData(256, 256); // 32x32 tiles of
 
 const oamTableBody = document.getElementById('oamTableBody');
 const paletteGrid = document.getElementById('paletteGrid');
+const disasmList = document.getElementById('disasmList');
+const traceList = document.getElementById('traceList');
 
 /* ---- tab switching ---- */
 document.querySelectorAll('.tool-tab').forEach(btn => {
@@ -2132,6 +2618,62 @@ function drawPalettes() {
   }
 }
 
+/* ---- 5. Live disassembler: decodes the bytes around PC into mnemonics ---- */
+function drawDisassembly() {
+  if (!lastROMBytes) { disasmList.innerHTML = '<div class="disasm-empty">Load a ROM to see disassembly.</div>'; return; }
+  const mmu = emulator.mmu, pc = emulator.cpu.PC;
+  const COUNT_BEFORE = 5, COUNT_AFTER = 9, MAX_LOOKBACK = 12;
+
+  // GB machine code isn't self-synchronizing, so to find instruction boundaries *before* PC,
+  // try progressively shorter lookbacks and keep the longest one that decodes forward and
+  // lands exactly back on PC (a genuine resync), rather than guessing at a byte offset.
+  let beforeLines = [];
+  for (let back = MAX_LOOKBACK; back >= 1; back--) {
+    let addr = pc - back;
+    if (addr < 0) continue;
+    const insns = [];
+    while (addr < pc) {
+      const { text, length } = disassembleAt(mmu, addr & 0xFFFF);
+      insns.push({ addr: addr & 0xFFFF, text });
+      addr += length;
+    }
+    if (addr === pc) { beforeLines = insns.slice(-COUNT_BEFORE); break; }
+  }
+
+  const lines = beforeLines.map(l => ({ ...l, current: false }));
+  let addr = pc;
+  for (let i = 0; i <= COUNT_AFTER; i++) {
+    const { text, length } = disassembleAt(mmu, addr & 0xFFFF);
+    lines.push({ addr: addr & 0xFFFF, text, current: i === 0 });
+    addr += length;
+  }
+
+  disasmList.innerHTML = lines.map(l =>
+    `<div class="disasm-line${l.current ? ' current' : ''}">${hex16(l.addr)}&nbsp;&nbsp;${l.text}</div>`
+  ).join('');
+
+  if (lines.some(l => l.current)) {
+    const cur = disasmList.querySelector('.disasm-line.current');
+    if (cur) cur.scrollIntoView({ block: 'center' });
+  }
+}
+
+/* ---- 6. Execution trace: scrollback of the last instructions actually executed ---- */
+function drawTrace() {
+  const entries = emulator.getTraceEntries();
+  if (entries.length === 0) { traceList.innerHTML = '<div class="trace-empty">No instructions executed yet.</div>'; return; }
+  const recent = entries.slice(-200); // cap rendered rows; the ring buffer itself holds more
+  traceList.innerHTML = recent.map((e, i) => {
+    const { text } = disassembleBytes((off) => (off === 0 ? e.b0 : off === 1 ? e.b1 : e.b2), e.addr);
+    const isLatest = i === recent.length - 1;
+    return `<div class="trace-line${isLatest ? ' latest' : ''}">` +
+             `<span class="trace-code">${hex16(e.addr)}&nbsp;&nbsp;${hex8(e.b0)}&nbsp;&nbsp;${text}</span>` +
+             `<span class="trace-explain">${explainInstruction(text)}</span>` +
+           `</div>`;
+  }).join('');
+  traceList.scrollTop = traceList.scrollHeight; // auto-scroll to the most recent instruction
+}
+
 /* ---- orchestration: redraw whichever tab is active, only while the panel is open ---- */
 function refreshDebugTools() {
   if (!debugToolsDetails.open) return;
@@ -2140,6 +2682,8 @@ function refreshDebugTools() {
   else if (active === 'tilemap') drawTileMap();
   else if (active === 'oam') drawOAMTable();
   else if (active === 'palettes') drawPalettes();
+  else if (active === 'disasm') drawDisassembly();
+  else if (active === 'trace') drawTrace();
 }
 
 debugToolsDetails.addEventListener('toggle', refreshDebugTools);

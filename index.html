@@ -20,13 +20,60 @@
     font-family: 'Segoe UI', Tahoma, Verdana, sans-serif;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    padding: 24px 12px 60px;
+    align-items: stretch;
+    padding: 0 0 60px;
   }
-  h1 { margin: 0 0 4px; font-size: 1.5rem; letter-spacing: 1px; }
+
+  .navbar {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 24px;
+    background: #1b1b22;
+    border-bottom: 1px solid #333;
+    box-shadow: 0 2px 10px rgba(0,0,0,.4);
+  }
+  .navbar .nav-title { font-size: 1.3rem; font-weight: 600; letter-spacing: 1px; color: #eee; }
+
+  .mode-toggle { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 0.82rem; color: #888; }
+  .mode-toggle .mode-label { transition: color .15s; }
+  .mode-toggle .mode-label.active { color: #eee; font-weight: 600; }
+  .switch { position: relative; display: inline-block; width: 42px; height: 22px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .toggle-track {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    background: #444; border-radius: 22px; cursor: pointer; transition: background .2s;
+  }
+  .toggle-thumb {
+    position: absolute; height: 16px; width: 16px; left: 3px; top: 3px;
+    background: #eee; border-radius: 50%; transition: transform .2s;
+  }
+  .switch input:checked + .toggle-track { background: var(--accent); }
+  .switch input:checked + .toggle-track .toggle-thumb { transform: translateX(20px); }
+
+  body.playing-mode .debug-tools-sidebar,
+  body.playing-mode .visual-tools-sidebar { display: none; }
+
+  .page-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 12px 0;
+  }
+
   .subtitle { color: #aaa; margin-bottom: 20px; font-size: 0.9rem; text-align: center; max-width: 640px; }
 
   .layout { display: flex; gap: 24px; flex-wrap: wrap; justify-content: center; align-items: flex-start; }
+
+  .main-content {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    flex: 1;
+    min-width: 300px;
+  }
+  .main-row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
 
   /* ---- screen ---- */
   .screen-bezel {
@@ -119,23 +166,23 @@
 
   .state-info { margin-top: 8px; font-size: 0.75rem; color: #999; min-height: 1.2em; }
 
-  /* ---- save-state sidebar ---- */
-  .save-sidebar {
-    width: 230px;
+  /* ---- save-state panel ---- */
+  .save-panel {
+    width: 100%;
     background: #23232c;
     border-radius: 10px;
     padding: 18px;
     box-shadow: 0 6px 18px rgba(0,0,0,.4);
   }
-  .save-sidebar h2 {
+  .save-panel h2 {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 10px;
     font-size: 1rem;
     margin: 0 0 6px;
     color: #ddd;
   }
-  .save-sidebar .badge {
+  .save-panel .badge {
     font-size: 0.68rem;
     color: #999;
     font-weight: normal;
@@ -143,9 +190,9 @@
     padding: 2px 8px;
     border-radius: 10px;
   }
-  .hotkey-hint { font-size: 0.68rem; color: #888; line-height: 1.5; margin-bottom: 12px; }
-  .slot-list { display: flex; flex-direction: column; gap: 10px; max-height: 620px; overflow-y: auto; }
-  .slot-empty { font-size: 0.78rem; color: #777; text-align: center; padding: 24px 8px; }
+  .hotkey-hint { font-size: 0.68rem; color: #888; line-height: 1.5; margin: 8px 0 12px; }
+  .slot-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+  .slot-empty { grid-column: 1 / -1; font-size: 0.78rem; color: #777; text-align: center; padding: 24px 8px; }
 
   .slot-card {
     position: relative;
@@ -201,12 +248,6 @@
   .keymap td { padding: 2px 4px; border-bottom: 1px solid #333; }
   .keymap td:first-child { color: #fff; font-family: monospace; }
 
-  details.debug {
-    margin-top: 16px;
-    font-size: 0.75rem;
-    color: #aaa;
-  }
-  details.debug summary { cursor: pointer; color: #ddd; margin-bottom: 6px; }
   #debugOut {
     background: #111;
     border-radius: 6px;
@@ -229,11 +270,8 @@
   }
   footer a { color: #a996d6; }
 
-  /* ---- debugging / visualization tools ---- */
-  .debug-tools {
-    margin-top: 24px;
-    width: 100%;
-    max-width: 924px;
+  /* ---- debugging / visualization tool sidebars (shared base) ---- */
+  .tool-sidebar {
     background: #23232c;
     border-radius: 10px;
     padding: 18px;
@@ -241,16 +279,32 @@
     font-size: 0.8rem;
     color: #ccc;
   }
-  .debug-tools summary { cursor: pointer; color: #ddd; font-size: 0.95rem; }
-  .tools-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 14px 0 4px; }
+  .tool-sidebar h2 { font-size: 1rem; margin: 0 0 10px; color: #ddd; }
+
+  .debug-tools-sidebar {
+    width: 480px;
+    max-width: 100%;
+    position: sticky;
+    top: 24px;
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
+  }
+
+  .visual-tools-sidebar {
+    width: 420px;
+    max-width: 100%;
+  }
+
+  .tools-tabs { display: flex; flex-direction: row; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
   .tool-tab {
     background: #2f2f3a;
     border: 1px solid #444;
     color: #bbb;
-    padding: 6px 12px;
+    padding: 8px 12px;
     border-radius: 6px;
     font-size: 0.78rem;
     cursor: pointer;
+    text-align: left;
   }
   .tool-tab:hover { color: #fff; border-color: #666; }
   .tool-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -264,9 +318,10 @@
     image-rendering: pixelated;
     image-rendering: -moz-crisp-edges;
     image-rendering: crisp-edges;
-    width: 384px;
-    max-width: 100%;
-    height: 576px;
+    width: 100%;
+    max-width: 384px;
+    aspect-ratio: 128 / 192;
+    height: auto;
     background: #000;
     border-radius: 4px;
   }
@@ -324,6 +379,7 @@
     background: #1b1b22;
     border-radius: 8px;
   }
+  .cpu-debug-controls.hidden { display: none; }
   .cdc-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
   .cdc-row:last-child { margin-bottom: 0; }
   .cdc-row label { font-size: 0.75rem; color: #bbb; display: inline-flex; align-items: center; gap: 6px; }
@@ -379,165 +435,184 @@
 </head>
 <body>
 
-<h1>JS GB Emulator</h1>
-<p class="subtitle">
-  A from-scratch, single-file DMG (original GB) emulator written in plain JavaScript —
-  built as an educational reference for how the LR35902 CPU, PPU, and memory map work together.
-  Load your own legally-owned ROM file to play.
-</p>
+<nav class="navbar">
+  <span class="nav-title">JS GB Emulator</span>
+  <div class="mode-toggle">
+    <span class="mode-label" id="modeLabelPlay">Play</span>
+    <label class="switch">
+      <input type="checkbox" id="modeToggle" checked>
+      <span class="toggle-track"><span class="toggle-thumb"></span></span>
+    </label>
+    <span class="mode-label active" id="modeLabelDebug">Debug</span>
+  </div>
+</nav>
+
+<div class="page-content">
 
 <div class="layout">
 
-  <!-- Screen -->
-  <div class="screen-bezel">
-    <div class="screen-label"><span>DOT MATRIX</span><span id="fps">0 fps</span></div>
-    <canvas id="screen" width="160" height="144"></canvas>
-    <div class="drop-hint">Drop a .gb / .gbc ROM anywhere on the page to load it</div>
-  </div>
+  <!-- CPU debugging tools -->
+  <div class="tool-sidebar debug-tools-sidebar" id="debugTools">
+    <h2>Debugging Tools</h2>
 
-  <!-- Control panel -->
-  <div class="panel">
-    <h2>Load ROM</h2>
-    <label class="file-drop" id="dropZone">
-      <input type="file" id="fileInput" accept=".gb,.gbc,.bin">
-      Click to choose a ROM file<br>or drag &amp; drop it here
-    </label>
-    <div class="rom-info" id="romInfo">No ROM loaded.</div>
-
-    <div class="btn-row">
-      <button class="ui-btn" id="btnStart" disabled>▶ Start</button>
-      <button class="ui-btn" id="btnPause" disabled>⏸ Pause</button>
-      <button class="ui-btn" id="btnReset" disabled>↻ Reset</button>
+    <div class="tools-tabs">
+      <button class="tool-tab active" data-tool="trace">Execution Trace</button>
+      <button class="tool-tab" data-tool="disasm">Disassembler</button>
+      <button class="tool-tab" data-tool="registers">Registers</button>
     </div>
 
-    <div class="sound-row">
-      <button class="ui-btn" id="btnMute">🔊 Mute</button>
-      <input type="range" id="volumeSlider" min="0" max="100" value="50">
+    <!-- Step / breakpoint controls: shared across the disassembler + trace tabs -->
+    <div class="cpu-debug-controls" id="cpuDebugControls">
+      <div class="cdc-row">
+        <button class="ui-btn small" id="btnStep" disabled>⏭ Step</button>
+        <button class="ui-btn small" id="btnRunToBP" disabled>▶ Run to breakpoint</button>
+        <button class="ui-btn small ghost" id="btnClearBP" disabled>✕ Clear breakpoints</button>
+      </div>
+      <div class="cdc-row">
+        <label>Break at PC <input type="text" id="bpPCInput" placeholder="e.g. 0150" maxlength="6"></label>
+        <label>Break at opcode <input type="text" id="bpOpInput" placeholder="e.g. C9" maxlength="4"></label>
+      </div>
+      <div class="cdc-status" id="bpStatus">Load a ROM to enable step/breakpoint debugging.</div>
     </div>
 
-    <h2 style="margin-top: 18px;">Save States</h2>
-    <div class="btn-row">
-      <button class="ui-btn" id="btnSaveState" disabled>💾 Save (F5)</button>
-      <button class="ui-btn" id="btnLoadState" disabled>📂 Load (F9)</button>
-    </div>
-    <div class="btn-row">
-      <button class="ui-btn" id="btnExportState" disabled>⬇ Export .json</button>
-      <label class="ui-btn disabled" id="btnImportState">
-        ⬆ Import .json
-        <input type="file" id="importStateInput" accept="application/json,.json" style="display:none;">
-      </label>
-    </div>
-    <div class="state-info" id="stateInfo"></div>
-
-    <div class="keymap">
-      <table>
-        <tr><td>Arrow keys</td><td>D-Pad</td></tr>
-        <tr><td>Z</td><td>A button</td></tr>
-        <tr><td>X</td><td>B button</td></tr>
-        <tr><td>Enter</td><td>Start</td></tr>
-        <tr><td>Shift</td><td>Select</td></tr>
-        <tr><td>F5</td><td>Quick save state</td></tr>
-        <tr><td>F9</td><td>Quick load state</td></tr>
-      </table>
+    <div class="tool-panel" id="panel-trace">
+      <p class="tool-desc">
+        Scrollback of the last instructions the CPU actually executed, oldest first, most recent
+        highlighted at the bottom — with a brief plain-English note on what each one does, useful
+        for seeing how a loop, call, or jump was reached.
+      </p>
+      <div class="trace-list" id="traceList"><div class="trace-empty">No instructions executed yet.</div></div>
     </div>
 
-    <details class="debug">
-      <summary>CPU / PPU debug view</summary>
+    <div class="tool-panel hidden" id="panel-disasm">
+      <p class="tool-desc">
+        Live disassembly of the bytes around the program counter, decoded into LR35902 mnemonics
+        (not just raw hex). The highlighted line is the next instruction about to run. Use Step
+        to execute one instruction at a time, or set a breakpoint below and Run to it.
+      </p>
+      <div class="disasm-list" id="disasmList"><div class="disasm-empty">Load a ROM to see disassembly.</div></div>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-registers">
+      <p class="tool-desc">Raw CPU registers, flags, and key PPU/timer I/O values, updated live as the emulator runs.</p>
       <div id="debugOut">—</div>
-    </details>
+    </div>
   </div>
 
-  <!-- Save-state sidebar -->
-  <div class="save-sidebar">
-    <h2>Saved States <span class="badge" id="slotCount">0/10</span></h2>
-    <div class="hotkey-hint">F5 quick-saves a new slot &nbsp;•&nbsp; F9 loads the latest &nbsp;•&nbsp; click a slot to load it</div>
-    <div class="slot-list" id="slotList">
-      <div class="slot-empty" id="slotEmpty">No saved states yet for this ROM.</div>
+  <!-- Main content: screen + control panel + visualization tools, then saved states below -->
+  <div class="main-content">
+    <div class="main-row">
+      <!-- Screen -->
+      <div class="screen-bezel">
+        <div class="screen-label"><span>DOT MATRIX</span><span id="fps">0 fps</span></div>
+        <canvas id="screen" width="160" height="144"></canvas>
+        <div class="drop-hint">Drop a .gb / .gbc ROM anywhere on the page to load it</div>
+      </div>
+
+      <!-- Control panel -->
+      <div class="panel">
+        <h2>Load ROM</h2>
+        <label class="file-drop" id="dropZone">
+          <input type="file" id="fileInput" accept=".gb,.gbc,.bin">
+          Click to choose a ROM file<br>or drag &amp; drop it here
+        </label>
+        <div class="rom-info" id="romInfo">No ROM loaded.</div>
+
+        <div class="btn-row">
+          <button class="ui-btn" id="btnStart" disabled>▶ Start</button>
+          <button class="ui-btn" id="btnPause" disabled>⏸ Pause</button>
+          <button class="ui-btn" id="btnReset" disabled>↻ Reset</button>
+        </div>
+
+        <div class="sound-row">
+          <button class="ui-btn" id="btnMute">🔊 Mute</button>
+          <input type="range" id="volumeSlider" min="0" max="100" value="50">
+        </div>
+
+        <div class="keymap">
+          <table>
+            <tr><td>Arrow keys</td><td>D-Pad</td></tr>
+            <tr><td>Z</td><td>A button</td></tr>
+            <tr><td>X</td><td>B button</td></tr>
+            <tr><td>Enter</td><td>Start</td></tr>
+            <tr><td>Shift</td><td>Select</td></tr>
+            <tr><td>F5</td><td>Quick save state</td></tr>
+            <tr><td>F9</td><td>Quick load state</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Saved states: quick actions + slot grid, all in one place -->
+    <div class="save-panel">
+      <h2>Saved States <span class="badge" id="slotCount">0/10</span></h2>
+      <div class="btn-row">
+        <button class="ui-btn" id="btnSaveState" disabled>💾 Save (F5)</button>
+        <button class="ui-btn" id="btnLoadState" disabled>📂 Load (F9)</button>
+        <button class="ui-btn" id="btnExportState" disabled>⬇ Export .json</button>
+        <label class="ui-btn disabled" id="btnImportState">
+          ⬆ Import .json
+          <input type="file" id="importStateInput" accept="application/json,.json" style="display:none;">
+        </label>
+      </div>
+      <div class="state-info" id="stateInfo"></div>
+      <div class="hotkey-hint">F5 quick-saves a new slot &nbsp;•&nbsp; F9 loads the latest &nbsp;•&nbsp; click a slot to load it</div>
+      <div class="slot-list" id="slotList">
+        <div class="slot-empty" id="slotEmpty">No saved states yet for this ROM.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Visualization tools -->
+  <div class="tool-sidebar visual-tools-sidebar" id="visualTools">
+    <h2>Visualization Tools</h2>
+
+    <div class="tools-tabs">
+      <button class="tool-tab active" data-tool="tiles">Tile Viewer (VRAM)</button>
+      <button class="tool-tab" data-tool="tilemap">Tile Map</button>
+      <button class="tool-tab" data-tool="oam">Sprites (OAM)</button>
+      <button class="tool-tab" data-tool="palettes">Palettes</button>
+    </div>
+
+    <div class="tool-panel" id="panel-tiles">
+      <p class="tool-desc">
+        Raw contents of tile data (0x8000–0x97FF), decoded as 384 individual 8×8 tiles in
+        the order they sit in VRAM — shown in grayscale, with no palette or tile map applied,
+        so you can see exactly what graphics data has been loaded regardless of how it's used.
+      </p>
+      <canvas id="tileViewerCanvas" width="128" height="192"></canvas>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-tilemap">
+      <p class="tool-desc">
+        <label><input type="radio" name="tmSelect" value="9800" checked> Map 0x9800</label>
+        <label><input type="radio" name="tmSelect" value="9C00"> Map 0x9C00</label>
+        The full 32×32 tile (256×256 pixel) map, rendered with the current BG palette. The
+        yellow box is the current 160×144 viewport as defined by SCX/SCY, wrapping at the map edges.
+      </p>
+      <div class="tilemap-scroll">
+        <canvas id="tileMapCanvas" width="256" height="256"></canvas>
+      </div>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-oam">
+      <p class="tool-desc">All 40 OAM sprite entries, with a decoded preview, position, tile index, and attribute flags. Off-screen entries are dimmed.</p>
+      <div class="oam-scroll">
+        <table class="oam-table">
+          <thead><tr><th></th><th>#</th><th>X</th><th>Y</th><th>Tile</th><th>Pal</th><th>Flags</th></tr></thead>
+          <tbody id="oamTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-palettes">
+      <p class="tool-desc">The current BGP / OBP0 / OBP1 register values, decoded into the four shades they map to.</p>
+      <div id="paletteGrid" class="palette-grid"></div>
     </div>
   </div>
 </div>
 
-<!-- VRAM / OAM debugging & visualization tools -->
-<details class="debug-tools" id="debugTools">
-  <summary>Debugging / Visualization Tools</summary>
-
-  <div class="tools-tabs">
-    <button class="tool-tab active" data-tool="tiles">Tile Viewer (VRAM)</button>
-    <button class="tool-tab" data-tool="tilemap">Tile Map</button>
-    <button class="tool-tab" data-tool="oam">Sprites (OAM)</button>
-    <button class="tool-tab" data-tool="palettes">Palettes</button>
-    <button class="tool-tab" data-tool="disasm">Disassembler</button>
-    <button class="tool-tab" data-tool="trace">Execution Trace</button>
-  </div>
-
-  <!-- Step / breakpoint controls: shared across the disassembler + trace tabs -->
-  <div class="cpu-debug-controls">
-    <div class="cdc-row">
-      <button class="ui-btn small" id="btnStep" disabled>⏭ Step</button>
-      <button class="ui-btn small" id="btnRunToBP" disabled>▶ Run to breakpoint</button>
-      <button class="ui-btn small ghost" id="btnClearBP" disabled>✕ Clear breakpoints</button>
-    </div>
-    <div class="cdc-row">
-      <label>Break at PC <input type="text" id="bpPCInput" placeholder="e.g. 0150" maxlength="6"></label>
-      <label>Break at opcode <input type="text" id="bpOpInput" placeholder="e.g. C9" maxlength="4"></label>
-    </div>
-    <div class="cdc-status" id="bpStatus">Load a ROM to enable step/breakpoint debugging.</div>
-  </div>
-
-  <div class="tool-panel" id="panel-tiles">
-    <p class="tool-desc">
-      Raw contents of tile data (0x8000–0x97FF), decoded as 384 individual 8×8 tiles in
-      the order they sit in VRAM — shown in grayscale, with no palette or tile map applied,
-      so you can see exactly what graphics data has been loaded regardless of how it's used.
-    </p>
-    <canvas id="tileViewerCanvas" width="128" height="192"></canvas>
-  </div>
-
-  <div class="tool-panel hidden" id="panel-tilemap">
-    <p class="tool-desc">
-      <label><input type="radio" name="tmSelect" value="9800" checked> Map 0x9800</label>
-      <label><input type="radio" name="tmSelect" value="9C00"> Map 0x9C00</label>
-      The full 32×32 tile (256×256 pixel) map, rendered with the current BG palette. The
-      yellow box is the current 160×144 viewport as defined by SCX/SCY, wrapping at the map edges.
-    </p>
-    <div class="tilemap-scroll">
-      <canvas id="tileMapCanvas" width="256" height="256"></canvas>
-    </div>
-  </div>
-
-  <div class="tool-panel hidden" id="panel-oam">
-    <p class="tool-desc">All 40 OAM sprite entries, with a decoded preview, position, tile index, and attribute flags. Off-screen entries are dimmed.</p>
-    <div class="oam-scroll">
-      <table class="oam-table">
-        <thead><tr><th></th><th>#</th><th>X</th><th>Y</th><th>Tile</th><th>Pal</th><th>Flags</th></tr></thead>
-        <tbody id="oamTableBody"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="tool-panel hidden" id="panel-palettes">
-    <p class="tool-desc">The current BGP / OBP0 / OBP1 register values, decoded into the four shades they map to.</p>
-    <div id="paletteGrid" class="palette-grid"></div>
-  </div>
-
-  <div class="tool-panel hidden" id="panel-disasm">
-    <p class="tool-desc">
-      Live disassembly of the bytes around the program counter, decoded into LR35902 mnemonics
-      (not just raw hex). The highlighted line is the next instruction about to run. Use Step
-      to execute one instruction at a time, or set a breakpoint below and Run to it.
-    </p>
-    <div class="disasm-list" id="disasmList"><div class="disasm-empty">Load a ROM to see disassembly.</div></div>
-  </div>
-
-  <div class="tool-panel hidden" id="panel-trace">
-    <p class="tool-desc">
-      Scrollback of the last instructions the CPU actually executed, oldest first, most recent
-      highlighted at the bottom — with a brief plain-English note on what each one does, useful
-      for seeing how a loop, call, or jump was reached.
-    </p>
-    <div class="trace-list" id="traceList"><div class="trace-empty">No instructions executed yet.</div></div>
-  </div>
-</details>
+</div>
 
 <script>
 /* =========================================================================================
@@ -2255,7 +2330,8 @@ class Emulator {
 
   updateDebug() {
     const out = document.getElementById('debugOut');
-    if (!out.closest('details').open) return;
+    const panel = document.getElementById('panel-registers');
+    if (document.body.classList.contains('playing-mode') || panel.classList.contains('hidden')) return;
     const c = this.cpu;
     out.textContent =
 `PC=${hex16(c.PC)}  SP=${hex16(c.SP)}
@@ -2348,9 +2424,15 @@ window.addEventListener('drop', (e) => { if (e.dataTransfer.files[0]) handleROMF
 
 btnStart.addEventListener('click', () => { emulator.start(); btnPause.textContent = '⏸ Pause'; bpStatus.textContent = 'Running.'; });
 btnPause.addEventListener('click', () => {
-  emulator.pause();
-  btnPause.textContent = emulator.running ? '⏸ Pause' : '▶ Resume';
-  bpStatus.textContent = 'Paused.';
+  if (emulator.running) {
+    emulator.pause();
+    btnPause.textContent = '▶ Resume';
+    bpStatus.textContent = 'Paused.';
+  } else {
+    emulator.start();
+    btnPause.textContent = '⏸ Pause';
+    bpStatus.textContent = 'Running.';
+  }
   refreshDebugTools();
 });
 btnReset.addEventListener('click', () => {
@@ -2427,13 +2509,11 @@ window.addEventListener('keydown', (e) => { const m = KEY_MAP[e.key]; if (m) { e
 window.addEventListener('keyup', (e) => { const m = KEY_MAP[e.key]; if (m) { emulator.joypad.setButton(m[0], false, m[1]); e.preventDefault(); } });
 
 /* ============================ Debugging / visualization tools ============================
-   Four independent read-only views into emulator state, decoded straight from the same
-   MMU/PPU data the real rendering pipeline uses. These run on their own low-frequency
-   timer (not the main 60fps loop) since they're for inspection, not real-time display,
-   and only redraw while their <details> panel is open to avoid wasted work.
+   Six independent read-only views into emulator state, decoded straight from the same
+   MMU/PPU data the real rendering pipeline uses. These live in the left sidebar and run on
+   their own low-frequency timer (not the main 60fps loop) since they're for inspection,
+   not real-time display; only the active tab's view is redrawn.
    ========================================================================================= */
-
-const debugToolsDetails = document.getElementById('debugTools');
 
 const tileViewerCanvas = document.getElementById('tileViewerCanvas');
 const tileViewerCtx = tileViewerCanvas.getContext('2d');
@@ -2448,21 +2528,75 @@ const paletteGrid = document.getElementById('paletteGrid');
 const disasmList = document.getElementById('disasmList');
 const traceList = document.getElementById('traceList');
 
-/* ---- tab switching ---- */
-document.querySelectorAll('.tool-tab').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tool-tab').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tool-panel').forEach(p => p.classList.add('hidden'));
-    btn.classList.add('active');
-    document.getElementById('panel-' + btn.dataset.tool).classList.remove('hidden');
-    refreshDebugTools();
+/* ---- tab switching (scoped per sidebar, so each tracks its own active tab) ---- */
+const debugToolsContainer = document.getElementById('debugTools');
+const visualToolsContainer = document.getElementById('visualTools');
+const cpuDebugControls = document.getElementById('cpuDebugControls');
+const TOOLS_NEEDING_CPU_CONTROLS = ['trace', 'disasm'];
+
+function updateCpuControlsVisibility(tool) {
+  cpuDebugControls.classList.toggle('hidden', !TOOLS_NEEDING_CPU_CONTROLS.includes(tool));
+}
+
+function setupTabGroup(container) {
+  const tabs = container.querySelectorAll('.tool-tab');
+  const panels = container.querySelectorAll('.tool-panel');
+  tabs.forEach(btn => {
+    btn.addEventListener('click', () => {
+      tabs.forEach(b => b.classList.remove('active'));
+      panels.forEach(p => p.classList.add('hidden'));
+      btn.classList.add('active');
+      document.getElementById('panel-' + btn.dataset.tool).classList.remove('hidden');
+      if (container === debugToolsContainer) updateCpuControlsVisibility(btn.dataset.tool);
+      refreshDebugTools();
+    });
   });
-});
+}
+
+setupTabGroup(debugToolsContainer);
+setupTabGroup(visualToolsContainer);
+
+updateCpuControlsVisibility(debugToolsContainer.querySelector('.tool-tab.active').dataset.tool);
 
 let tileMapSelect = '9800';
 document.querySelectorAll('input[name="tmSelect"]').forEach(r => {
   r.addEventListener('change', () => { tileMapSelect = r.value; refreshDebugTools(); });
 });
+
+/* ---- play / debug mode toggle: checked = debugging GUI (default), unchecked = playing ----
+   The chosen mode is persisted in localStorage so it's restored on the next visit. */
+const modeToggle = document.getElementById('modeToggle');
+const modeLabelPlay = document.getElementById('modeLabelPlay');
+const modeLabelDebug = document.getElementById('modeLabelDebug');
+const MODE_STORAGE_KEY = 'jsgb-config:debugMode';
+
+function saveModeConfig(debugging) {
+  try { localStorage.setItem(MODE_STORAGE_KEY, JSON.stringify(debugging)); }
+  catch (e) { /* storage unavailable/full - ignore, mode just won't persist */ }
+}
+
+function loadModeConfig() {
+  try {
+    const raw = localStorage.getItem(MODE_STORAGE_KEY);
+    return raw === null ? null : JSON.parse(raw);
+  } catch (e) { return null; }
+}
+
+function applyMode() {
+  const debugging = modeToggle.checked;
+  document.body.classList.toggle('playing-mode', !debugging);
+  modeLabelDebug.classList.toggle('active', debugging);
+  modeLabelPlay.classList.toggle('active', !debugging);
+  saveModeConfig(debugging);
+  if (debugging) refreshDebugTools();
+}
+
+// Restore the saved mode (if any) before the first render so the UI doesn't flash the default.
+const savedDebugging = loadModeConfig();
+if (savedDebugging !== null) modeToggle.checked = savedDebugging;
+
+modeToggle.addEventListener('change', applyMode);
+applyMode();
 
 /* ---- 1. VRAM tile viewer: every tile in 0x8000-0x97FF, raw, no palette ---- */
 function drawTileViewer() {
@@ -2674,19 +2808,21 @@ function drawTrace() {
   traceList.scrollTop = traceList.scrollHeight; // auto-scroll to the most recent instruction
 }
 
-/* ---- orchestration: redraw whichever tab is active, only while the panel is open ---- */
+/* ---- orchestration: redraw whichever tab is currently active in each sidebar ---- */
 function refreshDebugTools() {
-  if (!debugToolsDetails.open) return;
-  const active = document.querySelector('.tool-tab.active').dataset.tool;
-  if (active === 'tiles') drawTileViewer();
-  else if (active === 'tilemap') drawTileMap();
-  else if (active === 'oam') drawOAMTable();
-  else if (active === 'palettes') drawPalettes();
-  else if (active === 'disasm') drawDisassembly();
-  else if (active === 'trace') drawTrace();
+  if (document.body.classList.contains('playing-mode')) return;
+
+  const activeDebug = debugToolsContainer.querySelector('.tool-tab.active').dataset.tool;
+  if (activeDebug === 'disasm') drawDisassembly();
+  else if (activeDebug === 'trace') drawTrace();
+
+  const activeVisual = visualToolsContainer.querySelector('.tool-tab.active').dataset.tool;
+  if (activeVisual === 'tiles') drawTileViewer();
+  else if (activeVisual === 'tilemap') drawTileMap();
+  else if (activeVisual === 'oam') drawOAMTable();
+  else if (activeVisual === 'palettes') drawPalettes();
 }
 
-debugToolsDetails.addEventListener('toggle', refreshDebugTools);
 setInterval(refreshDebugTools, 150);
 
 /* ================================== Save / load states ===================================

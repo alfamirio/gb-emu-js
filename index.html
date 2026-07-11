@@ -295,10 +295,8 @@
   .debug-tools-sidebar {
     width: 480px;
     max-width: 100%;
-    position: sticky;
-    top: 24px;
-    max-height: calc(100vh - 48px);
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
   }
 
   .visual-tools-sidebar {
@@ -428,6 +426,27 @@
     line-height: 1.65;
     max-height: 340px;
     overflow-y: auto;
+  }
+  /* Execution trace's height is set explicitly in px by JS (syncTraceListHeight(), only
+     while the trace tab is active) to match the neighboring main-content / visual-tools
+     columns - no taller, and with no inner scrollbar in the common case. This intentionally
+     only affects the trace panel: the disassembler/registers/memory-map/MBC-banking panels
+     keep their normal compact height and are never stretched. */
+  .trace-list {
+    max-height: 340px; /* fallback until JS sizes it on first activation */
+  }
+  .trace-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-bottom: 6px;
+  }
+  .trace-frozen-note {
+    color: #e8c46b;
+    font-size: 0.7rem;
+    font-style: italic;
+    margin-right: auto;
   }
   .disasm-line { padding: 1px 5px; border-radius: 3px; white-space: nowrap; color: #9fd6ff; }
   .disasm-line.current { background: var(--accent); color: #fff; font-weight: bold; }
@@ -647,6 +666,11 @@
         highlighted at the bottom — with a brief plain-English note on what each one does, useful
         for seeing how a loop, call, or jump was reached.
       </p>
+      <div class="trace-toolbar">
+        <span class="trace-frozen-note" id="traceFrozenNote" style="display:none;">Paused while scrolled up — new instructions aren't replacing what you're viewing.</span>
+        <button class="ui-btn small ghost" id="btnTraceFollow" style="display:none;">↓ Jump to latest</button>
+        <button class="ui-btn small ghost" id="btnExportTrace">⭳ Export trace</button>
+      </div>
       <div class="trace-list" id="traceList"><div class="trace-empty">No instructions executed yet.</div></div>
     </div>
 
@@ -2925,6 +2949,9 @@ const oamTableBody = document.getElementById('oamTableBody');
 const paletteGrid = document.getElementById('paletteGrid');
 const disasmList = document.getElementById('disasmList');
 const traceList = document.getElementById('traceList');
+const btnExportTrace = document.getElementById('btnExportTrace');
+const btnTraceFollow = document.getElementById('btnTraceFollow');
+const traceFrozenNote = document.getElementById('traceFrozenNote');
 const memmapStrip = document.getElementById('memmapStrip');
 const memmapReadout = document.getElementById('memmapReadout');
 const bankingDesc = document.getElementById('bankingDesc');
@@ -3139,6 +3166,13 @@ setupTabGroup(debugToolsContainer);
 setupTabGroup(visualToolsContainer);
 
 updateCpuControlsVisibility(debugToolsContainer.querySelector('.tool-tab.active').dataset.tool);
+
+// Keep the trace panel's height matched to its sibling column across window resizes, but
+// only while it's actually the visible tab - other debug panels are unaffected either way.
+window.addEventListener('resize', () => {
+  if (debugToolsContainer.querySelector('.tool-tab.active').dataset.tool === 'trace') syncTraceListHeight();
+});
+syncTraceListHeight(); // 'Execution Trace' is the default active tab on page load
 
 let tileMapSelect = '9800';
 document.querySelectorAll('input[name="tmSelect"]').forEach(r => {
@@ -3438,7 +3472,52 @@ function drawDisassembly() {
 }
 
 /* ---- 6. Execution trace: scrollback of the last instructions actually executed ---- */
+
+// Sizes #traceList to match the height of the neighboring main-content column (screen +
+// controls + save states) - no taller, and normally with no inner scrollbar. This is only
+// ever called while the Execution Trace tab is the active one; the disassembler,
+// registers, memory map, and MBC banking panels are never touched by it and keep their
+// own normal compact height.
+function syncTraceListHeight() {
+  const mainContent = document.querySelector('.main-content');
+  const sidebar = document.querySelector('.debug-tools-sidebar');
+  if (!mainContent || !sidebar) return;
+  const mainHeight = mainContent.getBoundingClientRect().height;
+  // Everything in the sidebar other than the trace list itself (heading, tabs,
+  // step/breakpoint controls, description text) - keep that chrome at its natural
+  // size and only stretch the trace list, so the sidebar's *total* height ends up
+  // matching main-content rather than just the trace list in isolation.
+  const chrome = sidebar.getBoundingClientRect().height - traceList.getBoundingClientRect().height;
+  const target = Math.round(mainHeight - chrome);
+  if (target > 0) {
+    traceList.style.height = target + 'px';
+    traceList.style.maxHeight = target + 'px';
+  }
+}
+
+function isTraceAtBottom() {
+  return traceList.scrollHeight - traceList.scrollTop - traceList.clientHeight < 24;
+}
+
 function drawTrace() {
+  syncTraceListHeight();
+
+  // This runs every rendered frame while the emulator is running. Thousands of
+  // instructions can execute per frame, so the "last 200" window below is effectively
+  // brand new content each call. Re-rendering it while the user is scrolled up would make
+  // whatever they're reading get silently swapped out for newer instructions - which looks
+  // exactly like the view auto-scrolling down, even though nothing touches scrollTop.
+  // So: only live-update while the user is pinned to the bottom (i.e. actively following
+  // execution). Otherwise, freeze the DOM as-is until they scroll back down or click
+  // "Jump to latest" themselves.
+  if (!isTraceAtBottom() && traceList.childElementCount > 0 && !traceList.querySelector('.trace-empty')) {
+    btnTraceFollow.style.display = '';
+    traceFrozenNote.style.display = '';
+    return;
+  }
+  btnTraceFollow.style.display = 'none';
+  traceFrozenNote.style.display = 'none';
+
   const entries = emulator.getTraceEntries();
   if (entries.length === 0) { traceList.innerHTML = '<div class="trace-empty">No instructions executed yet.</div>'; return; }
   const recent = entries.slice(-200); // cap rendered rows; the ring buffer itself holds more
@@ -3467,8 +3546,74 @@ function drawTrace() {
              `<span class="trace-explain">${explainInstruction(text)}</span>` +
            `</div>`;
   }).join('');
-  traceList.scrollTop = traceList.scrollHeight; // auto-scroll to the most recent instruction
+  traceList.scrollTop = traceList.scrollHeight; // we're pinned to the bottom, so stay pinned
 }
+
+// Manual scroll (not caused by our own re-render) should immediately reflect frozen/live
+// state, rather than waiting for the next emulation frame to notice.
+traceList.addEventListener('scroll', () => {
+  const atBottom = isTraceAtBottom();
+  btnTraceFollow.style.display = atBottom ? 'none' : '';
+  traceFrozenNote.style.display = atBottom ? 'none' : '';
+});
+
+btnTraceFollow.addEventListener('click', () => {
+  traceList.scrollTop = traceList.scrollHeight;
+  drawTrace(); // immediately refresh with whatever's happened since we froze, instead of waiting for the next frame
+});
+
+// Exports the *entire* trace ring buffer (up to TRACE_SIZE entries, not just the ~200
+// rows drawTrace() renders to the DOM) as a plain-text file: one line per executed
+// instruction, address + raw opcode byte + disassembly + the register/flag diff it
+// caused + the same plain-English explanation shown next to each row on screen.
+// Consecutive repeats are collapsed with a "x N" suffix, same as the on-screen view, so
+// a tight spin loop doesn't produce hundreds of identical lines.
+function buildTraceExportText() {
+  const entries = emulator.getTraceEntries();
+  const lines = [];
+  lines.push(`; JS GB Emulator — execution trace export`);
+  lines.push(`; ROM: ${emulator.romTitle || 'Unknown'}`);
+  lines.push(`; Exported: ${new Date().toISOString()}`);
+  lines.push(`; Format: ADDR  OPCODE  MNEMONIC                 [register/flag diff]  ; explanation`);
+  lines.push('');
+
+  if (entries.length === 0) { lines.push('(no instructions executed yet)'); return lines.join('\n'); }
+
+  const groups = [];
+  for (const e of entries) {
+    const last = groups[groups.length - 1];
+    if (last && last.addr === e.addr && last.b0 === e.b0) { last.count++; last.last = e; }
+    else groups.push({ addr: e.addr, b0: e.b0, b1: e.b1, b2: e.b2, count: 1, last: e });
+  }
+
+  for (const g of groups) {
+    const { text } = disassembleBytes((off) => (off === 0 ? g.b0 : off === 1 ? g.b1 : g.b2), g.addr);
+    const repeat = g.count > 1 ? `  x${g.count}` : '';
+    const diff = g.last.diff ? `  [${g.last.diff}]` : '';
+    const explain = explainInstruction(text);
+    const note = explain ? `  ; ${explain}` : '';
+    lines.push(`${hex16(g.addr)}  ${hex8(g.b0)}  ${text.padEnd(22)}${diff}${repeat}${note}`);
+  }
+  return lines.join('\n');
+}
+
+btnExportTrace.addEventListener('click', () => {
+  try {
+    const text = buildTraceExportText();
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const safeName = (emulator.romTitle || 'rom').replace(/[^a-z0-9_-]+/gi, '_');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${safeName}.trace.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('Could not export trace: ' + e.message);
+  }
+});
 
 /* ---- orchestration: redraw whichever tab is currently active in each sidebar ---- */
 function refreshDebugTools() {

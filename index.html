@@ -33,14 +33,21 @@
     background: #1b1b22;
     border-bottom: 1px solid #333;
     box-shadow: 0 2px 10px rgba(0,0,0,.4);
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    position: sticky;
+    top: 0;
+    z-index: 200;
   }
-  .navbar .nav-title { font-size: 1.3rem; font-weight: 600; letter-spacing: 1px; color: #eee; }
+  .navbar .nav-title { font-size: 1.3rem; font-weight: 600; letter-spacing: 1px; color: #eee; flex-shrink: 0; }
+  body.playing-mode .navbar #cpuDebugControls { display: none; }
 
-  .model-toggle { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 0.82rem; color: #888; }
+  .model-toggle { display: flex; align-items: center; gap: 10px; font-size: 0.82rem; color: #888; }
   .model-toggle .model-label { transition: color .15s; }
   .model-toggle .model-label.active { color: #eee; font-weight: 600; }
 
   .mode-toggle { display: flex; align-items: center; gap: 10px; font-size: 0.82rem; color: #888; }
+  .scanline-mark-toggle { margin-left: auto; }
   .mode-toggle .mode-label { transition: color .15s; }
   .mode-toggle .mode-label.active { color: #eee; font-weight: 600; }
   .switch { position: relative; display: inline-block; width: 42px; height: 22px; flex-shrink: 0; }
@@ -383,6 +390,19 @@
   .palette-block h3 { margin: 0 0 6px; font-size: 0.82rem; color: #eee; }
   .palette-block .reg-val { color: #888; font-size: 0.7rem; margin-bottom: 10px; font-family: 'Consolas', monospace; }
 
+  .scanline-block { background: #1b1b22; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
+  .scanline-block h3 { margin: 0 0 10px; font-size: 0.82rem; color: #eee; }
+  .scanline-block canvas { display: block; width: 100%; height: 46px; border-radius: 4px; }
+  .scanline-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; font-size: 0.7rem; color: #aaa; }
+  .scanline-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .scanline-legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .scanline-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin-top: 4px; }
+  .scanline-stat { background: #1b1b22; border-radius: 8px; padding: 8px 10px; }
+  .scanline-stat .label { font-size: 0.66rem; color: #888; text-transform: uppercase; letter-spacing: .04em; }
+  .scanline-stat .value { font-size: 0.88rem; color: #eee; font-family: 'Consolas', monospace; margin-top: 2px; }
+  .scanline-ref { font-size: 0.72rem; color: #888; line-height: 1.7; margin-top: 12px; }
+  .scanline-ref b { color: #ccc; }
+
   .scope-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
   .scope-block { background: #1b1b22; border-radius: 8px; padding: 10px 12px; }
   .scope-block h3 {
@@ -422,6 +442,22 @@
   button.ui-btn.ghost { background: transparent; border: 1px solid #555; color: #bbb; }
   button.ui-btn.ghost:hover { background: transparent; border-color: #888; color: #fff; }
   .cdc-status { font-size: 0.75rem; color: #e8c15a; font-family: 'Consolas', monospace; min-height: 1.2em; }
+
+  /* When the CPU debug controls live in the navbar (moved there via JS), lay everything out
+     as a single compact row instead of the stacked/wrapped layout used in the sidebar. */
+  .navbar .cpu-debug-controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+    margin: 0;
+    padding: 6px 12px;
+    gap: 14px;
+  }
+  .navbar .cdc-row { margin-bottom: 0; flex-wrap: nowrap; flex-shrink: 0; }
+  .navbar .cdc-row label { white-space: nowrap; }
+  .navbar .cdc-row input[type="text"] { width: 56px; }
+  .navbar .cdc-status { white-space: nowrap; min-height: 0; }
 
   /* ---- live disassembly / execution trace panels ---- */
   .disasm-list, .trace-list {
@@ -624,6 +660,24 @@
 
 <nav class="navbar">
   <span class="nav-title">JS GB Emulator</span>
+
+  <!-- Step / breakpoint controls: shared across the disassembler + trace tabs -->
+  <div class="cpu-debug-controls" id="cpuDebugControls">
+    <div class="cdc-row">
+      <button class="ui-btn small" id="btnStep" disabled>⏭ Step</button>
+      <button class="ui-btn small" id="btnStepLine" disabled>⏭⏭ Step Line</button>
+      <button class="ui-btn small" id="btnStepFrame" disabled>⏭⏭⏭ Step Frame</button>
+    </div>
+    <div class="cdc-status" id="bpStatus">Load a ROM to enable step/breakpoint debugging.</div>
+  </div>
+  <div class="mode-toggle scanline-mark-toggle">
+    <span class="mode-label" id="scanlineMarkLabelOff">Off</span>
+    <label class="switch">
+      <input type="checkbox" id="scanlineMarkToggle">
+      <span class="toggle-track"><span class="toggle-thumb"></span></span>
+    </label>
+    <span class="mode-label" id="scanlineMarkLabelOn">Line</span>
+  </div>
   <div class="model-toggle">
     <span class="model-label" id="modelLabelGB">GB</span>
     <label class="switch">
@@ -656,20 +710,6 @@
       <button class="tool-tab" data-tool="registers">Registers</button>
       <button class="tool-tab" data-tool="memmap">Memory Map</button>
       <button class="tool-tab" data-tool="banking">MBC Banking</button>
-    </div>
-
-    <!-- Step / breakpoint controls: shared across the disassembler + trace tabs -->
-    <div class="cpu-debug-controls" id="cpuDebugControls">
-      <div class="cdc-row">
-        <button class="ui-btn small" id="btnStep" disabled>⏭ Step</button>
-        <button class="ui-btn small" id="btnRunToBP" disabled>▶ Run to breakpoint</button>
-        <button class="ui-btn small ghost" id="btnClearBP" disabled>✕ Clear breakpoints</button>
-      </div>
-      <div class="cdc-row">
-        <label>Break at PC <input type="text" id="bpPCInput" placeholder="e.g. 0150" maxlength="6"></label>
-        <label>Break at opcode <input type="text" id="bpOpInput" placeholder="e.g. C9" maxlength="4"></label>
-      </div>
-      <div class="cdc-status" id="bpStatus">Load a ROM to enable step/breakpoint debugging.</div>
     </div>
 
     <div class="tool-panel" id="panel-trace">
@@ -735,6 +775,7 @@
       <div class="screen-bezel">
         <div class="screen-label"><span>DOT MATRIX</span><span id="fps">0 fps</span></div>
         <canvas id="screen" width="160" height="144"></canvas>
+        <div class="drop-hint">Drop a .gb / .gbc ROM anywhere on the page to load it</div>
       </div>
 
       <!-- Control panel -->
@@ -803,17 +844,61 @@
     <h2>Visualization Tools</h2>
 
     <div class="tools-tabs">
-      <button class="tool-tab active" data-tool="tiles">Tile Viewer (VRAM)</button>
+      <button class="tool-tab active" data-tool="scanline">Scanline Timeline</button>
+      <button class="tool-tab" data-tool="tiles">Tile Viewer (VRAM)</button>
       <button class="tool-tab" data-tool="tilemap">Tile Map</button>
       <button class="tool-tab" data-tool="oam">Sprites (OAM)</button>
       <button class="tool-tab" data-tool="palettes">Palettes</button>
       <button class="tool-tab" data-tool="oscilloscope">Oscilloscope</button>
     </div>
 
-    <div class="tool-panel" id="panel-tiles">
+    <div class="tool-panel" id="panel-scanline">
+      <p class="tool-desc">
+        How the PPU spends its time drawing one frame. A frame is 154 scanlines &times; 456
+        T-cycles each = <b>70,224 T-cycles</b> (~16.74ms, ~59.73Hz). Each of the 144 visible
+        lines steps through 3 modes before 10 V-Blank lines close out the frame.
+      </p>
+
+      <div class="scanline-block">
+        <h3>Whole frame (154 lines) — playhead shows the current line</h3>
+        <canvas id="frameTimelineCanvas" width="760" height="46"></canvas>
+        <div class="scanline-legend">
+          <span><i style="background:#5ac2e0"></i>Visible lines 0–143 (modes 2/3/0)</span>
+          <span><i style="background:#8a5ac2"></i>V-Blank lines 144–153 (mode 1)</span>
+          <span><i style="background:#ffdd00"></i>Current line</span>
+        </div>
+      </div>
+
+      <div class="scanline-block">
+        <h3>Current scanline, zoomed in (456 T-cycles)</h3>
+        <canvas id="lineTimelineCanvas" width="760" height="46"></canvas>
+        <div class="scanline-legend">
+          <span><i style="background:#e0b45a"></i>Mode 2: OAM Search (80T)</span>
+          <span><i style="background:#5ac2e0"></i>Mode 3: Pixel Transfer (172T)</span>
+          <span><i style="background:#4a4a55"></i>Mode 0: H-Blank (204T)</span>
+          <span><i style="background:#8a5ac2"></i>Mode 1: V-Blank (whole line)</span>
+        </div>
+      </div>
+
+      <div class="scanline-stats" id="scanlineStats"></div>
+
+      <p class="scanline-ref">
+        <b>Per line:</b> Mode 2 80T (~19.1&micro;s) &rarr; Mode 3 172T (~41.0&micro;s) &rarr;
+        Mode 0 204T (~48.6&micro;s) &nbsp;=&nbsp; 456T (~108.7&micro;s) total.<br>
+        <b>V-Blank:</b> 10 lines &times; 456T = 4,560T (~1.09ms) — VRAM/OAM are free to touch
+        from the CPU for the whole stretch, which is why games do most of their per-frame
+        logic and OAM DMA here.<br>
+        This emulator uses fixed-length modes for simplicity; real hardware's Mode 3 can
+        stretch a little longer depending on sprite count, SCX fine-scroll, and the window,
+        which is why Mode 0's length isn't perfectly constant on a real Game Boy.
+      </p>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-tiles">
       <p class="tool-desc">
         Raw contents of tile data (0x8000–0x97FF), decoded as 384 individual 8×8 tiles in
-        the order they sit in VRAM — shown in grayscale, with no palette or tile map applied.
+        the order they sit in VRAM — shown in grayscale, with no palette or tile map applied,
+        so you can see exactly what graphics data has been loaded regardless of how it's used.
       </p>
       <canvas id="tileViewerCanvas" width="128" height="192"></canvas>
     </div>
@@ -871,6 +956,7 @@
         </div>
       </div>
     </div>
+
   </div>
 </div>
 
@@ -2486,6 +2572,7 @@ class Emulator {
     this.running = false;
     this.frameReady = false;
     this._rafId = null;
+    this.markCurrentLine = false;
 
     this.speed = 1;          // 0.1-1.0 multiplier applied to how fast emulated frames advance
     this._lastTime = null;   // real-time timestamp of the previous loop() tick
@@ -2629,6 +2716,35 @@ class Emulator {
     this.updateDebug();
   }
 
+  // Runs instructions until the PPU moves on to the next scanline (LY changes), then redraws.
+  // Capped at one frame's worth of cycles so it can't spin forever if the LCD is off (LY is
+  // pinned at 0 while LCDC bit 7 is clear, so it would otherwise never change).
+  stepLine() {
+    if (this.running) this.pause();
+    this.running = true;
+    const startLy = this.ppu.ly;
+    let cyclesSpent = 0;
+    while (this.ppu.ly === startLy && cyclesSpent < Emulator.CYCLES_PER_FRAME) {
+      const cycles = this.stepInstruction();
+      if (!this.running) break; // a breakpoint fired mid-step
+      cyclesSpent += cycles;
+    }
+    this.running = false;
+    this.draw();
+    this.updateDebug();
+  }
+
+  // Runs exactly one full frame's worth of cycles (same budget runFrame() uses for normal
+  // play), then redraws - a "step frame" for the paused debugger.
+  stepFrame() {
+    if (this.running) this.pause();
+    this.running = true; // runFrame() bails out early if this flips false mid-frame (breakpoint hit)
+    this.runFrame();
+    this.running = false;
+    this.draw();
+    this.updateDebug();
+  }
+
   // Resumes continuous execution, but auto-pauses (via triggerBreakpoint) the moment PC
   // reaches pcTarget and/or opcodeTarget is fetched. Either may be null to leave it unset.
   runToBreakpoint(pcTarget, opcodeTarget) {
@@ -2742,6 +2858,22 @@ class Emulator {
   draw() {
     this.imageData.data.set(this.ppu.framebuffer);
     this.ctx.putImageData(this.imageData, 0, 0);
+    if (this.markCurrentLine) this.drawCurrentLineMarker();
+  }
+
+  // Draws a bright horizontal marker over the row the PPU is currently on (LY), so you can
+  // see the raster position on the actual screen output, not just in the Scanline Timeline panel.
+  drawCurrentLineMarker() {
+    const ly = this.ppu.ly;
+    if (ly > 143) return; // V-Blank lines (144-153) are off the visible 144-line screen
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 221, 0, 0.55)';
+    ctx.fillRect(0, ly, 160, 1);
+    ctx.strokeStyle = 'rgba(255, 221, 0, 0.9)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0, Math.max(0, ly - 0.5), 160, 1);
+    ctx.restore();
   }
 
   updateDebug() {
@@ -2791,13 +2923,33 @@ const btnStart = document.getElementById('btnStart');
 const btnPause = document.getElementById('btnPause');
 const btnReset = document.getElementById('btnReset');
 const btnStep = document.getElementById('btnStep');
-const btnRunToBP = document.getElementById('btnRunToBP');
-const btnClearBP = document.getElementById('btnClearBP');
-const bpPCInput = document.getElementById('bpPCInput');
-const bpOpInput = document.getElementById('bpOpInput');
+const btnStepLine = document.getElementById('btnStepLine');
+const btnStepFrame = document.getElementById('btnStepFrame');
 const bpStatus = document.getElementById('bpStatus');
 
 let lastROMBytes = null;
+
+/* ---- unified UI config: model (GB/GBP), play/debug mode, "mark current line", and emulation
+   speed all live together in one localStorage entry so they're restored together on next visit
+   (sound mute/volume keep their own separate entry below, since they're wired up independently). */
+const UI_CONFIG_STORAGE_KEY = 'jsgb-config:ui';
+
+function loadUIConfig() {
+  try {
+    const raw = localStorage.getItem(UI_CONFIG_STORAGE_KEY);
+    return raw === null ? {} : JSON.parse(raw);
+  } catch (e) { return {}; }
+}
+
+function saveUIConfig(partial) {
+  try {
+    const merged = Object.assign(loadUIConfig(), partial);
+    localStorage.setItem(UI_CONFIG_STORAGE_KEY, JSON.stringify(merged));
+  } catch (e) { /* storage unavailable/full - ignore, settings just won't persist */ }
+}
+
+const savedUIConfig = loadUIConfig();
+
 
 function getROMTitle(bytes) {
   let title = '';
@@ -2827,7 +2979,7 @@ function handleROMFile(file) {
     lastRenderedBankSwitchT = -1;
     buildBankingPanel();
     btnStart.disabled = false; btnPause.disabled = false; btnReset.disabled = false;
-    btnStep.disabled = false; btnRunToBP.disabled = false; btnClearBP.disabled = false;
+    btnStep.disabled = false; btnStepLine.disabled = false; btnStepFrame.disabled = false;
     bpStatus.textContent = 'Ready.';
     updateStateButtons();
     emulator.start();
@@ -2867,15 +3019,6 @@ btnReset.addEventListener('click', () => {
 });
 
 /* ---- step / breakpoint debugger ---- */
-function parseHexValue(str, bits) {
-  if (!str) return null;
-  const trimmed = str.trim();
-  if (!trimmed) return null;
-  const v = parseInt(trimmed.replace(/^0x/i, ''), 16);
-  if (isNaN(v)) return null;
-  return v & (bits === 16 ? 0xFFFF : 0xFF);
-}
-
 emulator.onBreakpointHit = (reason) => {
   btnPause.textContent = '▶ Resume';
   bpStatus.textContent = `⏹ Stopped — ${reason}`;
@@ -2889,22 +3032,18 @@ btnStep.addEventListener('click', () => {
   refreshDebugTools();
 });
 
-btnRunToBP.addEventListener('click', () => {
-  const pcVal = parseHexValue(bpPCInput.value, 16);
-  const opVal = parseHexValue(bpOpInput.value, 8);
-  if (pcVal === null && opVal === null) {
-    bpStatus.textContent = 'Enter a PC and/or opcode (hex) to break on first.';
-    return;
-  }
-  emulator.runToBreakpoint(pcVal, opVal);
-  btnPause.textContent = '⏸ Pause';
-  bpStatus.textContent = 'Running until breakpoint…';
+btnStepLine.addEventListener('click', () => {
+  emulator.stepLine();
+  btnPause.textContent = '▶ Resume';
+  bpStatus.textContent = `Stepped to line LY=${emulator.ppu.ly} — PC=${hex16(emulator.cpu.PC)}`;
+  refreshDebugTools();
 });
 
-btnClearBP.addEventListener('click', () => {
-  emulator.clearBreakpoints();
-  bpPCInput.value = ''; bpOpInput.value = '';
-  bpStatus.textContent = 'Breakpoints cleared.';
+btnStepFrame.addEventListener('click', () => {
+  emulator.stepFrame();
+  btnPause.textContent = '▶ Resume';
+  bpStatus.textContent = `Stepped one frame — PC=${hex16(emulator.cpu.PC)}`;
+  refreshDebugTools();
 });
 
 /* ---- sound controls ---- */
@@ -2946,14 +3085,17 @@ volumeSlider.addEventListener('input', () => {
   saveSoundConfig();
 });
 
-/* ---- speed control: slider steps 1-10 map to 10%-100% emulation speed ---- */
+/* ---- speed control: slider steps 1-10 map to 10%-100% emulation speed ----
+   Persisted in the shared UI config so the chosen speed is restored on the next visit. */
 const speedSlider = document.getElementById('speedSlider');
 const speedValue = document.getElementById('speedValue');
+if (typeof savedUIConfig.speed === 'number') speedSlider.value = savedUIConfig.speed;
 emulator.speed = speedSlider.value / 10;
 speedValue.textContent = (speedSlider.value * 10) + '%';
 speedSlider.addEventListener('input', () => {
   emulator.speed = speedSlider.value / 10;
   speedValue.textContent = (speedSlider.value * 10) + '%';
+  saveUIConfig({ speed: Number(speedSlider.value) });
 });
 
 /* ---- keyboard input ---- */
@@ -3217,39 +3359,24 @@ document.querySelectorAll('input[name="tmSelect"]').forEach(r => {
 });
 
 /* ---- play / debug mode toggle: checked = debugging GUI (default), unchecked = playing ----
-   The chosen mode is persisted in localStorage so it's restored on the next visit. */
+   The chosen mode is persisted (in the shared UI config) so it's restored on the next visit. */
 const modeToggle = document.getElementById('modeToggle');
 const modeLabelPlay = document.getElementById('modeLabelPlay');
 const modeLabelDebug = document.getElementById('modeLabelDebug');
-const MODE_STORAGE_KEY = 'jsgb-config:debugMode';
-
-function saveModeConfig(debugging) {
-  try { localStorage.setItem(MODE_STORAGE_KEY, JSON.stringify(debugging)); }
-  catch (e) { /* storage unavailable/full - ignore, mode just won't persist */ }
-}
-
-function loadModeConfig() {
-  try {
-    const raw = localStorage.getItem(MODE_STORAGE_KEY);
-    return raw === null ? null : JSON.parse(raw);
-  } catch (e) { return null; }
-}
 
 function applyMode() {
   const debugging = modeToggle.checked;
   document.body.classList.toggle('playing-mode', !debugging);
   modeLabelDebug.classList.toggle('active', debugging);
   modeLabelPlay.classList.toggle('active', !debugging);
-  saveModeConfig(debugging);
+  saveUIConfig({ debugMode: debugging });
   if (debugging) refreshDebugTools();
 }
 
 // Restore the saved mode (if any) before the first render so the UI doesn't flash the default.
-const savedDebugging = loadModeConfig();
-if (savedDebugging !== null) modeToggle.checked = savedDebugging;
+if (typeof savedUIConfig.debugMode === 'boolean') modeToggle.checked = savedUIConfig.debugMode;
 
 modeToggle.addEventListener('change', applyMode);
-applyMode();
 
 /* ---- screen model toggle: checked = GBP (grayscale, default), unchecked = GB (green tint) ---- */
 const modelToggle = document.getElementById('modelToggle');
@@ -3262,14 +3389,35 @@ function applyScreenModel() {
   document.documentElement.style.setProperty('--screen-bg', isGBP ? '#343434' : '#0f380f');
   modelLabelGBP.classList.toggle('active', isGBP);
   modelLabelGB.classList.toggle('active', !isGBP);
+  saveUIConfig({ gbp: isGBP });
   // Repaint immediately with the new palette instead of waiting for the next emulated frame,
   // and refresh any open debug/visualization panels that render colors (tile map, palettes, etc).
   if (emulator.mmu.rom && emulator.mmu.rom.length) emulator.draw();
   refreshDebugTools();
 }
 
+if (typeof savedUIConfig.gbp === 'boolean') modelToggle.checked = savedUIConfig.gbp;
+
 modelToggle.addEventListener('change', applyScreenModel);
-applyScreenModel();
+
+/* ---- navbar toggle: overlay a line on the GB screen at the PPU's current scanline (LY) ---- */
+const scanlineMarkToggle = document.getElementById('scanlineMarkToggle');
+const scanlineMarkLabelOff = document.getElementById('scanlineMarkLabelOff');
+const scanlineMarkLabelOn = document.getElementById('scanlineMarkLabelOn');
+
+function applyScanlineMark() {
+  const on = scanlineMarkToggle.checked;
+  emulator.markCurrentLine = on;
+  scanlineMarkLabelOn.classList.toggle('active', on);
+  scanlineMarkLabelOff.classList.toggle('active', !on);
+  saveUIConfig({ markCurrentLine: on });
+  // Repaint immediately so toggling is visible even while paused/no frame is running.
+  if (emulator.mmu.rom && emulator.mmu.rom.length) emulator.draw();
+}
+
+if (typeof savedUIConfig.markCurrentLine === 'boolean') scanlineMarkToggle.checked = savedUIConfig.markCurrentLine;
+
+scanlineMarkToggle.addEventListener('change', applyScanlineMark);
 
 /* ---- 1. VRAM tile viewer: every tile in 0x8000-0x97FF, raw, no palette ---- */
 function drawTileViewer() {
@@ -3466,6 +3614,121 @@ function drawOscilloscope() {
   drawScopeChannel(scopeCanvases[2], apu.scopeCh2, apu.scopeWritePos, SCOPE_COLORS[2]);
   drawScopeChannel(scopeCanvases[3], apu.scopeCh3, apu.scopeWritePos, SCOPE_COLORS[3]);
   drawScopeChannel(scopeCanvases[4], apu.scopeCh4, apu.scopeWritePos, SCOPE_COLORS[4]);
+}
+
+/* ---- 4c. Scanline timeline: where the PPU is right now within the 154-line frame, plus a
+   zoomed-in view of the current line's OAM Search / Pixel Transfer / H-Blank split. Uses the
+   same fixed per-mode cycle counts the PPU's step() switch above runs on, so the picture
+   always matches this emulator's actual timing model. ---- */
+const SCANLINE_OAM = 80, SCANLINE_TRANSFER = 172, SCANLINE_HBLANK = 204;
+const SCANLINE_LINE_CYCLES = SCANLINE_OAM + SCANLINE_TRANSFER + SCANLINE_HBLANK; // 456
+const SCANLINE_VISIBLE_LINES = 144, SCANLINE_VBLANK_LINES = 10;
+const SCANLINE_TOTAL_LINES = SCANLINE_VISIBLE_LINES + SCANLINE_VBLANK_LINES;     // 154
+const SCANLINE_FRAME_CYCLES = SCANLINE_LINE_CYCLES * SCANLINE_TOTAL_LINES;       // 70224
+const GB_CLOCK_HZ = 4194304;
+
+const frameTimelineCanvas = document.getElementById('frameTimelineCanvas');
+const lineTimelineCanvas = document.getElementById('lineTimelineCanvas');
+const scanlineStatsEl = document.getElementById('scanlineStats');
+
+function drawFrameTimeline(ppu) {
+  const ctx = frameTimelineCanvas.getContext('2d');
+  const w = frameTimelineCanvas.width, h = frameTimelineCanvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const visibleW = w * (SCANLINE_VISIBLE_LINES / SCANLINE_TOTAL_LINES);
+  ctx.fillStyle = '#5ac2e0'; ctx.fillRect(0, 0, visibleW, h);
+  ctx.fillStyle = '#8a5ac2'; ctx.fillRect(visibleW, 0, w - visibleW, h);
+
+  // Faint tick marks every 16 lines, just for a sense of scale.
+  ctx.strokeStyle = 'rgba(0,0,0,.25)';
+  for (let line = 16; line < SCANLINE_TOTAL_LINES; line += 16) {
+    const x = Math.round((line / SCANLINE_TOTAL_LINES) * w) + 0.5;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+  }
+
+  // Playhead: the scanline the PPU is on right now.
+  const playX = (ppu.ly / SCANLINE_TOTAL_LINES) * w;
+  const playW = Math.max(2, w / SCANLINE_TOTAL_LINES);
+  ctx.fillStyle = '#ffdd00';
+  ctx.fillRect(playX, 0, playW, h);
+
+  ctx.font = '10px Consolas, monospace';
+  ctx.fillStyle = '#111';
+  ctx.textBaseline = 'bottom';
+  ctx.textAlign = 'left';  ctx.fillText('0', 3, h - 4);
+  ctx.textAlign = 'right'; ctx.fillText('143', visibleW - 3, h - 4);
+  ctx.textAlign = 'left';  ctx.fillText('144', visibleW + 3, h - 4);
+  ctx.textAlign = 'right'; ctx.fillText('153', w - 3, h - 4);
+}
+
+function drawLineTimeline(ppu) {
+  const ctx = lineTimelineCanvas.getContext('2d');
+  const w = lineTimelineCanvas.width, h = lineTimelineCanvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (ppu.mode === 1) {
+    // V-Blank lines don't go through OAM Search / Pixel Transfer / H-Blank at all -
+    // it's one mode for the entire 456-cycle line.
+    ctx.fillStyle = '#8a5ac2';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(255,255,255,.85)';
+    ctx.font = '11px Consolas, monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('V-Blank line — no OAM/Transfer/H-Blank split here', w / 2, h / 2);
+    return;
+  }
+
+  const oamW = (SCANLINE_OAM / SCANLINE_LINE_CYCLES) * w;
+  const transferW = (SCANLINE_TRANSFER / SCANLINE_LINE_CYCLES) * w;
+  const hblankW = w - oamW - transferW;
+
+  ctx.fillStyle = '#e0b45a'; ctx.fillRect(0, 0, oamW, h);
+  ctx.fillStyle = '#5ac2e0'; ctx.fillRect(oamW, 0, transferW, h);
+  ctx.fillStyle = '#4a4a55'; ctx.fillRect(oamW + transferW, 0, hblankW, h);
+
+  const [segStart, segWidth, modeTotal] =
+    ppu.mode === 2 ? [0, oamW, SCANLINE_OAM] :
+    ppu.mode === 3 ? [oamW, transferW, SCANLINE_TRANSFER] :
+                      [oamW + transferW, hblankW, SCANLINE_HBLANK];
+  const frac = Math.min(1, ppu.modeClock / modeTotal);
+  ctx.fillStyle = '#ffdd00';
+  ctx.fillRect(Math.max(0, segStart + frac * segWidth - 1.5), 0, 3, h);
+}
+
+function scanlineStat(label, value) {
+  return `<div class="scanline-stat"><div class="label">${label}</div><div class="value">${value}</div></div>`;
+}
+
+function drawScanlineStats(ppu) {
+  const ly = ppu.ly, mode = ppu.mode;
+  const modeNames  = { 0: 'H-Blank', 1: 'V-Blank', 2: 'OAM Search', 3: 'Pixel Transfer' };
+  const modeTotals = { 0: SCANLINE_HBLANK, 1: SCANLINE_LINE_CYCLES, 2: SCANLINE_OAM, 3: SCANLINE_TRANSFER };
+  const modeClock = Math.min(ppu.modeClock, modeTotals[mode]);
+
+  const intraLine =
+    mode === 2 ? modeClock :
+    mode === 3 ? SCANLINE_OAM + modeClock :
+    mode === 0 ? SCANLINE_OAM + SCANLINE_TRANSFER + modeClock :
+    modeClock; // mode 1, V-Blank
+  const cyclesIntoFrame = ly * SCANLINE_LINE_CYCLES + intraLine;
+  const framePct = (cyclesIntoFrame / SCANLINE_FRAME_CYCLES * 100).toFixed(1);
+  const usIntoFrame = (cyclesIntoFrame / GB_CLOCK_HZ * 1e6).toFixed(0);
+
+  scanlineStatsEl.innerHTML =
+    scanlineStat('Scanline (LY)', `${ly} / 153`) +
+    scanlineStat('PPU mode', `${mode} · ${modeNames[mode]}`) +
+    scanlineStat('Cycles into mode', `${modeClock} / ${modeTotals[mode]} T`) +
+    scanlineStat('Cycles into frame', `${cyclesIntoFrame} / ${SCANLINE_FRAME_CYCLES} T`) +
+    scanlineStat('Frame progress', `${framePct}%`) +
+    scanlineStat('Time into frame', `${usIntoFrame} µs`);
+}
+
+function drawScanlineTimeline() {
+  const ppu = emulator.ppu;
+  drawFrameTimeline(ppu);
+  drawLineTimeline(ppu);
+  drawScanlineStats(ppu);
 }
 
 /* ---- 5. Live disassembler: decodes the bytes around PC into mnemonics ---- */
@@ -3668,6 +3931,7 @@ function refreshDebugTools() {
   else if (activeVisual === 'oam') drawOAMTable();
   else if (activeVisual === 'palettes') drawPalettes();
   else if (activeVisual === 'oscilloscope') drawOscilloscope();
+  else if (activeVisual === 'scanline') drawScanlineTimeline();
 }
 
 // Fallback redraw for when the emulator isn't actively running (paused, stepping, or no
@@ -3914,6 +4178,13 @@ window.addEventListener('keydown', (e) => {
 });
 
 updateStateButtons();
+
+// Apply the mode/model/scanline-mark toggles now that every element and draw function they can
+// trigger (via refreshDebugTools) has been declared - doing this earlier risked a
+// temporal-dead-zone error on consts (e.g. frameTimelineCanvas) declared further down the script.
+applyMode();
+applyScreenModel();
+applyScanlineMark();
 
 </script>
 </body>

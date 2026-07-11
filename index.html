@@ -138,6 +138,10 @@
 
   .sound-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
   .sound-row input[type="range"] { flex: 1; accent-color: var(--accent); }
+  .speed-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 0.82rem; color: #bbb; }
+  .speed-row input[type="range"] { flex: 1; accent-color: var(--accent); }
+  .speed-label { white-space: nowrap; }
+  .speed-value { width: 3.2em; text-align: right; font-family: 'Consolas', monospace; color: #ddd; }
   button.ui-btn {
     background: var(--accent);
     border: none;
@@ -149,6 +153,9 @@
   }
   button.ui-btn:hover { background: var(--accent-dark); }
   button.ui-btn:disabled { background: #444; cursor: not-allowed; }
+  button.ui-btn.danger { background: #b93a3a; }
+  button.ui-btn.danger:hover { background: #922c2c; }
+  button.ui-btn.danger:disabled { background: #444; cursor: not-allowed; }
 
   label.ui-btn {
     background: var(--accent);
@@ -529,6 +536,12 @@
           <input type="range" id="volumeSlider" min="0" max="100" value="50">
         </div>
 
+        <div class="speed-row">
+          <span class="speed-label">Speed</span>
+          <input type="range" id="speedSlider" min="1" max="10" step="1" value="10">
+          <span class="speed-value" id="speedValue">100%</span>
+        </div>
+
         <div class="keymap">
           <table>
             <tr><td>Arrow keys</td><td>D-Pad</td></tr>
@@ -554,6 +567,7 @@
           ⬆ Import .json
           <input type="file" id="importStateInput" accept="application/json,.json" style="display:none;">
         </label>
+        <button class="ui-btn danger" id="btnDeleteAllStates" disabled>🗑 Delete All</button>
       </div>
       <div class="state-info" id="stateInfo"></div>
       <div class="hotkey-hint">F5 quick-saves a new slot &nbsp;•&nbsp; F9 loads the latest &nbsp;•&nbsp; click a slot to load it</div>
@@ -2079,7 +2093,16 @@ class APU {
     // toward half-full instead of letting it slowly drift into underruns or overflows.
     const fillRatio = this.available / this.RING_SIZE;
     const correction = 1 + (fillRatio - 0.5) * 0.02;
-    const targetCyclesPerSample = this.cyclesPerSample * correction;
+
+    // this.cyclesPerSample assumes emulated cycles arrive at the real Game Boy clock rate
+    // (one real second = 4194304 cycles). The speed slider breaks that assumption: at e.g.
+    // 10% speed, only ~419430 cycles happen per real second, so if we kept using the normal
+    // cyclesPerSample the ring buffer would fill 10x slower than the audio callback drains
+    // it (constant underrun -> crackling/silence). Scaling the target down by the same
+    // speed factor keeps sample *production* paced to real time again, matching what the
+    // audio hardware *consumes* - which also naturally pitches audio down during slow motion,
+    // just like real hardware running underclocked.
+    const targetCyclesPerSample = this.cyclesPerSample * correction * this.emulator.speed;
 
     this.sampleCounter += cycles;
     while (this.sampleCounter >= targetCyclesPerSample) { this.sampleCounter -= targetCyclesPerSample; this.generateSample(); }
@@ -2134,6 +2157,10 @@ class Emulator {
     this.running = false;
     this.frameReady = false;
     this._rafId = null;
+
+    this.speed = 1;          // 0.1-1.0 multiplier applied to how fast emulated frames advance
+    this._lastTime = null;   // real-time timestamp of the previous loop() tick
+    this._frameAcc = 0;      // accumulated (speed-scaled) ms available to spend on emulated frames
 
     this._fpsFrames = 0;
     this._fpsLast = performance.now();
@@ -2303,24 +2330,50 @@ class Emulator {
   start() {
     if (this.running) return;
     this.running = true;
+    this._lastTime = null;
+    this._frameAcc = 0;
     this.apu.initAudio(); // must happen inside a user gesture (click/drop), which start() is always called from
     this.apu.resume();
-    this.loop();
+    this.loop(performance.now());
   }
   pause() { this.running = false; if (this._rafId) cancelAnimationFrame(this._rafId); this.apu.suspend(); }
 
-  loop() {
+  // Paces emulated frames against real elapsed time, scaled by this.speed (1 = normal speed,
+  // 0.1 = 10%, etc). Using an accumulator instead of just "run one frame per rAF tick" means
+  // slowing down actually slows the game down, rather than only slowing the frame counter.
+  loop(now) {
     if (!this.running) return;
-    this.runFrame();
-    this.draw();
-    this._fpsFrames++;
-    const now = performance.now();
+    if (typeof now !== 'number') now = performance.now();
+    if (this._lastTime === null) this._lastTime = now;
+    let elapsed = now - this._lastTime;
+    this._lastTime = now;
+    elapsed = Math.min(elapsed, 200); // clamp so a backgrounded/stalled tab doesn't spiral
+
+    const FRAME_MS = 1000 / 59.73;
+    this._frameAcc += elapsed * this.speed;
+
+    let framesRun = 0;
+    while (this._frameAcc >= FRAME_MS && framesRun < 8) {
+      this.runFrame();
+      if (!this.running) return; // a breakpoint fired mid-frame; stop immediately
+      this._frameAcc -= FRAME_MS;
+      framesRun++;
+    }
+
+    if (framesRun > 0) {
+      this.draw();
+      this._fpsFrames += framesRun;
+      // Redraw the trace/disasm/tile/etc. panels only when a frame actually ran, so their
+      // visible update rate is paced by real emulation speed instead of a fixed wall-clock
+      // timer (which used to make them look identical regardless of the speed slider).
+      refreshDebugTools();
+    }
     if (now - this._fpsLast >= 1000) {
       document.getElementById('fps').textContent = this._fpsFrames + ' fps';
       this._fpsFrames = 0; this._fpsLast = now;
     }
     this.updateDebug();
-    this._rafId = requestAnimationFrame(() => this.loop());
+    this._rafId = requestAnimationFrame((t) => this.loop(t));
   }
 
   draw() {
@@ -2496,6 +2549,16 @@ btnMute.addEventListener('click', () => {
   btnMute.textContent = isMuted ? '🔇 Unmute' : '🔊 Mute';
 });
 volumeSlider.addEventListener('input', () => emulator.apu.setVolume(volumeSlider.value / 100));
+
+/* ---- speed control: slider steps 1-10 map to 10%-100% emulation speed ---- */
+const speedSlider = document.getElementById('speedSlider');
+const speedValue = document.getElementById('speedValue');
+emulator.speed = speedSlider.value / 10;
+speedValue.textContent = (speedSlider.value * 10) + '%';
+speedSlider.addEventListener('input', () => {
+  emulator.speed = speedSlider.value / 10;
+  speedValue.textContent = (speedSlider.value * 10) + '%';
+});
 
 /* ---- keyboard input ---- */
 const KEY_MAP = {
@@ -2823,7 +2886,11 @@ function refreshDebugTools() {
   else if (activeVisual === 'palettes') drawPalettes();
 }
 
-setInterval(refreshDebugTools, 150);
+// Fallback redraw for when the emulator isn't actively running (paused, stepping, or no
+// ROM loaded yet) - e.g. after loading a save state by hand. While running, the loop()
+// itself calls refreshDebugTools() paced by the current speed, so this skips redundant
+// (and speed-uncorrelated) redraws in that case.
+setInterval(() => { if (!emulator.running) refreshDebugTools(); }, 150);
 
 /* ================================== Save / load states ===================================
    States are kept as a list of up to MAX_SLOTS snapshots per ROM (most recent first) in
@@ -2843,6 +2910,7 @@ const btnLoadState = document.getElementById('btnLoadState');
 const btnExportState = document.getElementById('btnExportState');
 const btnImportStateLabel = document.getElementById('btnImportState');
 const importStateInput = document.getElementById('importStateInput');
+const btnDeleteAllStates = document.getElementById('btnDeleteAllStates');
 const stateInfo = document.getElementById('stateInfo');
 const slotList = document.getElementById('slotList');
 const slotEmpty = document.getElementById('slotEmpty');
@@ -2875,6 +2943,7 @@ function updateStateButtons() {
 
   const slots = hasROM ? loadSlots() : [];
   btnLoadState.disabled = slots.length === 0;
+  btnDeleteAllStates.disabled = slots.length === 0;
   slotCountBadge.textContent = slots.length + '/' + MAX_SLOTS;
 
   renderSlotList(slots);
@@ -2976,8 +3045,22 @@ function deleteSlot(id) {
   stateInfo.textContent = 'Save deleted.';
 }
 
+// Wipes every saved slot for the currently loaded ROM after a confirmation prompt,
+// since this can't be undone.
+function deleteAllSlots() {
+  const slots = loadSlots();
+  if (slots.length === 0) return;
+  const romName = emulator.romTitle || 'this ROM';
+  const proceed = confirm(`Delete all ${slots.length} saved state(s) for "${romName}"? This cannot be undone.`);
+  if (!proceed) return;
+  writeSlots([]);
+  updateStateButtons();
+  stateInfo.textContent = 'All saved states deleted.';
+}
+
 btnSaveState.addEventListener('click', quickSaveState);
 btnLoadState.addEventListener('click', quickLoadState);
+btnDeleteAllStates.addEventListener('click', deleteAllSlots);
 
 btnExportState.addEventListener('click', () => {
   try {

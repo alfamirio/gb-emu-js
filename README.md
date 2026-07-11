@@ -13,9 +13,15 @@ A from-scratch, single-file DMG (original Game Boy) emulator written in plain Ja
 ## Scope limitations
 
 To maximize source code readability for students, the following features are intentionally omitted:
-* Audio Processing Unit (APU) sound channels.
 * Game Boy Color (GBC) enhancements.
 * Sub-instruction cycle-exact PPU or timer edge cases.
+
+Scope note: this implements the full DMG CPU instruction set, background/window/sprite
+rendering, timers, joypad input, sound (all 4 APU channels via Web Audio), and ROM-only /
+MBC1 / basic MBC3 cartridges — enough to run many real games. It intentionally leaves out
+GB Color features and cycle-exact PPU/timer/APU edge cases to keep the source readable as
+a learning reference.
+Read the heavily commented source (view page source) to see how each piece works.
 
 ## Keyboard controls
 

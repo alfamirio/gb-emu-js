@@ -135,6 +135,94 @@
     line-height: 1.6;
   }
   footer a { color: #a996d6; }
+
+  /* ---- debugging / visualization tools ---- */
+  .debug-tools {
+    margin-top: 24px;
+    width: 100%;
+    max-width: 924px;
+    background: #23232c;
+    border-radius: 10px;
+    padding: 18px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.4);
+    font-size: 0.8rem;
+    color: #ccc;
+  }
+  .debug-tools summary { cursor: pointer; color: #ddd; font-size: 0.95rem; }
+  .tools-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 14px 0 4px; }
+  .tool-tab {
+    background: #2f2f3a;
+    border: 1px solid #444;
+    color: #bbb;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    cursor: pointer;
+  }
+  .tool-tab:hover { color: #fff; border-color: #666; }
+  .tool-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tool-panel { margin-top: 10px; }
+  .tool-panel.hidden { display: none; }
+  .tool-desc { color: #999; font-size: 0.75rem; margin: 0 0 10px; line-height: 1.6; }
+  .tool-desc label { color: #ccc; margin-right: 14px; cursor: pointer; }
+  .tool-desc input[type="radio"] { accent-color: var(--accent); margin-right: 3px; }
+
+  #tileViewerCanvas {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    width: 384px;
+    max-width: 100%;
+    height: 576px;
+    background: #000;
+    border-radius: 4px;
+  }
+  .tilemap-scroll {
+    max-width: 100%;
+    max-height: 420px;
+    overflow: auto;
+    border-radius: 4px;
+    background: #000;
+  }
+  #tileMapCanvas {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    width: 512px;
+    height: 512px;
+    display: block;
+  }
+  .oam-scroll { max-height: 360px; overflow-y: auto; border-radius: 4px; }
+  table.oam-table { border-collapse: collapse; width: 100%; font-family: 'Consolas', monospace; font-size: 0.72rem; }
+  table.oam-table th {
+    text-align: left;
+    color: #999;
+    padding: 5px 8px;
+    border-bottom: 1px solid #444;
+    position: sticky;
+    top: 0;
+    background: #23232c;
+  }
+  table.oam-table td { padding: 4px 8px; border-bottom: 1px solid #333; color: #ddd; vertical-align: middle; }
+  table.oam-table tr.offscreen td { color: #666; }
+  table.oam-table canvas {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    width: 24px;
+    height: 24px;
+    background: #111;
+    border-radius: 2px;
+    display: block;
+  }
+  .palette-grid { display: flex; gap: 20px; flex-wrap: wrap; }
+  .palette-block { background: #1b1b22; border-radius: 8px; padding: 12px 14px; min-width: 170px; }
+  .palette-block h3 { margin: 0 0 6px; font-size: 0.82rem; color: #eee; }
+  .palette-block .reg-val { color: #888; font-size: 0.7rem; margin-bottom: 10px; font-family: 'Consolas', monospace; }
+  .swatch-row { display: flex; gap: 6px; }
+  .swatch { width: 40px; text-align: center; }
+  .swatch .chip { width: 40px; height: 40px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); }
+  .swatch .label { font-size: 0.65rem; color: #999; margin-top: 4px; font-family: 'Consolas', monospace; }
 </style>
 </head>
 <body>
@@ -191,6 +279,54 @@
     </details>
   </div>
 </div>
+
+<!-- VRAM / OAM debugging & visualization tools -->
+<details class="debug-tools" id="debugTools">
+  <summary>Debugging / Visualization Tools</summary>
+
+  <div class="tools-tabs">
+    <button class="tool-tab active" data-tool="tiles">Tile Viewer (VRAM)</button>
+    <button class="tool-tab" data-tool="tilemap">Tile Map</button>
+    <button class="tool-tab" data-tool="oam">Sprites (OAM)</button>
+    <button class="tool-tab" data-tool="palettes">Palettes</button>
+  </div>
+
+  <div class="tool-panel" id="panel-tiles">
+    <p class="tool-desc">
+      Raw contents of tile data (0x8000–0x97FF), decoded as 384 individual 8×8 tiles in
+      the order they sit in VRAM — shown in grayscale, with no palette or tile map applied,
+      so you can see exactly what graphics data has been loaded regardless of how it's used.
+    </p>
+    <canvas id="tileViewerCanvas" width="128" height="192"></canvas>
+  </div>
+
+  <div class="tool-panel hidden" id="panel-tilemap">
+    <p class="tool-desc">
+      <label><input type="radio" name="tmSelect" value="9800" checked> Map 0x9800</label>
+      <label><input type="radio" name="tmSelect" value="9C00"> Map 0x9C00</label>
+      The full 32×32 tile (256×256 pixel) map, rendered with the current BG palette. The
+      yellow box is the current 160×144 viewport as defined by SCX/SCY, wrapping at the map edges.
+    </p>
+    <div class="tilemap-scroll">
+      <canvas id="tileMapCanvas" width="256" height="256"></canvas>
+    </div>
+  </div>
+
+  <div class="tool-panel hidden" id="panel-oam">
+    <p class="tool-desc">All 40 OAM sprite entries, with a decoded preview, position, tile index, and attribute flags. Off-screen entries are dimmed.</p>
+    <div class="oam-scroll">
+      <table class="oam-table">
+        <thead><tr><th></th><th>#</th><th>X</th><th>Y</th><th>Tile</th><th>Pal</th><th>Flags</th></tr></thead>
+        <tbody id="oamTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="tool-panel hidden" id="panel-palettes">
+    <p class="tool-desc">The current BGP / OBP0 / OBP1 register values, decoded into the four shades they map to.</p>
+    <div id="paletteGrid" class="palette-grid"></div>
+  </div>
+</details>
 
 <script>
 /* =========================================================================================
@@ -1527,6 +1663,209 @@ const KEY_MAP = {
 };
 window.addEventListener('keydown', (e) => { const m = KEY_MAP[e.key]; if (m) { emulator.joypad.setButton(m[0], true, m[1]); e.preventDefault(); } });
 window.addEventListener('keyup', (e) => { const m = KEY_MAP[e.key]; if (m) { emulator.joypad.setButton(m[0], false, m[1]); e.preventDefault(); } });
+
+/* ============================ Debugging / visualization tools ============================
+   Four independent read-only views into emulator state, decoded straight from the same
+   MMU/PPU data the real rendering pipeline uses. These run on their own low-frequency
+   timer (not the main 60fps loop) since they're for inspection, not real-time display,
+   and only redraw while their <details> panel is open to avoid wasted work.
+   ========================================================================================= */
+
+const debugToolsDetails = document.getElementById('debugTools');
+
+const tileViewerCanvas = document.getElementById('tileViewerCanvas');
+const tileViewerCtx = tileViewerCanvas.getContext('2d');
+const tileViewerImageData = tileViewerCtx.createImageData(128, 192); // 16x24 tiles of 8x8
+
+const tileMapCanvas = document.getElementById('tileMapCanvas');
+const tileMapCtx = tileMapCanvas.getContext('2d');
+const tileMapImageData = tileMapCtx.createImageData(256, 256); // 32x32 tiles of 8x8
+
+const oamTableBody = document.getElementById('oamTableBody');
+const paletteGrid = document.getElementById('paletteGrid');
+
+/* ---- tab switching ---- */
+document.querySelectorAll('.tool-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tool-tab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tool-panel').forEach(p => p.classList.add('hidden'));
+    btn.classList.add('active');
+    document.getElementById('panel-' + btn.dataset.tool).classList.remove('hidden');
+    refreshDebugTools();
+  });
+});
+
+let tileMapSelect = '9800';
+document.querySelectorAll('input[name="tmSelect"]').forEach(r => {
+  r.addEventListener('change', () => { tileMapSelect = r.value; refreshDebugTools(); });
+});
+
+/* ---- 1. VRAM tile viewer: every tile in 0x8000-0x97FF, raw, no palette ---- */
+function drawTileViewer() {
+  const vram = emulator.mmu.vram;
+  const data = tileViewerImageData.data;
+  for (let tile = 0; tile < 384; tile++) {
+    const originX = (tile % 16) * 8, originY = Math.floor(tile / 16) * 8;
+    const base = tile * 16;
+    for (let py = 0; py < 8; py++) {
+      const lo = vram[base + py * 2], hi = vram[base + py * 2 + 1];
+      for (let px = 0; px < 8; px++) {
+        const bit = 7 - px;
+        const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
+        const shade = 255 - colorNum * 85; // 0->white .. 3->black, palette-agnostic
+        const idx = ((originY + py) * 128 + (originX + px)) * 4;
+        data[idx] = shade; data[idx + 1] = shade; data[idx + 2] = shade; data[idx + 3] = 255;
+      }
+    }
+  }
+  tileViewerCtx.putImageData(tileViewerImageData, 0, 0);
+}
+
+/* ---- 2. Tile map viewer: full 32x32 map rendered with BG palette + viewport box ---- */
+function setMapPixel(data, x, y, r, g, b) {
+  x = ((x % 256) + 256) % 256; y = ((y % 256) + 256) % 256; // wrap into the 256x256 map
+  const idx = (y * 256 + x) * 4;
+  data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
+}
+
+function drawTileMap() {
+  const ppu = emulator.ppu;
+  const vram = emulator.mmu.vram;
+  const mapBase = tileMapSelect === '9800' ? 0x9800 : 0x9C00;
+  const signedIndex = !(ppu.lcdc & 0x10);
+  const tileDataBase = signedIndex ? 0x9000 : 0x8000;
+  const data = tileMapImageData.data;
+
+  for (let ty = 0; ty < 32; ty++) {
+    for (let tx = 0; tx < 32; tx++) {
+      const tileIndexRaw = vram[(mapBase + ty * 32 + tx) - 0x8000];
+      const tileIndex = signedIndex ? ppu.toSigned8(tileIndexRaw) : tileIndexRaw;
+      const tileAddr = tileDataBase + tileIndex * 16;
+      for (let py = 0; py < 8; py++) {
+        const lo = vram[(tileAddr - 0x8000) + py * 2];
+        const hi = vram[(tileAddr - 0x8000) + py * 2 + 1];
+        for (let px = 0; px < 8; px++) {
+          const bit = 7 - px;
+          const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
+          const [r, g, b] = ppu.applyPalette(colorNum, ppu.bgp);
+          const idx = ((ty * 8 + py) * 256 + (tx * 8 + px)) * 4;
+          data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
+        }
+      }
+    }
+  }
+
+  // Highlight the current 160x144 viewport (SCX/SCY), wrapping around the map edges.
+  const scx = ppu.scx, scy = ppu.scy, vw = 160, vh = 144;
+  for (let x = 0; x < vw; x++) {
+    setMapPixel(data, scx + x, scy, 255, 221, 0);
+    setMapPixel(data, scx + x, scy + vh - 1, 255, 221, 0);
+  }
+  for (let y = 0; y < vh; y++) {
+    setMapPixel(data, scx, scy + y, 255, 221, 0);
+    setMapPixel(data, scx + vw - 1, scy + y, 255, 221, 0);
+  }
+
+  tileMapCtx.putImageData(tileMapImageData, 0, 0);
+}
+
+/* ---- 3. OAM / sprite inspector: all 40 entries, decoded ---- */
+function makeTd(text) { const td = document.createElement('td'); td.textContent = text; return td; }
+
+function drawOAMTable() {
+  const ppu = emulator.ppu;
+  const mmu = emulator.mmu;
+  const spriteHeight = (ppu.lcdc & 0x04) ? 16 : 8;
+  oamTableBody.innerHTML = '';
+
+  for (let i = 0; i < 40; i++) {
+    const base = i * 4;
+    const rawY = mmu.oam[base], rawX = mmu.oam[base + 1];
+    const spriteY = rawY - 16, spriteX = rawX - 8;
+    const tileIndex = mmu.oam[base + 2];
+    const attrs = mmu.oam[base + 3];
+    const offscreen = spriteX <= -8 || spriteX >= 160 || spriteY <= -16 || spriteY >= 144;
+    const xFlip = !!(attrs & 0x20), yFlip = !!(attrs & 0x40), behindBG = !!(attrs & 0x80);
+    const paletteByte = (attrs & 0x10) ? ppu.obp1 : ppu.obp0;
+
+    let idxTile = tileIndex;
+    if (spriteHeight === 16) idxTile &= 0xFE;
+
+    const c = document.createElement('canvas');
+    c.width = 8; c.height = spriteHeight;
+    const cctx = c.getContext('2d');
+    const imgData = cctx.createImageData(8, spriteHeight);
+    for (let row = 0; row < spriteHeight; row++) {
+      let r2 = yFlip ? spriteHeight - 1 - row : row;
+      let tileOffset = idxTile * 16;
+      if (r2 >= 8) { tileOffset += 16; r2 -= 8; }
+      const lo = mmu.vram[tileOffset + r2 * 2], hi = mmu.vram[tileOffset + r2 * 2 + 1];
+      for (let px = 0; px < 8; px++) {
+        const bit = xFlip ? px : 7 - px;
+        const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
+        const pidx = (row * 8 + px) * 4;
+        if (colorNum === 0) { imgData.data[pidx + 3] = 0; continue; } // transparent
+        const [r3, g3, b3] = ppu.applyPalette(colorNum, paletteByte);
+        imgData.data[pidx] = r3; imgData.data[pidx + 1] = g3; imgData.data[pidx + 2] = b3; imgData.data[pidx + 3] = 255;
+      }
+    }
+    cctx.putImageData(imgData, 0, 0);
+
+    const tr = document.createElement('tr');
+    if (offscreen) tr.classList.add('offscreen');
+    const tdThumb = document.createElement('td');
+    tdThumb.appendChild(c);
+    tr.appendChild(tdThumb);
+    tr.appendChild(makeTd(i));
+    tr.appendChild(makeTd(spriteX));
+    tr.appendChild(makeTd(spriteY));
+    tr.appendChild(makeTd(hex8(tileIndex)));
+    tr.appendChild(makeTd((attrs & 0x10) ? 'OBP1' : 'OBP0'));
+    tr.appendChild(makeTd(`${behindBG ? 'BG' : 'OBJ'} ${yFlip ? 'Y' : '-'}${xFlip ? 'X' : '-'}`));
+    oamTableBody.appendChild(tr);
+  }
+}
+
+/* ---- 4. Palette viewer: BGP / OBP0 / OBP1 as swatches ---- */
+function drawPalettes() {
+  const ppu = emulator.ppu;
+  const regs = [['BGP', ppu.bgp], ['OBP0', ppu.obp0], ['OBP1', ppu.obp1]];
+  paletteGrid.innerHTML = '';
+
+  for (const [name, val] of regs) {
+    const block = document.createElement('div');
+    block.className = 'palette-block';
+
+    const h3 = document.createElement('h3'); h3.textContent = name;
+    const regVal = document.createElement('div'); regVal.className = 'reg-val'; regVal.textContent = hex8(val);
+    block.appendChild(h3); block.appendChild(regVal);
+
+    const row = document.createElement('div'); row.className = 'swatch-row';
+    for (let c = 0; c < 4; c++) {
+      const [r, g, b] = ppu.applyPalette(c, val);
+      const sw = document.createElement('div'); sw.className = 'swatch';
+      const chip = document.createElement('div'); chip.className = 'chip'; chip.style.background = `rgb(${r},${g},${b})`;
+      const label = document.createElement('div'); label.className = 'label'; label.textContent = c;
+      sw.appendChild(chip); sw.appendChild(label);
+      row.appendChild(sw);
+    }
+    block.appendChild(row);
+    paletteGrid.appendChild(block);
+  }
+}
+
+/* ---- orchestration: redraw whichever tab is active, only while the panel is open ---- */
+function refreshDebugTools() {
+  if (!debugToolsDetails.open) return;
+  const active = document.querySelector('.tool-tab.active').dataset.tool;
+  if (active === 'tiles') drawTileViewer();
+  else if (active === 'tilemap') drawTileMap();
+  else if (active === 'oam') drawOAMTable();
+  else if (active === 'palettes') drawPalettes();
+}
+
+debugToolsDetails.addEventListener('toggle', refreshDebugTools);
+setInterval(refreshDebugTools, 150);
 
 </script>
 </body>

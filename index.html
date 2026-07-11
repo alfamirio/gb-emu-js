@@ -6,8 +6,6 @@
 <title>JS GB Emulator — Educational Project</title>
 <style>
   :root {
-    --shell: #c4bfb8;
-    --shell-dark: #9a948c;
     --screen-bg: #0f380f;
     --accent: #6b4fa0;
     --accent-dark: #4e3878;
@@ -30,26 +28,21 @@
 
   .layout { display: flex; gap: 24px; flex-wrap: wrap; justify-content: center; align-items: flex-start; }
 
-  /* ---- GB shell ---- */
-  .gb-shell {
-    background: var(--shell);
-    border-radius: 14px 14px 46px 14px;
-    padding: 20px 20px 30px;
-    box-shadow: 0 10px 30px rgba(0,0,0,.5), inset 0 0 0 3px var(--shell-dark);
-    width: 400px;
-  }
+  /* ---- screen ---- */
   .screen-bezel {
     background: #333;
-    border-radius: 8px;
-    padding: 16px 16px 24px;
-    box-shadow: inset 0 3px 8px rgba(0,0,0,.6);
+    border-radius: 10px;
+    padding: 22px 22px 30px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.5), inset 0 3px 8px rgba(0,0,0,.6);
+    width: 560px;
+    max-width: 90vw;
   }
   .screen-label {
     display: flex;
     justify-content: space-between;
     color: #999;
-    font-size: 0.65rem;
-    padding: 0 4px 6px;
+    font-size: 0.75rem;
+    padding: 0 4px 8px;
     letter-spacing: 1px;
   }
   #screen {
@@ -65,69 +58,8 @@
   .drop-hint {
     text-align: center;
     color: #777;
-    font-size: 0.7rem;
-    margin-top: 6px;
-  }
-
-  .controls-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-top: 22px;
-    padding: 0 6px;
-  }
-  .dpad {
-    position: relative;
-    width: 90px;
-    height: 90px;
-  }
-  .dpad div {
-    position: absolute;
-    background: #2b2b2b;
-    box-shadow: inset 0 2px 3px rgba(255,255,255,.15), 0 2px 3px rgba(0,0,0,.4);
-  }
-  .dpad .v { left: 33px; top: 0; width: 24px; height: 90px; border-radius: 4px; }
-  .dpad .h { top: 33px; left: 0; width: 90px; height: 24px; border-radius: 4px; }
-
-  .ab-buttons {
-    display: flex;
-    gap: 14px;
-    transform: rotate(-20deg);
-  }
-  .round-btn {
-    width: 42px; height: 42px;
-    border-radius: 50%;
-    background: var(--accent);
-    box-shadow: inset 0 3px 4px rgba(255,255,255,.25), 0 3px 4px rgba(0,0,0,.4);
-    display: flex; align-items: center; justify-content: center;
-    font-weight: bold; color: #2a1a45; font-size: 0.9rem;
-    user-select: none; cursor: pointer;
-  }
-  .round-btn:active { background: var(--accent-dark); transform: translateY(1px); }
-
-  .start-select {
-    display: flex; gap: 14px; justify-content: center; margin-top: 20px;
-  }
-  .pill-btn {
-    width: 46px; height: 16px;
-    border-radius: 8px;
-    background: #7c7568;
-    transform: rotate(-20deg);
-    box-shadow: inset 0 1px 2px rgba(0,0,0,.4);
-    cursor: pointer;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 0.5rem; color: #eee; user-select: none;
-  }
-  .pill-btn:active { background: #5f594e; }
-
-  .logo {
-    text-align: center;
-    color: var(--accent-dark);
-    font-style: italic;
-    font-weight: bold;
-    letter-spacing: 1px;
-    margin-top: 18px;
-    font-size: 0.85rem;
+    font-size: 0.75rem;
+    margin-top: 8px;
   }
 
   /* ---- side panel ---- */
@@ -216,28 +148,11 @@
 
 <div class="layout">
 
-  <!-- GB shell with screen + on-screen controls -->
-  <div class="gb-shell">
-    <div class="screen-bezel">
-      <div class="screen-label"><span>DOT MATRIX</span><span id="fps">0 fps</span></div>
-      <canvas id="screen" width="160" height="144"></canvas>
-    </div>
+  <!-- Screen -->
+  <div class="screen-bezel">
+    <div class="screen-label"><span>DOT MATRIX</span><span id="fps">0 fps</span></div>
+    <canvas id="screen" width="160" height="144"></canvas>
     <div class="drop-hint">Drop a .gb / .gbc ROM anywhere on the page to load it</div>
-
-    <div class="controls-row">
-      <div class="dpad">
-        <div class="v"></div><div class="h"></div>
-      </div>
-      <div class="ab-buttons">
-        <div class="round-btn" data-key="B">B</div>
-        <div class="round-btn" data-key="A">A</div>
-      </div>
-    </div>
-    <div class="start-select">
-      <div class="pill-btn" data-key="Select">SELECT</div>
-      <div class="pill-btn" data-key="Start">START</div>
-    </div>
-    <div class="logo">GB</div>
   </div>
 
   <!-- Control panel -->
@@ -1622,40 +1537,6 @@ const KEY_MAP = {
 window.addEventListener('keydown', (e) => { const m = KEY_MAP[e.key]; if (m) { emulator.joypad.setButton(m[0], true, m[1]); e.preventDefault(); } });
 window.addEventListener('keyup', (e) => { const m = KEY_MAP[e.key]; if (m) { emulator.joypad.setButton(m[0], false, m[1]); e.preventDefault(); } });
 
-/* ---- on-screen touch/click controls ---- */
-const ONSCREEN_MAP = { A: [0, false], B: [1, false], Select: [2, false], Start: [3, false] };
-document.querySelectorAll('[data-key]').forEach(el => {
-  const m = ONSCREEN_MAP[el.dataset.key];
-  if (!m) return;
-  const press = (e) => { e.preventDefault(); emulator.joypad.setButton(m[0], true, m[1]); };
-  const release = (e) => { e.preventDefault(); emulator.joypad.setButton(m[0], false, m[1]); };
-  el.addEventListener('mousedown', press); el.addEventListener('mouseup', release); el.addEventListener('mouseleave', release);
-  el.addEventListener('touchstart', press); el.addEventListener('touchend', release);
-});
-
-// D-pad quadrants (v = up/down bar, h = left/right bar) — simple hit-test on click position
-const dpad = document.querySelector('.dpad');
-function dpadDirFromEvent(e) {
-  const rect = dpad.getBoundingClientRect();
-  const cx = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left - rect.width / 2;
-  const cy = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top - rect.height / 2;
-  if (Math.abs(cx) > Math.abs(cy)) return cx > 0 ? 0 : 1; // right : left
-  return cy > 0 ? 3 : 2; // down : up
-}
-let dpadActive = null;
-function dpadPress(e) {
-  const dir = dpadDirFromEvent(e);
-  if (dpadActive !== null) emulator.joypad.setButton(dpadActive, false, true);
-  emulator.joypad.setButton(dir, true, true);
-  dpadActive = dir;
-}
-function dpadRelease() { if (dpadActive !== null) emulator.joypad.setButton(dpadActive, false, true); dpadActive = null; }
-dpad.addEventListener('mousedown', dpadPress);
-dpad.addEventListener('mousemove', (e) => { if (e.buttons === 1) dpadPress(e); });
-window.addEventListener('mouseup', dpadRelease);
-dpad.addEventListener('touchstart', dpadPress);
-dpad.addEventListener('touchmove', dpadPress);
-dpad.addEventListener('touchend', dpadRelease);
 </script>
 </body>
 </html>

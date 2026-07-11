@@ -451,6 +451,129 @@
     white-space: normal;
   }
   .trace-empty, .disasm-empty { color: #777; padding: 2px 5px; }
+
+  /* ---- Memory Map strip ---- */
+  .memmap-strip {
+    display: flex;
+    align-items: stretch;
+    height: 64px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #333;
+  }
+  .mem-region {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    color: #111;
+    font-family: 'Consolas', monospace;
+    border-right: 1px solid rgba(0,0,0,.35);
+    overflow: hidden;
+    cursor: default;
+    transition: filter .1s;
+  }
+  .mem-region:last-child { border-right: none; }
+  .mem-region .mem-label { font-size: 0.66rem; font-weight: 700; line-height: 1.25; padding: 0 2px; }
+  .mem-region .mem-range { font-size: 0.56rem; opacity: .75; line-height: 1.2; }
+  .mem-region .mem-bank { font-size: 0.56rem; font-weight: 700; margin-top: 1px; background: rgba(0,0,0,.25); border-radius: 3px; padding: 0 3px; }
+  .mem-region.mem-flash { animation: memFlashAnim .55s ease-out; z-index: 2; }
+  @keyframes memFlashAnim {
+    0%   { filter: brightness(2.3) saturate(1.3); box-shadow: inset 0 0 0 2px #fff, 0 0 14px 2px rgba(255,255,255,.85); }
+    100% { filter: brightness(1); box-shadow: none; }
+  }
+  .memmap-readout {
+    margin-top: 10px;
+    padding: 8px 12px;
+    background: #111;
+    border-radius: 6px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.75rem;
+    color: #ddd;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .memmap-readout .mm-swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; flex-shrink: 0; }
+  .memmap-readout .mm-type-read { color: #7fd67f; }
+  .memmap-readout .mm-type-write { color: #ff9d6b; }
+
+  /* ---- MBC Banking visualizer ---- */
+  .banking-windows { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .bank-window {
+    flex: 1 1 200px;
+    background: #1b1b22;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .bank-window .bw-range { font-family: 'Consolas', monospace; font-size: 0.72rem; color: #999; }
+  .bank-window .bw-arrow { color: #666; font-size: 0.8rem; margin: 4px 0; }
+  .bank-window .bw-target {
+    font-family: 'Consolas', monospace;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #fff;
+    transition: color .1s;
+  }
+  .bank-window .bw-note { font-size: 0.68rem; color: #888; margin-top: 4px; }
+  .bank-window.bw-flash { animation: bwFlashAnim .55s ease-out; }
+  @keyframes bwFlashAnim {
+    0%   { background: var(--accent); box-shadow: 0 0 14px 2px rgba(107,79,160,.8); }
+    100% { background: #1b1b22; box-shadow: none; }
+  }
+  .banking-section { margin-bottom: 16px; }
+  .banking-section h3 { margin: 0 0 8px; font-size: 0.82rem; color: #eee; display: flex; align-items: baseline; gap: 8px; }
+  .banking-sub { font-size: 0.68rem; color: #888; font-weight: normal; }
+  .bank-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    max-height: 150px;
+    overflow-y: auto;
+    padding: 2px;
+  }
+  .bank-empty { color: #777; font-size: 0.75rem; padding: 4px 0; }
+  .bank-tile {
+    width: 34px;
+    height: 30px;
+    border-radius: 4px;
+    background: #26262f;
+    border: 1px solid #3a3a45;
+    color: #999;
+    font-family: 'Consolas', monospace;
+    font-size: 0.65rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: filter .1s;
+  }
+  .bank-tile.bank-fixed { border-style: dashed; opacity: .7; }
+  .bank-tile.bank-active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 700;
+    box-shadow: 0 0 0 2px rgba(107,79,160,.4);
+  }
+  .bank-tile.bank-flash { animation: bankTileFlashAnim .55s ease-out; }
+  @keyframes bankTileFlashAnim {
+    0%   { filter: brightness(2.2); box-shadow: 0 0 12px 2px rgba(255,255,255,.85); }
+    100% { filter: brightness(1); }
+  }
+  .banking-log {
+    margin-top: 4px;
+    padding: 8px 12px;
+    background: #111;
+    border-radius: 6px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.72rem;
+    color: #e8c15a;
+    min-height: 1.2em;
+  }
 </style>
 </head>
 <body>
@@ -487,6 +610,8 @@
       <button class="tool-tab active" data-tool="trace">Execution Trace</button>
       <button class="tool-tab" data-tool="disasm">Disassembler</button>
       <button class="tool-tab" data-tool="registers">Registers</button>
+      <button class="tool-tab" data-tool="memmap">Memory Map</button>
+      <button class="tool-tab" data-tool="banking">MBC Banking</button>
     </div>
 
     <!-- Step / breakpoint controls: shared across the disassembler + trace tabs -->
@@ -524,6 +649,33 @@
     <div class="tool-panel hidden" id="panel-registers">
       <p class="tool-desc">Raw CPU registers, flags, and key PPU/timer I/O values, updated live as the emulator runs.</p>
       <div id="debugOut">—</div>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-memmap">
+      <p class="tool-desc">
+        The full 16-bit address space (0x0000–0xFFFF), literally left-to-right, one block per
+        memory region. Tiny regions (OAM, I/O, HRAM) are given a minimum width so they stay
+        clickable-visible - the hex range printed under each block is the real boundary. Whichever
+        block the CPU's last memory read or write landed in flashes white.
+      </p>
+      <div class="memmap-strip" id="memmapStrip"><!-- built in JS --></div>
+      <div class="memmap-readout" id="memmapReadout">No memory access yet — load a ROM and press Start or Step.</div>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-banking">
+      <p class="tool-desc" id="bankingDesc">
+        Load a ROM to see its mapper (MBC) and which ROM/RAM banks are currently switched in.
+      </p>
+      <div class="banking-windows" id="bankingWindows"><!-- built in JS --></div>
+      <div class="banking-section">
+        <h3>ROM banks <span class="banking-sub" id="romBankCount"></span></h3>
+        <div class="bank-grid" id="romBankGrid"><div class="bank-empty">No ROM loaded.</div></div>
+      </div>
+      <div class="banking-section">
+        <h3>Cart RAM banks <span class="banking-sub" id="ramBankCount"></span></h3>
+        <div class="bank-grid" id="ramBankGrid"><div class="bank-empty">No ROM loaded.</div></div>
+      </div>
+      <div class="banking-log" id="bankingLog">No banking writes observed yet.</div>
     </div>
   </div>
 
@@ -716,6 +868,37 @@ class MMU {
     this.hram    = new Uint8Array(0x7F);   // 0xFF80-0xFFFE
     this.io      = new Uint8Array(0x80);   // 0xFF00-0xFF7F
     this.ie      = 0;                      // 0xFFFF interrupt enable register
+
+    // ---- live instrumentation for the Memory Map / Banking visualizers (no effect on
+    // emulation itself - purely observational state the UI reads on each redraw). ----
+    this.accessSeq = 0;                                  // monotonic counter, bumped on every read/write
+    this.lastAccess = { addr: 0, region: 'ROM0', type: 'read', seq: 0 }; // mutated in place (avoid per-access GC)
+    this.regionLastTouch = { ROM0: 0, ROMX: 0, VRAM: 0, ERAM: 0, WRAM: 0, OAM: 0, UNUSED: 0, IO: 0, HRAM: 0, IE: 0 };
+    this.lastBankSwitch = null;                           // { kind, addr, val, romBank, ramBank, t } or null
+  }
+
+  // Classifies an address into the same region buckets the Memory Map view draws.
+  regionForAddr(addr) {
+    if (addr < 0x4000) return 'ROM0';
+    if (addr < 0x8000) return 'ROMX';
+    if (addr < 0xA000) return 'VRAM';
+    if (addr < 0xC000) return 'ERAM';
+    if (addr < 0xE000) return 'WRAM';
+    if (addr < 0xFE00) return 'WRAM'; // echo RAM mirrors WRAM
+    if (addr < 0xFEA0) return 'OAM';
+    if (addr < 0xFF00) return 'UNUSED';
+    if (addr < 0xFF80) return 'IO';
+    if (addr < 0xFFFF) return 'HRAM';
+    return 'IE';
+  }
+
+  // Records that the CPU just touched `addr` (read or write), for the Memory Map view.
+  noteAccess(addr, type) {
+    const region = this.regionForAddr(addr);
+    this.accessSeq++;
+    this.regionLastTouch[region] = this.accessSeq;
+    const a = this.lastAccess;
+    a.addr = addr; a.region = region; a.type = type; a.seq = this.accessSeq;
   }
 
   loadROM(bytes) {
@@ -730,6 +913,12 @@ class MMU {
     this.currentRAMBank = 0;
     this.ramEnabled = false;
     this.bankingMode = 0;
+
+    // Reset the visualizer instrumentation on every (re)load.
+    this.accessSeq = 0;
+    this.lastAccess.addr = 0; this.lastAccess.region = 'ROM0'; this.lastAccess.type = 'read'; this.lastAccess.seq = 0;
+    for (const k in this.regionLastTouch) this.regionLastTouch[k] = 0;
+    this.lastBankSwitch = null;
 
     // Values the real boot ROM would have left behind by the time a game starts running.
     this.io.fill(0);
@@ -764,6 +953,7 @@ class MMU {
 
   read8(addr) {
     addr &= 0xFFFF;
+    this.noteAccess(addr, 'read');
     if (addr < 0x4000) return this.rom[addr] ?? 0xFF;                              // ROM bank 0
     if (addr < 0x8000) return this.rom[this.currentROMBank * 0x4000 + (addr - 0x4000)] ?? 0xFF; // switchable ROM bank
     if (addr < 0xA000) return this.vram[addr - 0x8000];                            // VRAM
@@ -779,6 +969,7 @@ class MMU {
 
   write8(addr, val) {
     addr &= 0xFFFF; val &= 0xFF;
+    this.noteAccess(addr, 'write');
     if (addr < 0x8000) { this.handleBanking(addr, val); return; }
     if (addr < 0xA000) { this.vram[addr - 0x8000] = val; return; }
     if (addr < 0xC000) { if (this.ramEnabled) this.cartRAM[this.currentRAMBank * 0x2000 + (addr - 0xA000)] = val; return; }
@@ -796,6 +987,9 @@ class MMU {
   // 16KB slice of the ROM (or 8KB slice of external RAM) is currently visible.
   handleBanking(addr, val) {
     if (this.mbcType === 0) return; // no MBC: nothing to switch
+
+    const prevROM = this.currentROMBank, prevRAM = this.currentRAMBank,
+          prevEnabled = this.ramEnabled, prevMode = this.bankingMode;
 
     if (this.mbcType === 1) {
       if (addr < 0x2000) {
@@ -821,6 +1015,20 @@ class MMU {
         this.currentRAMBank = val & 0x03; // RTC registers (0x08-0x0C) are not emulated
       }
       // 0x6000-0x7FFF would latch the RTC clock; not implemented here.
+    }
+
+    // Record what kind of banking event just happened, for the MBC Banking visualizer to
+    // flash the right thing. Priority: a ROM bank change is the one beginners hit constantly
+    // (calling a function in another bank), so it's checked first when several bits changed
+    // in the same write (rare, but possible on the MBC1 mode-select boundary).
+    if (this.currentROMBank !== prevROM) {
+      this.lastBankSwitch = { kind: 'rom', addr, val, romBank: this.currentROMBank, ramBank: this.currentRAMBank, t: performance.now() };
+    } else if (this.currentRAMBank !== prevRAM) {
+      this.lastBankSwitch = { kind: 'ram', addr, val, romBank: this.currentROMBank, ramBank: this.currentRAMBank, t: performance.now() };
+    } else if (this.ramEnabled !== prevEnabled) {
+      this.lastBankSwitch = { kind: 'enable', addr, val, romBank: this.currentROMBank, ramBank: this.currentRAMBank, t: performance.now() };
+    } else if (this.bankingMode !== prevMode) {
+      this.lastBankSwitch = { kind: 'mode', addr, val, romBank: this.currentROMBank, ramBank: this.currentRAMBank, t: performance.now() };
     }
   }
 
@@ -2534,6 +2742,9 @@ function handleROMFile(file) {
     lastROMBytes = bytes;
     emulator.loadROM(bytes);
     romInfo.innerHTML = `<b>${getROMTitle(bytes)}</b><br>Mapper: ${getMBCName(bytes)}<br>Size: ${(bytes.length / 1024).toFixed(0)} KB`;
+    lastRenderedAccessSeq = -1;
+    lastRenderedBankSwitchT = -1;
+    buildBankingPanel();
     btnStart.disabled = false; btnPause.disabled = false; btnReset.disabled = false;
     btnStep.disabled = false; btnRunToBP.disabled = false; btnClearBP.disabled = false;
     bpStatus.textContent = 'Ready.';
@@ -2565,6 +2776,9 @@ btnPause.addEventListener('click', () => {
 btnReset.addEventListener('click', () => {
   if (lastROMBytes) {
     emulator.loadROM(lastROMBytes);
+    lastRenderedAccessSeq = -1;
+    lastRenderedBankSwitchT = -1;
+    buildBankingPanel();
     emulator.start();
     btnPause.textContent = '⏸ Pause';
     bpStatus.textContent = 'Reset.';
@@ -2664,6 +2878,190 @@ const oamTableBody = document.getElementById('oamTableBody');
 const paletteGrid = document.getElementById('paletteGrid');
 const disasmList = document.getElementById('disasmList');
 const traceList = document.getElementById('traceList');
+const memmapStrip = document.getElementById('memmapStrip');
+const memmapReadout = document.getElementById('memmapReadout');
+const bankingDesc = document.getElementById('bankingDesc');
+const bankingWindows = document.getElementById('bankingWindows');
+const romBankGrid = document.getElementById('romBankGrid');
+const ramBankGrid = document.getElementById('ramBankGrid');
+const romBankCountEl = document.getElementById('romBankCount');
+const ramBankCountEl = document.getElementById('ramBankCount');
+const bankingLog = document.getElementById('bankingLog');
+
+/* ============================ Memory Map + MBC Banking visualizers ===================== */
+
+// Static region layout for the 0x0000-0xFFFF strip. `weight` drives proportional width via
+// flex-grow; `minPx` is a floor so tiny regions (OAM/IO/HRAM/IE) don't disappear entirely.
+const MEM_REGIONS = [
+  { key: 'ROM0',   label: 'ROM Bank 0',    range: '0x0000–0x3FFF', color: '#5a9bd8', weight: 0x4000, minPx: 46 },
+  { key: 'ROMX',   label: 'ROM Bank N',    range: '0x4000–0x7FFF', color: '#8fc0ec', weight: 0x4000, minPx: 46 },
+  { key: 'VRAM',   label: 'VRAM',          range: '0x8000–0x9FFF', color: '#e0a63d', weight: 0x2000, minPx: 34 },
+  { key: 'ERAM',   label: 'Cart RAM',      range: '0xA000–0xBFFF', color: '#d9534f', weight: 0x2000, minPx: 34 },
+  { key: 'WRAM',   label: 'WRAM',          range: '0xC000–0xDFFF', color: '#5cb85c', weight: 0x2000, minPx: 34 },
+  { key: 'ECHO',   label: 'Echo RAM',      range: '0xE000–0xFDFF', color: '#3f7a3f', weight: 0x1E00, minPx: 22, aliasOf: 'WRAM' },
+  { key: 'OAM',    label: 'OAM',           range: '0xFE00–0xFE9F', color: '#b366cc', weight: 0x00A0, minPx: 20 },
+  { key: 'UNUSED', label: 'Unused',        range: '0xFEA0–0xFEFF', color: '#3a3a42', weight: 0x0060, minPx: 16 },
+  { key: 'IO',     label: 'I/O Regs',      range: '0xFF00–0xFF7F', color: '#e05fb0', weight: 0x0080, minPx: 20 },
+  { key: 'HRAM',   label: 'HRAM',          range: '0xFF80–0xFFFE', color: '#f0d84a', weight: 0x007F, minPx: 20 },
+  { key: 'IE',     label: 'IE',            range: '0xFFFF',        color: '#f5f5f5', weight: 0x0001, minPx: 16 },
+];
+let memRegionEls = {}; // key -> { el, key } (ECHO shares the 'WRAM' flash key via aliasOf)
+
+function buildMemMapStrip() {
+  memmapStrip.innerHTML = '';
+  memRegionEls = {};
+  MEM_REGIONS.forEach(r => {
+    const el = document.createElement('div');
+    el.className = 'mem-region';
+    el.style.flex = `${r.weight} 0 ${r.minPx}px`;
+    el.style.background = r.color;
+    el.title = `${r.label}  (${r.range})`;
+    el.innerHTML = `<div class="mem-label">${r.label}</div><div class="mem-range">${r.range}</div>` +
+      (r.key === 'ROMX' ? '<div class="mem-bank" id="mmRomBankTag">Bank 1</div>' : '');
+    memmapStrip.appendChild(el);
+    memRegionEls[r.key] = el;
+  });
+}
+
+let lastRenderedAccessSeq = -1;
+
+function drawMemMap() {
+  const mmu = emulator.mmu;
+  // Keep the "currently mapped bank" tag on the switchable ROM block accurate even when
+  // nothing has been read from it yet this frame.
+  const bankTag = document.getElementById('mmRomBankTag');
+  if (bankTag) bankTag.textContent = 'Bank ' + mmu.currentROMBank;
+
+  const a = mmu.lastAccess;
+  if (a.seq === 0) return; // nothing accessed yet (no ROM loaded / not run)
+
+  if (a.seq !== lastRenderedAccessSeq) {
+    lastRenderedAccessSeq = a.seq;
+    // Echo RAM writes are drawn on the ECHO block itself (not WRAM) so the "why is there a
+    // second green-ish strip" question has an obvious visual answer.
+    const flashKey = a.region === 'WRAM' && a.addr >= 0xE000 ? 'ECHO' : a.region;
+    const el = memRegionEls[flashKey];
+    if (el) {
+      el.classList.remove('mem-flash');
+      void el.offsetWidth; // restart animation even on back-to-back hits in the same region
+      el.classList.add('mem-flash');
+    }
+  }
+
+  const regionMeta = MEM_REGIONS.find(r => r.key === (a.region === 'WRAM' && a.addr >= 0xE000 ? 'ECHO' : a.region));
+  memmapReadout.innerHTML =
+    `<span class="mm-swatch" style="background:${regionMeta ? regionMeta.color : '#888'}"></span>` +
+    `<b>${hex16(a.addr)}</b> in <b>${regionMeta ? regionMeta.label : a.region}</b>` +
+    ` &middot; <span class="mm-type-${a.type}">${a.type.toUpperCase()}</span>`;
+}
+
+function buildBankingPanel() {
+  const mmu = emulator.mmu;
+  const romBytes = mmu.rom ? mmu.rom.length : 0;
+  const romBankTotal = romBytes > 0 ? Math.max(1, Math.ceil(romBytes / 0x4000)) : 0;
+  const ramBankTotal = mmu.mbcType === 0 ? 0 : 4; // this MMU always allocates 4 cart-RAM banks' worth of space
+
+  bankingDesc.innerHTML = romBytes === 0
+    ? 'Load a ROM to see its mapper and which ROM/RAM banks are currently switched in.'
+    : `Mapper: <b>${getMBCName(mmu.rom)}</b> &middot; ${romBankTotal} ROM bank(s) of 16KB` +
+      (ramBankTotal ? ` &middot; up to ${ramBankTotal} RAM bank(s) of 8KB` : ' &middot; no external RAM');
+
+  bankingWindows.innerHTML = `
+    <div class="bank-window" id="bwFixed">
+      <div class="bw-range">CPU addresses 0x0000–0x3FFF</div>
+      <div class="bw-arrow">↓ always mapped to</div>
+      <div class="bw-target">ROM Bank 0</div>
+      <div class="bw-note">Fixed - never switches. Interrupt vectors and the entry point live here.</div>
+    </div>
+    <div class="bank-window" id="bwSwitchable">
+      <div class="bw-range">CPU addresses 0x4000–0x7FFF</div>
+      <div class="bw-arrow">↓ currently mapped to</div>
+      <div class="bw-target" id="bwSwitchableTarget">${romBankTotal ? 'ROM Bank ' + mmu.currentROMBank : '—'}</div>
+      <div class="bw-note">Switched by writing to 0x2000–0x3FFF (MBC1/MBC3). This is what "bank switching" means.</div>
+    </div>
+    <div class="bank-window" id="bwRam">
+      <div class="bw-range">CPU addresses 0xA000–0xBFFF</div>
+      <div class="bw-arrow">↓ currently mapped to</div>
+      <div class="bw-target" id="bwRamTarget">${ramBankTotal ? (mmu.ramEnabled ? 'RAM Bank ' + mmu.currentRAMBank : 'disabled') : 'no cart RAM'}</div>
+      <div class="bw-note">Must be enabled (write 0x0A to 0x0000–0x1FFF) before it's readable/writable.</div>
+    </div>`;
+
+  romBankGrid.innerHTML = '';
+  if (romBankTotal === 0) {
+    romBankGrid.innerHTML = '<div class="bank-empty">No ROM loaded.</div>';
+  } else {
+    for (let i = 0; i < romBankTotal; i++) {
+      const tile = document.createElement('div');
+      tile.className = 'bank-tile' + (i === 0 ? ' bank-fixed' : '');
+      tile.textContent = i;
+      tile.title = i === 0 ? 'Bank 0 - fixed at 0x0000–0x3FFF' : `Bank ${i}`;
+      tile.dataset.bank = i;
+      romBankGrid.appendChild(tile);
+    }
+  }
+  romBankCountEl.textContent = romBankTotal ? `(${romBankTotal} × 16KB = ${(romBankTotal * 16)}KB ROM)` : '';
+
+  ramBankGrid.innerHTML = '';
+  if (ramBankTotal === 0) {
+    ramBankGrid.innerHTML = '<div class="bank-empty">This mapper has no external RAM.</div>';
+  } else {
+    for (let i = 0; i < ramBankTotal; i++) {
+      const tile = document.createElement('div');
+      tile.className = 'bank-tile';
+      tile.textContent = i;
+      tile.title = `RAM Bank ${i}`;
+      tile.dataset.bank = i;
+      ramBankGrid.appendChild(tile);
+    }
+  }
+  ramBankCountEl.textContent = ramBankTotal ? `(${ramBankTotal} × 8KB = ${(ramBankTotal * 8)}KB)` : '';
+
+  bankingLog.textContent = 'No banking writes observed yet.';
+}
+
+let lastRenderedBankSwitchT = -1;
+const BANK_KIND_LABEL = { rom: 'ROM bank switch', ram: 'RAM bank switch', enable: 'RAM enable/disable', mode: 'banking mode switch' };
+
+function drawBanking() {
+  const mmu = emulator.mmu;
+  if (!mmu.rom || mmu.rom.length === 0) return;
+
+  // Keep the "currently mapped" readouts and the active-tile highlight correct every frame,
+  // independent of whether a fresh switch just happened.
+  const romTarget = document.getElementById('bwSwitchableTarget');
+  if (romTarget) romTarget.textContent = 'ROM Bank ' + mmu.currentROMBank;
+  const ramTarget = document.getElementById('bwRamTarget');
+  if (ramTarget) ramTarget.textContent = mmu.mbcType === 0 ? 'no cart RAM' : (mmu.ramEnabled ? 'RAM Bank ' + mmu.currentRAMBank : 'disabled');
+
+  romBankGrid.querySelectorAll('.bank-tile').forEach(t => {
+    t.classList.toggle('bank-active', Number(t.dataset.bank) === mmu.currentROMBank);
+  });
+  ramBankGrid.querySelectorAll('.bank-tile').forEach(t => {
+    t.classList.toggle('bank-active', mmu.ramEnabled && Number(t.dataset.bank) === mmu.currentRAMBank);
+  });
+
+  const bs = mmu.lastBankSwitch;
+  if (bs && bs.t !== lastRenderedBankSwitchT) {
+    lastRenderedBankSwitchT = bs.t;
+
+    const flashWindow = bs.kind === 'ram' || bs.kind === 'enable' ? 'bwRam' : (bs.kind === 'mode' ? 'bwSwitchable' : 'bwSwitchable');
+    const winEl = document.getElementById(flashWindow);
+    if (winEl) { winEl.classList.remove('bw-flash'); void winEl.offsetWidth; winEl.classList.add('bw-flash'); }
+
+    const grid = bs.kind === 'ram' ? ramBankGrid : (bs.kind === 'rom' ? romBankGrid : null);
+    const bankNum = bs.kind === 'ram' ? bs.ramBank : bs.romBank;
+    if (grid) {
+      const tile = grid.querySelector(`.bank-tile[data-bank="${bankNum}"]`);
+      if (tile) { tile.classList.remove('bank-flash'); void tile.offsetWidth; tile.classList.add('bank-flash'); }
+    }
+
+    bankingLog.textContent = `Write ${hex8(bs.val)} → ${hex16(bs.addr)}  (${BANK_KIND_LABEL[bs.kind]})` +
+      `  ⇒  ROM bank ${bs.romBank}` + (mmu.mbcType !== 0 ? `, RAM bank ${bs.ramBank}${mmu.ramEnabled ? '' : ' (disabled)'}` : '');
+  }
+}
+
+buildMemMapStrip();
+buildBankingPanel();
 
 /* ---- tab switching (scoped per sidebar, so each tracks its own active tab) ---- */
 const debugToolsContainer = document.getElementById('debugTools');
@@ -3015,6 +3413,8 @@ function refreshDebugTools() {
   const activeDebug = debugToolsContainer.querySelector('.tool-tab.active').dataset.tool;
   if (activeDebug === 'disasm') drawDisassembly();
   else if (activeDebug === 'trace') drawTrace();
+  else if (activeDebug === 'memmap') drawMemMap();
+  else if (activeDebug === 'banking') drawBanking();
 
   const activeVisual = visualToolsContainer.querySelector('.tool-tab.active').dataset.tool;
   if (activeVisual === 'tiles') drawTileViewer();

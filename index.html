@@ -378,6 +378,15 @@
   .palette-block { background: #1b1b22; border-radius: 8px; padding: 12px 14px; min-width: 170px; }
   .palette-block h3 { margin: 0 0 6px; font-size: 0.82rem; color: #eee; }
   .palette-block .reg-val { color: #888; font-size: 0.7rem; margin-bottom: 10px; font-family: 'Consolas', monospace; }
+
+  .scope-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+  .scope-block { background: #1b1b22; border-radius: 8px; padding: 10px 12px; }
+  .scope-block h3 {
+    margin: 0 0 8px; font-size: 0.82rem; color: #eee;
+    display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  }
+  .scope-sub { font-size: 0.68rem; color: #888; font-weight: normal; white-space: nowrap; }
+  .scope-block canvas { display: block; width: 100%; height: 80px; background: #000; border-radius: 4px; }
   .swatch-row { display: flex; gap: 6px; }
   .swatch { width: 40px; text-align: center; }
   .swatch .chip { width: 40px; height: 40px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); }
@@ -598,6 +607,7 @@
       <button class="tool-tab" data-tool="tilemap">Tile Map</button>
       <button class="tool-tab" data-tool="oam">Sprites (OAM)</button>
       <button class="tool-tab" data-tool="palettes">Palettes</button>
+      <button class="tool-tab" data-tool="oscilloscope">Oscilloscope</button>
     </div>
 
     <div class="tool-panel" id="panel-tiles">
@@ -634,6 +644,33 @@
     <div class="tool-panel hidden" id="panel-palettes">
       <p class="tool-desc">The current BGP / OBP0 / OBP1 register values, decoded into the four shades they map to.</p>
       <div id="paletteGrid" class="palette-grid"></div>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-oscilloscope">
+      <p class="tool-desc">
+        Live waveform of each of the 4 sound channels' raw DAC output, sampled at the audio
+        hardware's rate - so you can watch a square wave's duty cycle, a volume envelope
+        decaying, the custom wave-table shape, or the noise channel's LFSR hiss, right as
+        it's heard. A flat line at the bottom means that channel is currently off.
+      </p>
+      <div class="scope-grid">
+        <div class="scope-block">
+          <h3>CH1 <span class="scope-sub">Square + Sweep</span></h3>
+          <canvas id="scopeCh1" width="280" height="80"></canvas>
+        </div>
+        <div class="scope-block">
+          <h3>CH2 <span class="scope-sub">Square</span></h3>
+          <canvas id="scopeCh2" width="280" height="80"></canvas>
+        </div>
+        <div class="scope-block">
+          <h3>CH3 <span class="scope-sub">Wave</span></h3>
+          <canvas id="scopeCh3" width="280" height="80"></canvas>
+        </div>
+        <div class="scope-block">
+          <h3>CH4 <span class="scope-sub">Noise</span></h3>
+          <canvas id="scopeCh4" width="280" height="80"></canvas>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -1782,6 +1819,16 @@ class APU {
     this.writePos = 0; this.readPos = 0; this.available = 0;
     this.lastL = 0; this.lastR = 0; // last sample played, used to fade out gracefully on underrun
 
+    // Per-channel raw DAC output history, purely for the oscilloscope UI - separate from the
+    // mixed ringL/ringR buffer above so each channel's own waveform (duty cycle, envelope,
+    // wave-table shape, noise) can be inspected independently of panning/mixing.
+    this.SCOPE_SIZE = 512;
+    this.scopeCh1 = new Float32Array(this.SCOPE_SIZE);
+    this.scopeCh2 = new Float32Array(this.SCOPE_SIZE);
+    this.scopeCh3 = new Float32Array(this.SCOPE_SIZE);
+    this.scopeCh4 = new Float32Array(this.SCOPE_SIZE);
+    this.scopeWritePos = 0;
+
     this.audioCtx = null;
     this.scriptNode = null;
     this.masterGain = null;
@@ -2126,7 +2173,7 @@ class APU {
   }
 
   generateSample() {
-    if (!this.enabled) { this.pushSample(0, 0); return; }
+    if (!this.enabled) { this.pushSample(0, 0); this.pushScopeSample(0, 0, 0, 0); return; }
 
     const amp1 = this.ch1.enabled ? APU_DUTY_TABLE[this.ch1.duty][this.ch1.dutyStep] * this.ch1.volume : 0;
     const amp2 = this.ch2.enabled ? APU_DUTY_TABLE[this.ch2.duty][this.ch2.dutyStep] * this.ch2.volume : 0;
@@ -2137,6 +2184,7 @@ class APU {
     // Each channel's 4-bit DAC maps 0-15 to roughly -1..1
     const dac = v => (v / 7.5) - 1;
     const a1 = dac(amp1), a2 = dac(amp2), a3 = dac(amp3), a4 = dac(amp4);
+    this.pushScopeSample(a1, a2, a3, a4);
 
     let left = 0, right = 0;
     if (this.panning & 0x01) right += a1;
@@ -2151,6 +2199,15 @@ class APU {
     left = (left / 4) * ((this.leftVol + 1) / 8);
     right = (right / 4) * ((this.rightVol + 1) / 8);
     this.pushSample(left, right);
+  }
+
+  // Records this instant's raw per-channel DAC output for the oscilloscope UI. Kept as a
+  // separate small ring buffer from the audio-output one so the visualization can be read
+  // independently (and at a different rate) from the Web Audio consumer.
+  pushScopeSample(a1, a2, a3, a4) {
+    const i = this.scopeWritePos;
+    this.scopeCh1[i] = a1; this.scopeCh2[i] = a2; this.scopeCh3[i] = a3; this.scopeCh4[i] = a4;
+    this.scopeWritePos = (i + 1) % this.SCOPE_SIZE;
   }
 }
 
@@ -2852,6 +2909,49 @@ function drawPalettes() {
   }
 }
 
+/* ---- 4b. Per-channel oscilloscope: raw DAC waveform for each of the 4 sound channels ---- */
+const SCOPE_COLORS = { 1: '#e0765a', 2: '#5ac2e0', 3: '#c25ae0', 4: '#a0c25a' };
+const scopeCanvases = {
+  1: document.getElementById('scopeCh1'),
+  2: document.getElementById('scopeCh2'),
+  3: document.getElementById('scopeCh3'),
+  4: document.getElementById('scopeCh4'),
+};
+
+function drawScopeChannel(canvas, buffer, writePos, color) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  // Center line, so a silent/off channel (which sits at the DAC's -1 "digital zero" level,
+  // not a centered 0) still has a visible reference point.
+  ctx.strokeStyle = '#2a2a2a';
+  ctx.beginPath();
+  ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2);
+  ctx.stroke();
+
+  const n = buffer.length;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const idx = (writePos + i) % n; // walk the ring oldest-to-newest so the wave reads left-to-right
+    const v = buffer[idx]; // roughly -1..1
+    const x = (i / (n - 1)) * w;
+    const y = h / 2 - v * (h / 2 - 3);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function drawOscilloscope() {
+  const apu = emulator.apu;
+  drawScopeChannel(scopeCanvases[1], apu.scopeCh1, apu.scopeWritePos, SCOPE_COLORS[1]);
+  drawScopeChannel(scopeCanvases[2], apu.scopeCh2, apu.scopeWritePos, SCOPE_COLORS[2]);
+  drawScopeChannel(scopeCanvases[3], apu.scopeCh3, apu.scopeWritePos, SCOPE_COLORS[3]);
+  drawScopeChannel(scopeCanvases[4], apu.scopeCh4, apu.scopeWritePos, SCOPE_COLORS[4]);
+}
+
 /* ---- 5. Live disassembler: decodes the bytes around PC into mnemonics ---- */
 function drawDisassembly() {
   if (!lastROMBytes) { disasmList.innerHTML = '<div class="disasm-empty">Load a ROM to see disassembly.</div>'; return; }
@@ -2921,6 +3021,7 @@ function refreshDebugTools() {
   else if (activeVisual === 'tilemap') drawTileMap();
   else if (activeVisual === 'oam') drawOAMTable();
   else if (activeVisual === 'palettes') drawPalettes();
+  else if (activeVisual === 'oscilloscope') drawOscilloscope();
 }
 
 // Fallback redraw for when the emulator isn't actively running (paused, stepping, or no

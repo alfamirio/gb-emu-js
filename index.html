@@ -103,6 +103,99 @@
   button.ui-btn:hover { background: var(--accent-dark); }
   button.ui-btn:disabled { background: #444; cursor: not-allowed; }
 
+  label.ui-btn {
+    background: var(--accent);
+    border: none;
+    color: white;
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+  }
+  label.ui-btn:hover { background: var(--accent-dark); }
+  label.ui-btn.disabled { background: #444; cursor: not-allowed; pointer-events: none; }
+
+  .state-info { margin-top: 8px; font-size: 0.75rem; color: #999; min-height: 1.2em; }
+
+  /* ---- save-state sidebar ---- */
+  .save-sidebar {
+    width: 230px;
+    background: #23232c;
+    border-radius: 10px;
+    padding: 18px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.4);
+  }
+  .save-sidebar h2 {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 1rem;
+    margin: 0 0 6px;
+    color: #ddd;
+  }
+  .save-sidebar .badge {
+    font-size: 0.68rem;
+    color: #999;
+    font-weight: normal;
+    background: #1b1b22;
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+  .hotkey-hint { font-size: 0.68rem; color: #888; line-height: 1.5; margin-bottom: 12px; }
+  .slot-list { display: flex; flex-direction: column; gap: 10px; max-height: 620px; overflow-y: auto; }
+  .slot-empty { font-size: 0.78rem; color: #777; text-align: center; padding: 24px 8px; }
+
+  .slot-card {
+    position: relative;
+    background: #1b1b22;
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: border-color .15s;
+  }
+  .slot-card:hover { border-color: var(--accent); }
+  .slot-card.latest { border-color: rgba(255, 221, 0, .5); }
+  .slot-card canvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 160 / 144;
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    background: #000;
+  }
+  .slot-card .slot-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 8px;
+    font-size: 0.68rem;
+    color: #aaa;
+  }
+  .slot-card.latest .slot-tag { color: #ffdd00; }
+  .slot-card .slot-time { font-family: 'Consolas', monospace; }
+  .slot-card .slot-delete {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: rgba(0,0,0,.6);
+    color: #ddd;
+    border: none;
+    font-size: 0.72rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .slot-card .slot-delete:hover { background: #c0392b; color: #fff; }
+
   .keymap { margin-top: 16px; font-size: 0.78rem; color: #aaa; }
   .keymap table { border-collapse: collapse; width: 100%; }
   .keymap td { padding: 2px 4px; border-bottom: 1px solid #333; }
@@ -263,6 +356,20 @@
       <input type="range" id="volumeSlider" min="0" max="100" value="50">
     </div>
 
+    <h2 style="margin-top: 18px;">Save States</h2>
+    <div class="btn-row">
+      <button class="ui-btn" id="btnSaveState" disabled>💾 Save (F5)</button>
+      <button class="ui-btn" id="btnLoadState" disabled>📂 Load (F9)</button>
+    </div>
+    <div class="btn-row">
+      <button class="ui-btn" id="btnExportState" disabled>⬇ Export .json</button>
+      <label class="ui-btn disabled" id="btnImportState">
+        ⬆ Import .json
+        <input type="file" id="importStateInput" accept="application/json,.json" style="display:none;">
+      </label>
+    </div>
+    <div class="state-info" id="stateInfo"></div>
+
     <div class="keymap">
       <table>
         <tr><td>Arrow keys</td><td>D-Pad</td></tr>
@@ -270,6 +377,8 @@
         <tr><td>X</td><td>B button</td></tr>
         <tr><td>Enter</td><td>Start</td></tr>
         <tr><td>Shift</td><td>Select</td></tr>
+        <tr><td>F5</td><td>Quick save state</td></tr>
+        <tr><td>F9</td><td>Quick load state</td></tr>
       </table>
     </div>
 
@@ -277,6 +386,15 @@
       <summary>CPU / PPU debug view</summary>
       <div id="debugOut">—</div>
     </details>
+  </div>
+
+  <!-- Save-state sidebar -->
+  <div class="save-sidebar">
+    <h2>Saved States <span class="badge" id="slotCount">0/10</span></h2>
+    <div class="hotkey-hint">F5 quick-saves a new slot &nbsp;•&nbsp; F9 loads the latest &nbsp;•&nbsp; click a slot to load it</div>
+    <div class="slot-list" id="slotList">
+      <div class="slot-empty" id="slotEmpty">No saved states yet for this ROM.</div>
+    </div>
   </div>
 </div>
 
@@ -390,6 +508,27 @@ class MMU {
     this.io[0x47] = 0xFC; // BGP
     this.io[0x48] = 0xFF; // OBP0
     this.io[0x49] = 0xFF; // OBP1
+  }
+
+  /* ---- save state ---- */
+  serialize() {
+    return {
+      mbcType: this.mbcType, currentROMBank: this.currentROMBank, currentRAMBank: this.currentRAMBank,
+      ramEnabled: this.ramEnabled, bankingMode: this.bankingMode,
+      cartRAM: u8ToBase64(this.cartRAM), vram: u8ToBase64(this.vram), wram: u8ToBase64(this.wram),
+      oam: u8ToBase64(this.oam), hram: u8ToBase64(this.hram), io: u8ToBase64(this.io), ie: this.ie,
+    };
+  }
+  deserialize(s) {
+    this.mbcType = s.mbcType; this.currentROMBank = s.currentROMBank; this.currentRAMBank = s.currentRAMBank;
+    this.ramEnabled = s.ramEnabled; this.bankingMode = s.bankingMode;
+    this.cartRAM.set(base64ToU8(s.cartRAM));
+    this.vram.set(base64ToU8(s.vram));
+    this.wram.set(base64ToU8(s.wram));
+    this.oam.set(base64ToU8(s.oam));
+    this.hram.set(base64ToU8(s.hram));
+    this.io.set(base64ToU8(s.io));
+    this.ie = s.ie;
   }
 
   read8(addr) {
@@ -511,6 +650,23 @@ class CPU {
     this.eiDelay = 0;      // EI takes effect after the *next* instruction, not immediately
     this.halted = false;
     this.cycles = 0;       // T-cycles used by the instruction currently executing
+  }
+
+  /* ---- save state ---- */
+  serialize() {
+    return {
+      A: this.A, B: this.B, C: this.C, D: this.D, E: this.E, H: this.H, L: this.L,
+      SP: this.SP, PC: this.PC,
+      flagZ: this.flagZ, flagN: this.flagN, flagH: this.flagH, flagC: this.flagC,
+      IME: this.IME, eiDelay: this.eiDelay, halted: this.halted,
+    };
+  }
+  deserialize(s) {
+    this.A = s.A; this.B = s.B; this.C = s.C; this.D = s.D; this.E = s.E; this.H = s.H; this.L = s.L;
+    this.SP = s.SP; this.PC = s.PC;
+    this.flagZ = s.flagZ; this.flagN = s.flagN; this.flagH = s.flagH; this.flagC = s.flagC;
+    this.IME = s.IME; this.eiDelay = s.eiDelay; this.halted = s.halted;
+    this.cycles = 0;
   }
 
   /* ---- small helpers ---- */
@@ -819,6 +975,18 @@ class PPU {
     this.framebuffer = new Uint8ClampedArray(160 * 144 * 4);
   }
 
+  /* ---- save state ---- */
+  serialize() {
+    return {
+      modeClock: this.modeClock, mode: this.mode, windowLineCounter: this.windowLineCounter,
+      framebuffer: u8ToBase64(this.framebuffer),
+    };
+  }
+  deserialize(s) {
+    this.modeClock = s.modeClock; this.mode = s.mode; this.windowLineCounter = s.windowLineCounter;
+    this.framebuffer.set(base64ToU8(s.framebuffer));
+  }
+
   get lcdc() { return this.mmu.io[0x40]; }
   get stat() { return this.mmu.io[0x41]; } set stat(v) { this.mmu.io[0x41] = v; }
   get scy()  { return this.mmu.io[0x42]; }
@@ -1027,6 +1195,18 @@ class Timer {
     this.tac = 0;
   }
 
+  /* ---- save state ---- */
+  serialize() {
+    return {
+      divCounter: this.divCounter, divReg: this.divReg, timaCounter: this.timaCounter,
+      tima: this.tima, tma: this.tma, tac: this.tac,
+    };
+  }
+  deserialize(s) {
+    this.divCounter = s.divCounter; this.divReg = s.divReg; this.timaCounter = s.timaCounter;
+    this.tima = s.tima; this.tma = s.tma; this.tac = s.tac;
+  }
+
   get div() { return this.divReg; }
   set div(v) { this.divReg = 0; this.divCounter = 0; }
 
@@ -1058,6 +1238,18 @@ class Joypad {
     this.selectButtons = false;
     this.directionState = 0x0F; // bit0 Right, bit1 Left, bit2 Up, bit3 Down (0 = pressed)
     this.buttonState = 0x0F;    // bit0 A, bit1 B, bit2 Select, bit3 Start (0 = pressed)
+  }
+
+  /* ---- save state ---- */
+  serialize() {
+    return {
+      selectDirections: this.selectDirections, selectButtons: this.selectButtons,
+      directionState: this.directionState, buttonState: this.buttonState,
+    };
+  }
+  deserialize(s) {
+    this.selectDirections = s.selectDirections; this.selectButtons = s.selectButtons;
+    this.directionState = s.directionState; this.buttonState = s.buttonState;
   }
 
   write(val) {
@@ -1171,6 +1363,33 @@ class APU {
     return { enabled: false, dacEnabled: false, duty: 2, dutyStep: 0, frequency: 0, freqTimer: 0,
              lengthCounter: 0, lengthEnabled: false,
              envVolume: 0, envDirection: 0, envPeriod: 0, envTimer: 0, volume: 0 };
+  }
+
+  /* ---- save state ----
+     The ring buffer, AudioContext, and other Web-Audio plumbing are runtime/output-device
+     concerns, not emulated console state, so they're deliberately left out and just reset
+     to a clean, silent buffer on restore. */
+  serialize() {
+    return {
+      enabled: this.enabled,
+      ch1: { ...this.ch1 }, ch2: { ...this.ch2 }, ch3: { ...this.ch3 }, ch4: { ...this.ch4 },
+      waveRAM: u8ToBase64(this.waveRAM), regs: u8ToBase64(this.regs),
+      leftVol: this.leftVol, rightVol: this.rightVol, panning: this.panning,
+      fsStep: this.fsStep, frameSeqTimer: this.frameSeqTimer, sampleCounter: this.sampleCounter,
+    };
+  }
+  deserialize(s) {
+    this.enabled = s.enabled;
+    Object.assign(this.ch1, s.ch1);
+    Object.assign(this.ch2, s.ch2);
+    Object.assign(this.ch3, s.ch3);
+    Object.assign(this.ch4, s.ch4);
+    this.waveRAM.set(base64ToU8(s.waveRAM));
+    this.regs.set(base64ToU8(s.regs));
+    this.leftVol = s.leftVol; this.rightVol = s.rightVol; this.panning = s.panning;
+    this.fsStep = s.fsStep; this.frameSeqTimer = s.frameSeqTimer; this.sampleCounter = s.sampleCounter;
+    // Drop any buffered audio so playback resumes cleanly instead of replaying stale samples.
+    this.writePos = 0; this.readPos = 0; this.available = 0; this.lastL = 0; this.lastR = 0;
   }
 
   /* ---- Web Audio plumbing ---- */
@@ -1519,6 +1738,8 @@ class Emulator {
 
     this._fpsFrames = 0;
     this._fpsLast = performance.now();
+
+    this.romTitle = null; // set in loadROM; used to key save states and warn on mismatched loads
   }
 
   requestInterrupt(bit) { this.mmu.io[0x0F] |= (1 << bit); }
@@ -1529,6 +1750,45 @@ class Emulator {
     this.ppu.modeClock = 0; this.ppu.mode = 2; this.ppu.windowLineCounter = 0;
     this.timer.divCounter = 0; this.timer.divReg = 0; this.timer.timaCounter = 0; this.timer.tima = 0;
     this.apu.reset();
+
+    let title = '';
+    for (let i = 0x134; i < 0x144; i++) {
+      const c = bytes[i];
+      if (c === 0) break;
+      if (c >= 32 && c < 127) title += String.fromCharCode(c);
+    }
+    this.romTitle = title.trim() || 'Unknown';
+  }
+
+  /* ---- save state ----
+     Composes a JSON-serializable snapshot of every emulated component. The cartridge ROM
+     itself is intentionally NOT included (it can be multiple MB and the user already has
+     the file) - only RAM/registers/CPU state, i.e. everything that changes as the game runs. */
+  getSaveState() {
+    return {
+      format: 'jsgb-savestate',
+      version: 1,
+      savedAt: new Date().toISOString(),
+      romTitle: this.romTitle,
+      cpu: this.cpu.serialize(),
+      mmu: this.mmu.serialize(),
+      ppu: this.ppu.serialize(),
+      timer: this.timer.serialize(),
+      joypad: this.joypad.serialize(),
+      apu: this.apu.serialize(),
+    };
+  }
+
+  loadSaveState(state) {
+    if (!state || state.format !== 'jsgb-savestate' || !state.cpu || !state.mmu) {
+      throw new Error('This does not look like a valid save state file.');
+    }
+    this.cpu.deserialize(state.cpu);
+    this.mmu.deserialize(state.mmu);
+    this.ppu.deserialize(state.ppu);
+    this.timer.deserialize(state.timer);
+    this.joypad.deserialize(state.joypad);
+    this.apu.deserialize(state.apu);
   }
 
   runFrame() {
@@ -1587,6 +1847,23 @@ LY=${this.ppu.ly}  Mode=${this.ppu.mode}  LCDC=${hex8(this.ppu.lcdc)}`;
 function hex8(v) { return '0x' + v.toString(16).padStart(2, '0').toUpperCase(); }
 function hex16(v) { return '0x' + v.toString(16).padStart(4, '0').toUpperCase(); }
 
+// Typed arrays (VRAM, WRAM, etc.) go into save-state JSON as base64 strings rather than
+// JSON number arrays - much smaller, and fast to encode/decode via the browser's atob/btoa.
+function u8ToBase64(u8) {
+  let binary = '';
+  const chunkSize = 0x8000; // avoid blowing the call stack on String.fromCharCode.apply for large arrays
+  for (let i = 0; i < u8.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, u8.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+function base64ToU8(b64) {
+  const binary = atob(b64);
+  const u8 = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) u8[i] = binary.charCodeAt(i);
+  return u8;
+}
+
 /* ======================================= UI wiring ======================================= */
 
 const canvas = document.getElementById('screen');
@@ -1626,6 +1903,7 @@ function handleROMFile(file) {
     emulator.loadROM(bytes);
     romInfo.innerHTML = `<b>${getROMTitle(bytes)}</b><br>Mapper: ${getMBCName(bytes)}<br>Size: ${(bytes.length / 1024).toFixed(0)} KB`;
     btnStart.disabled = false; btnPause.disabled = false; btnReset.disabled = false;
+    updateStateButtons();
     emulator.start();
   };
   reader.readAsArrayBuffer(file);
@@ -1866,6 +2144,229 @@ function refreshDebugTools() {
 
 debugToolsDetails.addEventListener('toggle', refreshDebugTools);
 setInterval(refreshDebugTools, 150);
+
+/* ================================== Save / load states ===================================
+   States are kept as a list of up to MAX_SLOTS snapshots per ROM (most recent first) in
+   localStorage, each holding a full emulator.getSaveState() snapshot - including the PPU
+   framebuffer, which doubles as the thumbnail image shown in the sidebar, so no separate
+   screenshot needs to be captured or stored.
+     - F5 / "Save" button  -> quick-saves a new slot (oldest is dropped once at the limit)
+     - F9 / "Load" button  -> quick-loads the most recent slot
+     - clicking a sidebar card -> loads that specific slot
+     - Export/Import .json -> moves a single snapshot in or out as a downloadable file
+   ========================================================================================= */
+
+const MAX_SLOTS = 5;
+
+const btnSaveState = document.getElementById('btnSaveState');
+const btnLoadState = document.getElementById('btnLoadState');
+const btnExportState = document.getElementById('btnExportState');
+const btnImportStateLabel = document.getElementById('btnImportState');
+const importStateInput = document.getElementById('importStateInput');
+const stateInfo = document.getElementById('stateInfo');
+const slotList = document.getElementById('slotList');
+const slotEmpty = document.getElementById('slotEmpty');
+const slotCountBadge = document.getElementById('slotCount');
+
+function slotsKey() { return 'jsgb-saveslots:' + (emulator.romTitle || 'rom'); }
+
+function loadSlots() {
+  try { return JSON.parse(localStorage.getItem(slotsKey())) || []; }
+  catch { return []; }
+}
+
+// Writes the slot list back to localStorage, dropping the oldest slot(s) and retrying if
+// the browser's storage quota is exceeded (e.g. from other sites' data sharing the origin).
+function writeSlots(slots) {
+  while (true) {
+    try { localStorage.setItem(slotsKey(), JSON.stringify(slots)); return slots; }
+    catch (e) {
+      if (slots.length <= 1) throw e;
+      slots.pop();
+    }
+  }
+}
+
+function updateStateButtons() {
+  const hasROM = emulator.mmu.rom && emulator.mmu.rom.length > 0;
+  btnSaveState.disabled = !hasROM;
+  btnExportState.disabled = !hasROM;
+  btnImportStateLabel.classList.toggle('disabled', !hasROM);
+
+  const slots = hasROM ? loadSlots() : [];
+  btnLoadState.disabled = slots.length === 0;
+  slotCountBadge.textContent = slots.length + '/' + MAX_SLOTS;
+
+  renderSlotList(slots);
+}
+
+// Decodes a slot's stored (base64) PPU framebuffer straight into its thumbnail canvas -
+// the same raw pixels the screen itself was showing at save time.
+function drawSlotThumbnail(canvas, state) {
+  const ctx = canvas.getContext('2d');
+  const imgData = ctx.createImageData(160, 144);
+  imgData.data.set(base64ToU8(state.ppu.framebuffer));
+  ctx.putImageData(imgData, 0, 0);
+}
+
+function renderSlotList(slots) {
+  slotList.querySelectorAll('.slot-card').forEach(el => el.remove());
+  slotEmpty.style.display = slots.length === 0 ? '' : 'none';
+
+  slots.forEach((slot, i) => {
+    const card = document.createElement('div');
+    card.className = 'slot-card' + (i === 0 ? ' latest' : '');
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 160; canvas.height = 144;
+    drawSlotThumbnail(canvas, slot.state);
+    card.appendChild(canvas);
+
+    const meta = document.createElement('div');
+    meta.className = 'slot-meta';
+    const tag = document.createElement('span');
+    tag.className = 'slot-tag';
+    tag.textContent = i === 0 ? 'Latest' : '#' + (i + 1);
+    const time = document.createElement('span');
+    time.className = 'slot-time';
+    time.textContent = new Date(slot.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    meta.appendChild(tag); meta.appendChild(time);
+    card.appendChild(meta);
+
+    const del = document.createElement('button');
+    del.className = 'slot-delete';
+    del.textContent = '×';
+    del.title = 'Delete this save';
+    del.addEventListener('click', (e) => { e.stopPropagation(); deleteSlot(slot.id); });
+    card.appendChild(del);
+
+    card.addEventListener('click', () => loadSlot(slot.id));
+    slotList.appendChild(card);
+  });
+}
+
+// Applies a save-state object to the running emulator, pausing/resuming around it so a
+// partially-stepped frame never gets mixed with the restored state.
+function applyLoadedState(state) {
+  const wasRunning = emulator.running;
+  emulator.pause();
+  emulator.loadSaveState(state);
+  emulator.draw();        // repaint immediately from the restored framebuffer
+  emulator.updateDebug();
+  if (wasRunning) emulator.start();
+}
+
+function quickSaveState() {
+  if (!(emulator.mmu.rom && emulator.mmu.rom.length)) return;
+  const slots = loadSlots();
+  slots.unshift({ id: 'slot-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+                  savedAt: new Date().toISOString(), state: emulator.getSaveState() });
+  while (slots.length > MAX_SLOTS) slots.pop();
+  try {
+    const saved = writeSlots(slots);
+    updateStateButtons();
+    stateInfo.textContent = `State saved ✓ (${saved.length}/${MAX_SLOTS})`;
+  } catch (e) {
+    alert('Could not save state (storage full): ' + e.message);
+  }
+}
+
+function quickLoadState() {
+  const slots = loadSlots();
+  if (slots.length === 0) return;
+  loadSlot(slots[0].id);
+}
+
+function loadSlot(id) {
+  const slots = loadSlots();
+  const slot = slots.find(s => s.id === id);
+  if (!slot) return;
+  try {
+    applyLoadedState(slot.state);
+    stateInfo.textContent = 'Loaded save from ' + new Date(slot.savedAt).toLocaleTimeString();
+  } catch (e) {
+    alert('Could not load state: ' + e.message);
+  }
+}
+
+function deleteSlot(id) {
+  const slots = loadSlots().filter(s => s.id !== id);
+  writeSlots(slots);
+  updateStateButtons();
+  stateInfo.textContent = 'Save deleted.';
+}
+
+btnSaveState.addEventListener('click', quickSaveState);
+btnLoadState.addEventListener('click', quickLoadState);
+
+btnExportState.addEventListener('click', () => {
+  try {
+    const state = emulator.getSaveState();
+    const blob = new Blob([JSON.stringify(state)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const safeName = (emulator.romTitle || 'rom').replace(/[^a-z0-9_-]+/gi, '_');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${safeName}.savestate.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('Could not export state: ' + e.message);
+  }
+});
+
+importStateInput.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    let state;
+    try {
+      state = JSON.parse(ev.target.result);
+    } catch (err) {
+      alert("That file doesn't look like a valid save state (not valid JSON).");
+      return;
+    }
+    if (state.romTitle && emulator.romTitle && state.romTitle !== emulator.romTitle) {
+      const proceed = confirm(
+        `This save is from "${state.romTitle}" but the currently loaded ROM is "${emulator.romTitle}". Load it anyway?`
+      );
+      if (!proceed) return;
+    }
+    try {
+      applyLoadedState(state);
+      // Also add the import to this ROM's slot list so it shows up in the sidebar.
+      const slots = loadSlots();
+      slots.unshift({ id: 'slot-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+                       savedAt: state.savedAt || new Date().toISOString(), state });
+      while (slots.length > MAX_SLOTS) slots.pop();
+      writeSlots(slots);
+      updateStateButtons();
+      stateInfo.textContent = 'State imported ✓';
+    } catch (err) {
+      alert('Could not load state: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+  importStateInput.value = ''; // allow re-importing the same file again later
+});
+
+/* ---- hotkeys: F5 quick-save, F9 quick-load ----
+   preventDefault() stops F5 from triggering a page refresh; this is honored by current
+   major browsers for a plain keydown listener, though it's ultimately browser-dependent. */
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'F5') {
+    e.preventDefault();
+    if (!btnSaveState.disabled) quickSaveState();
+  } else if (e.key === 'F9') {
+    e.preventDefault();
+    if (!btnLoadState.disabled) quickLoadState();
+  }
+});
+
+updateStateButtons();
 
 </script>
 </body>

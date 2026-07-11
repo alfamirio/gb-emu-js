@@ -442,6 +442,20 @@
   .trace-line.latest { background: #2f2f3a; }
   .trace-code { color: #7fd67f; white-space: nowrap; flex: 0 0 auto; }
   .trace-line.latest .trace-code { color: #fff; }
+  .trace-diff {
+    color: #e8c46b;
+    white-space: nowrap;
+    flex: 0 0 auto;
+    font-size: 0.72rem;
+  }
+  .trace-repeat {
+    color: #aaa;
+    background: #2a2a33;
+    border-radius: 3px;
+    padding: 0 5px;
+    font-size: 0.68rem;
+    flex: 0 0 auto;
+  }
   .trace-explain {
     color: #888;
     font-family: 'Segoe UI', Tahoma, Verdana, sans-serif;
@@ -2461,6 +2475,7 @@ class Emulator {
     this.traceB0 = new Uint8Array(this.TRACE_SIZE);
     this.traceB1 = new Uint8Array(this.TRACE_SIZE);
     this.traceB2 = new Uint8Array(this.TRACE_SIZE);
+    this.traceDiff = new Array(this.TRACE_SIZE).fill(''); // human-readable "A: 0x00→0x05 Z:1→0" string per entry
     this.traceWritePos = 0;
     this.traceFilled = 0;
   }
@@ -2528,15 +2543,22 @@ class Emulator {
     const pcBefore = this.cpu.PC;
     const wasHalted = this.cpu.halted;
     let opcode = null;
+    let traceIndex = -1;
+    let regsBefore = null;
     if (!wasHalted) {
       opcode = this.mmu.read8(pcBefore);
-      this.pushTrace(pcBefore, opcode, this.mmu.read8((pcBefore + 1) & 0xFFFF), this.mmu.read8((pcBefore + 2) & 0xFFFF));
+      regsBefore = this.snapshotRegs();
+      traceIndex = this.pushTrace(pcBefore, opcode, this.mmu.read8((pcBefore + 1) & 0xFFFF), this.mmu.read8((pcBefore + 2) & 0xFFFF));
     }
 
     const cycles = this.cpu.step();
     this.ppu.step(cycles);
     this.timer.step(cycles);
     this.apu.step(cycles);
+
+    if (!wasHalted) {
+      this.traceDiff[traceIndex] = this.diffRegs(regsBefore, this.snapshotRegs());
+    }
 
     if (!wasHalted && this.breakpointOpcode !== null && opcode === this.breakpointOpcode) {
       this.triggerBreakpoint(`opcode ${hex8(this.breakpointOpcode)} executed at ${hex16(pcBefore)}`);
@@ -2593,8 +2615,34 @@ class Emulator {
   pushTrace(addr, b0, b1, b2) {
     const i = this.traceWritePos;
     this.traceAddr[i] = addr; this.traceB0[i] = b0; this.traceB1[i] = b1; this.traceB2[i] = b2;
+    this.traceDiff[i] = '';
     this.traceWritePos = (i + 1) % this.TRACE_SIZE;
     if (this.traceFilled < this.TRACE_SIZE) this.traceFilled++;
+    return i;
+  }
+
+  // Snapshot of everything an instruction could plausibly change, used to compute the
+  // before/after diff shown in the execution trace.
+  snapshotRegs() {
+    const c = this.cpu;
+    return {
+      A: c.A, B: c.B, C: c.C, D: c.D, E: c.E, H: c.H, L: c.L, SP: c.SP,
+      fZ: c.flagZ, fN: c.flagN, fH: c.flagH, fC: c.flagC,
+    };
+  }
+
+  // Compares two snapshots and returns a compact "A: 0x00→0x05 Z:1→0" style string listing
+  // only the registers/flags that actually changed - empty string if nothing changed.
+  diffRegs(before, after) {
+    const parts = [];
+    for (const r of ['A', 'B', 'C', 'D', 'E', 'H', 'L']) {
+      if (before[r] !== after[r]) parts.push(`${r}:${hex8(before[r])}→${hex8(after[r])}`);
+    }
+    if (before.SP !== after.SP) parts.push(`SP:${hex16(before.SP)}→${hex16(after.SP)}`);
+    for (const [label, key] of [['Z', 'fZ'], ['N', 'fN'], ['H', 'fH'], ['C', 'fC']]) {
+      if (before[key] !== after[key]) parts.push(`${label}:${before[key] ? 1 : 0}→${after[key] ? 1 : 0}`);
+    }
+    return parts.join(' ');
   }
 
   // Returns trace entries oldest-first, most-recently-executed last.
@@ -2603,7 +2651,7 @@ class Emulator {
     const oldest = this.traceFilled < this.TRACE_SIZE ? 0 : this.traceWritePos;
     for (let i = 0; i < this.traceFilled; i++) {
       const idx = (oldest + i) % this.TRACE_SIZE;
-      entries.push({ addr: this.traceAddr[idx], b0: this.traceB0[idx], b1: this.traceB1[idx], b2: this.traceB2[idx] });
+      entries.push({ addr: this.traceAddr[idx], b0: this.traceB0[idx], b1: this.traceB1[idx], b2: this.traceB2[idx], diff: this.traceDiff[idx] });
     }
     return entries;
   }
@@ -3394,11 +3442,28 @@ function drawTrace() {
   const entries = emulator.getTraceEntries();
   if (entries.length === 0) { traceList.innerHTML = '<div class="trace-empty">No instructions executed yet.</div>'; return; }
   const recent = entries.slice(-200); // cap rendered rows; the ring buffer itself holds more
-  traceList.innerHTML = recent.map((e, i) => {
-    const { text } = disassembleBytes((off) => (off === 0 ? e.b0 : off === 1 ? e.b1 : e.b2), e.addr);
-    const isLatest = i === recent.length - 1;
+
+  // Collapse runs of consecutive entries that share the same (addr, opcode) - e.g. a tight
+  // `JR NZ,-5`-style spin loop landing on the same instruction over and over - into a single
+  // row with a "× N" badge, so the interesting instructions before/after it aren't buried.
+  const groups = [];
+  for (const e of recent) {
+    const last = groups[groups.length - 1];
+    if (last && last.addr === e.addr && last.b0 === e.b0) { last.count++; last.last = e; }
+    else groups.push({ addr: e.addr, b0: e.b0, b1: e.b1, b2: e.b2, count: 1, last: e });
+  }
+
+  traceList.innerHTML = groups.map((g, i) => {
+    const { text } = disassembleBytes((off) => (off === 0 ? g.b0 : off === 1 ? g.b1 : g.b2), g.addr);
+    const isLatest = i === groups.length - 1;
+    // Show the diff from the most recent occurrence in the run - the one whose effect is
+    // still visible in the current register state.
+    const diff = g.last.diff;
+    const repeatBadge = g.count > 1 ? `<span class="trace-repeat">× ${g.count}</span>` : '';
     return `<div class="trace-line${isLatest ? ' latest' : ''}">` +
-             `<span class="trace-code">${hex16(e.addr)}&nbsp;&nbsp;${hex8(e.b0)}&nbsp;&nbsp;${text}</span>` +
+             `<span class="trace-code">${hex16(g.addr)}&nbsp;&nbsp;${hex8(g.b0)}&nbsp;&nbsp;${text}</span>` +
+             repeatBadge +
+             (diff ? `<span class="trace-diff">${diff}</span>` : '') +
              `<span class="trace-explain">${explainInstruction(text)}</span>` +
            `</div>`;
   }).join('');

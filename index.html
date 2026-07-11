@@ -487,8 +487,10 @@
   /* ---- Memory Map strip ---- */
   .memmap-strip {
     display: flex;
+    flex-direction: column;
     align-items: stretch;
-    height: 64px;
+    width: 100%;
+    height: 460px;
     border-radius: 6px;
     overflow: hidden;
     border: 1px solid #333;
@@ -496,21 +498,24 @@
   .mem-region {
     position: relative;
     display: flex;
-    flex-direction: column;
-    justify-content: center;
+    flex-direction: row;
+    justify-content: flex-start;
     align-items: center;
-    text-align: center;
+    text-align: left;
     color: #111;
     font-family: 'Consolas', monospace;
-    border-right: 1px solid rgba(0,0,0,.35);
+    border-bottom: 1px solid rgba(0,0,0,.35);
     overflow: hidden;
     cursor: default;
     transition: filter .1s;
+    padding: 0 10px;
+    gap: 8px;
+    white-space: nowrap;
   }
-  .mem-region:last-child { border-right: none; }
-  .mem-region .mem-label { font-size: 0.66rem; font-weight: 700; line-height: 1.25; padding: 0 2px; }
-  .mem-region .mem-range { font-size: 0.56rem; opacity: .75; line-height: 1.2; }
-  .mem-region .mem-bank { font-size: 0.56rem; font-weight: 700; margin-top: 1px; background: rgba(0,0,0,.25); border-radius: 3px; padding: 0 3px; }
+  .mem-region:last-child { border-bottom: none; }
+  .mem-region .mem-label { font-size: 0.72rem; font-weight: 700; line-height: 1.25; }
+  .mem-region .mem-range { font-size: 0.62rem; opacity: .75; line-height: 1.2; }
+  .mem-region .mem-bank { font-size: 0.6rem; font-weight: 700; margin-left: auto; background: rgba(0,0,0,.25); border-radius: 3px; padding: 0 4px; flex-shrink: 0; }
   .mem-region.mem-flash { animation: memFlashAnim .55s ease-out; z-index: 2; }
   @keyframes memFlashAnim {
     0%   { filter: brightness(2.3) saturate(1.3); box-shadow: inset 0 0 0 2px #fff, 0 0 14px 2px rgba(255,255,255,.85); }
@@ -690,10 +695,10 @@
 
     <div class="tool-panel hidden" id="panel-memmap">
       <p class="tool-desc">
-        The full 16-bit address space (0x0000–0xFFFF), literally left-to-right, one block per
-        memory region. Tiny regions (OAM, I/O, HRAM) are given a minimum width so they stay
-        clickable-visible - the hex range printed under each block is the real boundary. Whichever
-        block the CPU's last memory read or write landed in flashes white.
+        The full 16-bit address space (0x0000–0xFFFF), literally top-to-bottom, one bar per
+        memory region. Tiny regions (OAM, I/O, HRAM) are given a minimum height so they stay
+        visible - the hex range printed next to each bar is the real boundary. Whichever
+        bar the CPU's last memory read or write landed in flashes white.
       </p>
       <div class="memmap-strip" id="memmapStrip"><!-- built in JS --></div>
       <div class="memmap-readout" id="memmapReadout">No memory access yet — load a ROM and press Start or Step.</div>
@@ -2898,16 +2903,43 @@ btnClearBP.addEventListener('click', () => {
 });
 
 /* ---- sound controls ---- */
+/* Mute state + volume level are persisted in localStorage so they're restored on the next visit
+   (same pattern as the play/debug mode toggle above). */
+const SOUND_STORAGE_KEY = 'jsgb-config:sound';
+
+function saveSoundConfig() {
+  try { localStorage.setItem(SOUND_STORAGE_KEY, JSON.stringify({ muted: isMuted, volume: Number(volumeSlider.value) })); }
+  catch (e) { /* storage unavailable/full - ignore, setting just won't persist */ }
+}
+
+function loadSoundConfig() {
+  try {
+    const raw = localStorage.getItem(SOUND_STORAGE_KEY);
+    return raw === null ? null : JSON.parse(raw);
+  } catch (e) { return null; }
+}
+
 const btnMute = document.getElementById('btnMute');
 const volumeSlider = document.getElementById('volumeSlider');
+
+const savedSoundConfig = loadSoundConfig();
+if (savedSoundConfig && typeof savedSoundConfig.volume === 'number') volumeSlider.value = savedSoundConfig.volume;
+let isMuted = !!(savedSoundConfig && savedSoundConfig.muted);
+
 emulator.apu.setVolume(volumeSlider.value / 100);
-let isMuted = false;
+emulator.apu.setMuted(isMuted);
+btnMute.textContent = isMuted ? '🔇 Unmute' : '🔊 Mute';
+
 btnMute.addEventListener('click', () => {
   isMuted = !isMuted;
   emulator.apu.setMuted(isMuted);
   btnMute.textContent = isMuted ? '🔇 Unmute' : '🔊 Mute';
+  saveSoundConfig();
 });
-volumeSlider.addEventListener('input', () => emulator.apu.setVolume(volumeSlider.value / 100));
+volumeSlider.addEventListener('input', () => {
+  emulator.apu.setVolume(volumeSlider.value / 100);
+  saveSoundConfig();
+});
 
 /* ---- speed control: slider steps 1-10 map to 10%-100% emulation speed ---- */
 const speedSlider = document.getElementById('speedSlider');
@@ -2990,8 +3022,8 @@ function buildMemMapStrip() {
     el.style.flex = `${r.weight} 0 ${r.minPx}px`;
     el.style.background = r.color;
     el.title = `${r.label}  (${r.range})`;
-    el.innerHTML = `<div class="mem-label">${r.label}</div><div class="mem-range">${r.range}</div>` +
-      (r.key === 'ROMX' ? '<div class="mem-bank" id="mmRomBankTag">Bank 1</div>' : '');
+    el.innerHTML = `<span class="mem-label">${r.label}</span><span class="mem-range">${r.range}</span>` +
+      (r.key === 'ROMX' ? '<span class="mem-bank" id="mmRomBankTag">Bank 1</span>' : '');
     memmapStrip.appendChild(el);
     memRegionEls[r.key] = el;
   });

@@ -338,8 +338,6 @@
   }
   .tilemap-scroll {
     max-width: 100%;
-    max-height: 420px;
-    overflow: auto;
     border-radius: 4px;
     background: #000;
   }
@@ -347,8 +345,9 @@
     image-rendering: pixelated;
     image-rendering: -moz-crisp-edges;
     image-rendering: crisp-edges;
-    width: 512px;
-    height: 512px;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    height: auto;
     display: block;
   }
   .oam-scroll { max-height: 360px; overflow-y: auto; border-radius: 4px; }
@@ -722,8 +721,8 @@
             <tr><td>X</td><td>B button</td></tr>
             <tr><td>Enter</td><td>Start</td></tr>
             <tr><td>Shift</td><td>Select</td></tr>
-            <tr><td>F5</td><td>Quick save state</td></tr>
-            <tr><td>F9</td><td>Quick load state</td></tr>
+            <tr><td>[</td><td>Quick save state</td></tr>
+            <tr><td>]</td><td>Quick load state</td></tr>
           </table>
         </div>
       </div>
@@ -733,8 +732,8 @@
     <div class="save-panel">
       <h2>Saved States <span class="badge" id="slotCount">0/10</span></h2>
       <div class="btn-row">
-        <button class="ui-btn" id="btnSaveState" disabled>💾 Save (F5)</button>
-        <button class="ui-btn" id="btnLoadState" disabled>📂 Load (F9)</button>
+        <button class="ui-btn" id="btnSaveState" disabled>💾 Save ([)</button>
+        <button class="ui-btn" id="btnLoadState" disabled>📂 Load (])</button>
         <button class="ui-btn" id="btnExportState" disabled>⬇ Export .json</button>
         <label class="ui-btn disabled" id="btnImportState">
           ⬆ Import .json
@@ -743,7 +742,7 @@
         <button class="ui-btn danger" id="btnDeleteAllStates" disabled>🗑 Delete All</button>
       </div>
       <div class="state-info" id="stateInfo"></div>
-      <div class="hotkey-hint">F5 quick-saves a new slot &nbsp;•&nbsp; F9 loads the latest &nbsp;•&nbsp; click a slot to load it</div>
+      <div class="hotkey-hint">[ quick-saves a new slot &nbsp;•&nbsp; ] loads the latest &nbsp;•&nbsp; click a slot to load it</div>
       <div class="slot-list" id="slotList">
         <div class="slot-empty" id="slotEmpty">No saved states yet for this ROM.</div>
       </div>
@@ -3435,8 +3434,8 @@ setInterval(() => { if (!emulator.running) refreshDebugTools(); }, 150);
    localStorage, each holding a full emulator.getSaveState() snapshot - including the PPU
    framebuffer, which doubles as the thumbnail image shown in the sidebar, so no separate
    screenshot needs to be captured or stored.
-     - F5 / "Save" button  -> quick-saves a new slot (oldest is dropped once at the limit)
-     - F9 / "Load" button  -> quick-loads the most recent slot
+     - [ / "Save" button  -> quick-saves a new slot (oldest is dropped once at the limit)
+     - ] / "Load" button  -> quick-loads the most recent slot
      - clicking a sidebar card -> loads that specific slot
      - Export/Import .json -> moves a single snapshot in or out as a downloadable file
    ========================================================================================= */
@@ -3654,14 +3653,14 @@ importStateInput.addEventListener('change', (e) => {
   importStateInput.value = ''; // allow re-importing the same file again later
 });
 
-/* ---- hotkeys: F5 quick-save, F9 quick-load ----
-   preventDefault() stops F5 from triggering a page refresh; this is honored by current
-   major browsers for a plain keydown listener, though it's ultimately browser-dependent. */
+/* ---- hotkeys: [ quick-save, ] quick-load ----
+   F5/F9 are avoided since they're reserved for page refresh / browser dev tools in most
+   browsers; [ and ] are free, easy to reach, and read naturally as "save / load". */
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'F5') {
+  if (e.key === '[') {
     e.preventDefault();
     if (!btnSaveState.disabled) quickSaveState();
-  } else if (e.key === 'F9') {
+  } else if (e.key === ']') {
     e.preventDefault();
     if (!btnLoadState.disabled) quickLoadState();
   }

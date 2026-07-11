@@ -66,7 +66,8 @@
   /* visibility (not display) keeps each sidebar's flex slot reserved, so toggling
      debug mode hides/shows their content without reflowing the other columns */
   body.playing-mode .debug-tools-sidebar,
-  body.playing-mode .visual-tools-sidebar { visibility: hidden; }
+  body.playing-mode .visual-tools-sidebar,
+  body.playing-mode .frame-activity-panel { visibility: hidden; }
 
   .page-content {
     display: flex;
@@ -393,6 +394,31 @@
   .scanline-block { background: #1b1b22; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
   .scanline-block h3 { margin: 0 0 10px; font-size: 0.82rem; color: #eee; }
   .scanline-block canvas { display: block; width: 100%; height: 46px; border-radius: 4px; }
+
+  /* ---- frame activity: full-width panel below the 3-column layout ---- */
+  .frame-activity-panel {
+    background: #23232c;
+    border-radius: 10px;
+    padding: 18px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.4);
+    font-size: 0.8rem;
+    color: #ccc;
+    width: 100%;
+    max-width: 1900px;
+    margin-top: 24px;
+  }
+  .frame-activity-panel h2 { font-size: 1rem; margin: 0 0 10px; color: #ddd; }
+  .frame-activity-row { display: flex; gap: 24px; flex-wrap: wrap; align-items: stretch; }
+  .frame-activity-block { flex: 1; min-width: 360px; margin-bottom: 0; }
+  .frame-activity-block canvas { height: 90px; cursor: pointer; }
+  .frame-activity-block-full { flex: 1 1 100%; min-width: 100%; margin-top: 24px; }
+  .frame-activity-block-full canvas { height: 46px; cursor: default; }
+  #frameAnatomyCanvas { cursor: pointer; }
+  .frame-anatomy-stats {
+    display: flex; flex-wrap: wrap; gap: 6px 16px;
+    margin-top: 10px; font-size: 0.72rem; color: #bbb;
+  }
+  .frame-anatomy-stats b { color: #eee; }
   .scanline-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; font-size: 0.7rem; color: #aaa; }
   .scanline-legend span { display: inline-flex; align-items: center; gap: 5px; }
   .scanline-legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
@@ -402,6 +428,7 @@
   .scanline-stat .value { font-size: 0.88rem; color: #eee; font-family: 'Consolas', monospace; margin-top: 2px; }
   .scanline-ref { font-size: 0.72rem; color: #888; line-height: 1.7; margin-top: 12px; }
   .scanline-ref b { color: #ccc; }
+  .frame-activity-note { font-size: 0.72rem; color: #999; line-height: 1.5; margin: 0 0 10px; }
 
   .scope-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
   .scope-block { background: #1b1b22; border-radius: 8px; padding: 10px 12px; }
@@ -667,6 +694,7 @@
       <button class="ui-btn small" id="btnStep" disabled>⏭ Step</button>
       <button class="ui-btn small" id="btnStepLine" disabled>⏭⏭ Step Line</button>
       <button class="ui-btn small" id="btnStepFrame" disabled>⏭⏭⏭ Step Frame</button>
+      <button class="ui-btn small" id="btnStep1s" disabled>⏭⏭⏭⏭ Step 1s</button>
     </div>
     <div class="cdc-status" id="bpStatus">Load a ROM to enable step/breakpoint debugging.</div>
   </div>
@@ -960,6 +988,95 @@
   </div>
 </div>
 
+  <!-- Frame activity: full-width, below the 3 columns above. Left = one bar per frame in the
+       last ~60 frames, click to inspect; right = anatomy of whichever frame is selected - not
+       JS/host performance, but what the emulated hardware itself did that frame (instructions,
+       interrupts, sprites, DMA, banking, APU triggers), laid out by scanline. -->
+  <div class="frame-activity-panel" id="frameActivityPanel">
+    <h2>Frame Activity</h2>
+    <p class="tool-desc">
+      What the emulated Game Boy actually did, frame by frame — not real-world JS/host timing,
+      but counts of hardware events inside the simulation itself. Every frame takes exactly
+      <b>70,224 T-cycles</b> (154 scanlines &times; 456 T-cycles &asymp; 16.74ms @ 4.194304MHz,
+      ~59.73Hz) no matter what happens during it, so the numbers here describe how that fixed
+      budget was spent — not how long the frame took, since it always takes the same amount of
+      time. Click a frame on the left to inspect where in that budget its events happened, on the right.
+    </p>
+    <div class="frame-activity-row">
+      <div class="scanline-block frame-activity-block">
+        <h3>Last <span id="frameActivityCount">60</span> frames — click one to inspect</h3>
+        <p class="frame-activity-note">
+          Bar height = instructions executed that frame (relative to the tallest bar in view, not
+          an absolute count). Since every frame spends the same 70,224 T-cycles regardless, a
+          <em>shorter</em> bar doesn't mean less happened — it usually means the CPU ran
+          longer instructions that frame (up to 24T each), or spent more of the frame HALTed,
+          waiting for the next interrupt.
+        </p>
+        <canvas id="frameActivityCanvas" width="900" height="90"></canvas>
+        <div class="scanline-legend">
+          <span><i style="background:#5ac2e0"></i>Instructions executed (bar height)</span>
+          <span><i style="background:#ffdd00"></i>Selected frame</span>
+        </div>
+      </div>
+      <div class="scanline-block frame-activity-block">
+        <h3>Anatomy of frame <span id="frameAnatomyIndex">—</span> — events by scanline (0-153)</h3>
+        <p class="frame-activity-note">
+          Each step along the x-axis is one scanline &asymp; 456T (~0.65% of the frame). The
+          blue-ish band (lines 0-143, 93.5% of the frame) is the visible picture; the purple band
+          (lines 144-153, 6.5%) is V-Blank, where the CPU gets uninterrupted access to VRAM/OAM —
+          which is why DMA/bank-switch/APU events tend to cluster right around line 144.
+        </p>
+        <canvas id="frameAnatomyCanvas" width="900" height="90"></canvas>
+        <div class="scanline-legend">
+          <span><i style="background:#e05a5a"></i>V-Blank int (highest priority)</span>
+          <span><i style="background:#e0785a"></i>STAT int</span>
+          <span><i style="background:#e0a45a"></i>Timer int</span>
+          <span><i style="background:#e0c85a"></i>Serial int</span>
+          <span><i style="background:#e0e05a"></i>Joypad int (lowest priority)</span>
+          <span><i style="background:#5ac2e0"></i>OAM DMA</span>
+          <span><i style="background:#8a5ac2"></i>Bank switch</span>
+          <span><i style="background:#4ade80"></i>APU trigger / sprites-per-line</span>
+        </div>
+        <div class="frame-anatomy-stats" id="frameAnatomyStats">Load a ROM and let it run to see frame data.</div>
+      </div>
+    </div>
+
+    <div class="scanline-block frame-activity-block-full">
+      <h3>Anatomy of line <span id="lineAnatomyIndex">—</span> of frame <span id="lineAnatomyFrameIndex">—</span> — click a scanline in the chart above to inspect it</h3>
+      <p class="frame-activity-note">
+        The chart above shows <em>which</em> scanlines had activity; this shows <em>what
+        that line's 456T were doing</em> and exactly what was recorded on it — sprites drawn,
+        and any interrupt/DMA/bank/APU events — for the currently selected frame.
+      </p>
+      <canvas id="lineAnatomyCanvas" width="900" height="46"></canvas>
+      <div class="scanline-legend">
+        <span><i style="background:#e0b45a"></i>Mode 2: OAM Search (80T)</span>
+        <span><i style="background:#5ac2e0"></i>Mode 3: Pixel Transfer (172T)</span>
+        <span><i style="background:#4a4a55"></i>Mode 0: H-Blank (204T)</span>
+        <span><i style="background:#8a5ac2"></i>Mode 1: V-Blank (whole line, 456T)</span>
+      </div>
+      <div class="frame-anatomy-stats" id="lineAnatomyStats">Click a scanline in the "Anatomy of frame" chart above to see its details.</div>
+    </div>
+
+    <p class="scanline-ref">
+      <b>Frame budget:</b> 144 visible lines &times; 456T = 65,664T (93.5%) + 10 V-Blank lines
+      &times; 456T = 4,560T (6.5%) = 70,224T total. See the Scanline Timeline tool above for how
+      each visible line's 456T further splits into Mode 2 (OAM Search) / Mode 3 (Pixel Transfer) / Mode 0 (H-Blank).<br>
+      <b>OAM DMA:</b> one transfer takes 160 M-cycles = 640T (~1.4 scanlines, ~0.9% of a frame);
+      the CPU can only touch HRAM while it runs, which is exactly why games trigger it from
+      inside their V-Blank handler rather than mid-screen.<br>
+      <b>Interrupt dispatch:</b> ~5 M-cycles = 20T (~0.03% of a frame) of fixed hardware overhead
+      per interrupt taken — pushing PC to the stack and jumping to the handler — before the
+      handler's own code even starts running. Interrupts are serviced in a fixed priority order
+      (V-Blank &gt; STAT &gt; Timer &gt; Serial &gt; Joypad) if more than one is pending at once.<br>
+      <b>Instructions:</b> GB instructions take 1-6 M-cycles (4-24T) each, so the ~17,556
+      M-cycles available in a frame fit roughly 3,000-6,000 instructions depending on which
+      ones run and how much of the frame the CPU spends HALTed waiting for the next interrupt —
+      which is the main reason the left-hand bar chart's heights vary frame to frame even though
+      every frame is the same length in T-cycles.
+    </p>
+  </div>
+
 </div>
 
 <script>
@@ -1163,6 +1280,13 @@ class MMU {
     } else if (this.bankingMode !== prevMode) {
       this.lastBankSwitch = { kind: 'mode', addr, val, romBank: this.currentROMBank, ramBank: this.currentRAMBank, t: performance.now() };
     }
+
+    if (this.currentROMBank !== prevROM || this.currentRAMBank !== prevRAM ||
+        this.ramEnabled !== prevEnabled || this.bankingMode !== prevMode) {
+      const fs = this.emulator.frameStats;
+      fs.bankSwitches++;
+      fs.events.push({ line: this.emulator.ppu.ly, kind: 'bank' });
+    }
   }
 
   readIO(addr) {
@@ -1200,6 +1324,9 @@ class MMU {
   doDMA(val) {
     const src = val << 8;
     for (let i = 0; i < 0xA0; i++) this.oam[i] = this.read8(src + i);
+    const fs = this.emulator.frameStats;
+    fs.dma++;
+    fs.events.push({ line: this.emulator.ppu.ly, kind: 'dma' });
   }
 }
 
@@ -1951,6 +2078,11 @@ class PPU {
         });
       }
     }
+    const fs = this.emulator.frameStats;
+    fs.spritesPerLine[y] = candidates.length;
+    fs.spritesTotal += candidates.length;
+    if (candidates.length > fs.spritesMaxLine) fs.spritesMaxLine = candidates.length;
+
     // Draw lowest-priority sprites first so higher-priority ones (smaller X, then lower
     // OAM index) end up drawn last and win any overlap.
     candidates.sort((a, b) => (b.spriteX - a.spriteX) || (b.oamIndex - a.oamIndex));
@@ -2377,7 +2509,15 @@ class APU {
   }
 
   /* ---- channel triggers (NRx4 bit 7 write) ---- */
+  // Records that some channel was (re)triggered this frame, for the Frame Activity anatomy
+  // strip - purely observational, doesn't affect sound generation.
+  noteTrigger() {
+    const fs = this.emulator.frameStats;
+    fs.apuTriggers++;
+    fs.events.push({ line: this.emulator.ppu.ly, kind: 'apu' });
+  }
   triggerCh1() {
+    this.noteTrigger();
     this.ch1.enabled = this.ch1.dacEnabled;
     if (this.ch1.lengthCounter === 0) this.ch1.lengthCounter = 64;
     this.ch1.freqTimer = (2048 - this.ch1.frequency) * 4;
@@ -2389,6 +2529,7 @@ class APU {
     if (this.ch1.sweepShift > 0) this.calcSweep(); // immediate overflow check
   }
   triggerCh2() {
+    this.noteTrigger();
     this.ch2.enabled = this.ch2.dacEnabled;
     if (this.ch2.lengthCounter === 0) this.ch2.lengthCounter = 64;
     this.ch2.freqTimer = (2048 - this.ch2.frequency) * 4;
@@ -2396,12 +2537,14 @@ class APU {
     this.ch2.volume = this.ch2.envVolume;
   }
   triggerCh3() {
+    this.noteTrigger();
     this.ch3.enabled = this.ch3.dacEnabled;
     if (this.ch3.lengthCounter === 0) this.ch3.lengthCounter = 256;
     this.ch3.freqTimer = (2048 - this.ch3.frequency) * 2;
     this.ch3.samplePos = 0;
   }
   triggerCh4() {
+    this.noteTrigger();
     this.ch4.enabled = this.ch4.dacEnabled;
     if (this.ch4.lengthCounter === 0) this.ch4.lengthCounter = 64;
     this.ch4.envTimer = this.ch4.envPeriod || 8;
@@ -2590,6 +2733,14 @@ class Emulator {
     this._bpSkipFirstMatch = false; // avoids instantly re-triggering a PC breakpoint we're already sitting on
     this.onBreakpointHit = null;   // optional callback(reason), wired up by the UI
 
+    /* ---- frame activity: emulated-hardware content per frame (instructions, interrupts,
+       sprites, DMA, banking, APU triggers) - purely observational, for the Frame Activity
+       panel. Not JS/host timing - just counts of things the emulated hardware itself did. ---- */
+    this.FRAME_STATS_HISTORY = 60;    // ~1 second at 59.73fps
+    this.frameStatsHistory = [];      // completed frame snapshots, oldest first
+    this.frameCounter = 0;            // monotonic frame index, identifies history entries
+    this.frameStats = this.newFrameStats(); // accumulator for the frame currently in progress
+
     /* ---- execution trace: ring buffer of the last TRACE_SIZE fetched instructions ---- */
     this.TRACE_SIZE = 500;
     this.traceAddr = new Uint16Array(this.TRACE_SIZE);
@@ -2601,7 +2752,32 @@ class Emulator {
     this.traceFilled = 0;
   }
 
-  requestInterrupt(bit) { this.mmu.io[0x0F] |= (1 << bit); }
+  // A fresh accumulator for one frame's worth of hardware activity. spritesPerLine is indexed
+  // by scanline (0-143); events is an ordered list of { line, kind } markers used to place
+  // interrupt/DMA/bank/APU ticks on the Frame Activity anatomy strip.
+  newFrameStats() {
+    return {
+      index: this.frameCounter,
+      instructions: 0,
+      interrupts: { vblank: 0, stat: 0, timer: 0, serial: 0, joypad: 0 },
+      events: [],
+      dma: 0,
+      bankSwitches: 0,
+      apuTriggers: 0,
+      spritesPerLine: new Uint8Array(144),
+      spritesTotal: 0,
+      spritesMaxLine: 0,
+    };
+  }
+
+  requestInterrupt(bit) {
+    this.mmu.io[0x0F] |= (1 << bit);
+    const kind = ['vblank', 'stat', 'timer', 'serial', 'joypad'][bit];
+    if (kind) {
+      this.frameStats.interrupts[kind]++;
+      this.frameStats.events.push({ line: this.ppu.ly, kind: 'int-' + kind });
+    }
+  }
 
   loadROM(bytes) {
     this.mmu.loadROM(bytes);
@@ -2609,6 +2785,10 @@ class Emulator {
     this.ppu.modeClock = 0; this.ppu.mode = 2; this.ppu.windowLineCounter = 0;
     this.timer.divCounter = 0; this.timer.divReg = 0; this.timer.timaCounter = 0; this.timer.tima = 0;
     this.apu.reset();
+
+    this.frameStatsHistory = [];
+    this.frameCounter = 0;
+    this.frameStats = this.newFrameStats();
 
     let title = '';
     for (let i = 0x134; i < 0x144; i++) {
@@ -2688,12 +2868,20 @@ class Emulator {
   }
 
   runFrame() {
+    // Starting a fresh frame: the accumulator built up during the previous call is done being
+    // written to by now (nothing outside runFrame() touches frameStats), so it's safe to swap
+    // in a new one before pushing the finished one into history below.
+    this.frameStats = this.newFrameStats();
     let cyclesThisFrame = 0;
     while (cyclesThisFrame < Emulator.CYCLES_PER_FRAME) {
       const cycles = this.stepInstruction();
-      if (!this.running) return; // a breakpoint fired mid-frame; stop immediately
+      this.frameStats.instructions++;
+      if (!this.running) return; // a breakpoint fired mid-frame; stop immediately (stats for this partial frame are discarded)
       cyclesThisFrame += cycles;
     }
+    this.frameStatsHistory.push(this.frameStats);
+    if (this.frameStatsHistory.length > this.FRAME_STATS_HISTORY) this.frameStatsHistory.shift();
+    this.frameCounter++;
   }
 
   // Pauses the emulator and records why, so a breakpoint hit looks the same in the UI as
@@ -2740,6 +2928,22 @@ class Emulator {
     if (this.running) this.pause();
     this.running = true; // runFrame() bails out early if this flips false mid-frame (breakpoint hit)
     this.runFrame();
+    this.running = false;
+    this.draw();
+    this.updateDebug();
+  }
+
+  // Runs 60 full frames back to back (~1.005s of emulated time, matching the ~60fps figure
+  // used elsewhere in this UI) then redraws - a coarse "step frame" for skipping past a slow
+  // intro/cutscene, and it conveniently fills the Frame Activity ring buffer (60 entries) with
+  // exactly the frames this call just ran, so every one of them becomes browsable afterwards.
+  stepOneSecond() {
+    if (this.running) this.pause();
+    this.running = true; // runFrame() bails out early if this flips false mid-frame (breakpoint hit)
+    for (let i = 0; i < 60; i++) {
+      this.runFrame();
+      if (!this.running) break; // a breakpoint fired mid-frame; stop immediately
+    }
     this.running = false;
     this.draw();
     this.updateDebug();
@@ -2925,6 +3129,7 @@ const btnReset = document.getElementById('btnReset');
 const btnStep = document.getElementById('btnStep');
 const btnStepLine = document.getElementById('btnStepLine');
 const btnStepFrame = document.getElementById('btnStepFrame');
+const btnStep1s = document.getElementById('btnStep1s');
 const bpStatus = document.getElementById('bpStatus');
 
 let lastROMBytes = null;
@@ -2978,8 +3183,11 @@ function handleROMFile(file) {
     lastRenderedAccessSeq = -1;
     lastRenderedBankSwitchT = -1;
     buildBankingPanel();
+    selectedFrameStatsIndex = null; // follow the latest frame again for this newly-loaded ROM
+    selectedAnatomyLine = null;     // clear any pinned scanline from the previous ROM
     btnStart.disabled = false; btnPause.disabled = false; btnReset.disabled = false;
     btnStep.disabled = false; btnStepLine.disabled = false; btnStepFrame.disabled = false;
+    btnStep1s.disabled = false;
     bpStatus.textContent = 'Ready.';
     updateStateButtons();
     emulator.start();
@@ -3043,6 +3251,14 @@ btnStepFrame.addEventListener('click', () => {
   emulator.stepFrame();
   btnPause.textContent = '▶ Resume';
   bpStatus.textContent = `Stepped one frame — PC=${hex16(emulator.cpu.PC)}`;
+  refreshDebugTools();
+});
+
+btnStep1s.addEventListener('click', () => {
+  emulator.stepOneSecond();
+  btnPause.textContent = '▶ Resume';
+  bpStatus.textContent = `Stepped 1s (60 frames) — PC=${hex16(emulator.cpu.PC)}`;
+  selectedFrameStatsIndex = null; // let Frame Activity follow the 60 frames just stepped
   refreshDebugTools();
 });
 
@@ -3732,6 +3948,217 @@ function drawScanlineTimeline() {
 }
 
 /* ---- 5. Live disassembler: decodes the bytes around PC into mnemonics ---- */
+/* ---- Frame Activity: emulated-hardware content per frame, not JS/host timing ----
+   Left canvas: one bar per recent frame, height = instructions executed that frame; click a
+   bar to select it. Middle canvas: the selected frame's 154 scanlines with markers showing
+   where interrupts, OAM DMA, bank switches, and APU triggers happened, plus a sprites-per-line
+   sparkline; click a scanline to select it. Bottom canvas: that single scanline's fixed 456T
+   mode structure plus the exact events/sprite count recorded on it. Selection defaults to
+   whichever frame most recently completed. */
+const frameActivityCanvas = document.getElementById('frameActivityCanvas');
+const frameAnatomyCanvas = document.getElementById('frameAnatomyCanvas');
+const lineAnatomyCanvas = document.getElementById('lineAnatomyCanvas');
+const frameActivityCountEl = document.getElementById('frameActivityCount');
+const frameAnatomyIndexEl = document.getElementById('frameAnatomyIndex');
+const frameAnatomyStatsEl = document.getElementById('frameAnatomyStats');
+const lineAnatomyIndexEl = document.getElementById('lineAnatomyIndex');
+const lineAnatomyFrameIndexEl = document.getElementById('lineAnatomyFrameIndex');
+const lineAnatomyStatsEl = document.getElementById('lineAnatomyStats');
+
+let selectedFrameStatsIndex = null; // a frameStats.index value, or null to always follow the latest frame
+let selectedAnatomyLine = null;     // a scanline 0-153 within the selected frame, or null if none chosen yet
+
+function getFrameActivitySlice() {
+  const hist = emulator.frameStatsHistory;
+  return hist.slice(Math.max(0, hist.length - emulator.FRAME_STATS_HISTORY));
+}
+
+// The single frame entry both the "Anatomy of frame" and "Anatomy of line" views are showing -
+// whichever frame is pinned by selectedFrameStatsIndex, or the latest one if none is pinned.
+function getSelectedAnatomyEntry() {
+  const hist = emulator.frameStatsHistory;
+  if (hist.length === 0) return null;
+  return (selectedFrameStatsIndex === null ? null : hist.find(f => f.index === selectedFrameStatsIndex))
+         || hist[hist.length - 1];
+}
+
+function drawFrameActivity() {
+  const ctx = frameActivityCanvas.getContext('2d');
+  const w = frameActivityCanvas.width, h = frameActivityCanvas.height;
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, w, h);
+
+  const slice = getFrameActivitySlice();
+  frameActivityCountEl.textContent = slice.length;
+  if (slice.length === 0) return;
+
+  const maxInstr = Math.max(1, ...slice.map(f => f.instructions));
+  const barW = w / slice.length;
+  const selected = selectedFrameStatsIndex === null ? slice[slice.length - 1].index : selectedFrameStatsIndex;
+
+  slice.forEach((f, i) => {
+    const barH = Math.max(1, (f.instructions / maxInstr) * (h - 4));
+    ctx.fillStyle = f.index === selected ? '#ffdd00' : '#5ac2e0';
+    ctx.fillRect(i * barW + 1, h - barH, Math.max(1, barW - 2), barH);
+  });
+}
+
+// Clicking a bar pins the anatomy view to that specific frame; the x position maps directly
+// to an index into the currently-displayed slice regardless of how the canvas is CSS-scaled.
+// The previously-selected line (if any) carries over, so switching frames while a line is
+// pinned lets you compare the same scanline across different frames.
+frameActivityCanvas.addEventListener('click', (e) => {
+  const slice = getFrameActivitySlice();
+  if (slice.length === 0) return;
+  const rect = frameActivityCanvas.getBoundingClientRect();
+  const frac = (e.clientX - rect.left) / rect.width;
+  const i = Math.min(slice.length - 1, Math.max(0, Math.floor(frac * slice.length)));
+  selectedFrameStatsIndex = slice[i].index;
+  drawFrameActivity();
+  drawFrameAnatomy();
+  drawLineAnatomy();
+});
+
+const FRAME_EVENT_COLORS = {
+  'int-vblank': '#e05a5a', 'int-stat': '#e0785a', 'int-timer': '#e0a45a',
+  'int-serial': '#e0c85a', 'int-joypad': '#e0e05a',
+  dma: '#5ac2e0', bank: '#8a5ac2', apu: '#4ade80',
+};
+const FRAME_EVENT_LABELS = {
+  'int-vblank': 'V-Blank interrupt', 'int-stat': 'STAT interrupt', 'int-timer': 'Timer interrupt',
+  'int-serial': 'Serial interrupt', 'int-joypad': 'Joypad interrupt',
+  dma: 'OAM DMA', bank: 'Bank switch', apu: 'APU trigger',
+};
+
+function drawFrameAnatomy() {
+  const ctx = frameAnatomyCanvas.getContext('2d');
+  const w = frameAnatomyCanvas.width, h = frameAnatomyCanvas.height;
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, w, h);
+
+  const entry = getSelectedAnatomyEntry();
+  if (!entry) {
+    frameAnatomyIndexEl.textContent = '—';
+    frameAnatomyStatsEl.textContent = 'Load a ROM and let it run to see frame data.';
+    return;
+  }
+  frameAnatomyIndexEl.textContent = '#' + entry.index;
+
+  // Background split: visible lines 0-143 vs V-Blank lines 144-153, same proportions as the
+  // scanline timeline above so the two views read consistently.
+  const visibleW = w * (144 / 154);
+  ctx.fillStyle = '#20303a'; ctx.fillRect(0, 0, visibleW, h);
+  ctx.fillStyle = '#2a2036'; ctx.fillRect(visibleW, 0, w - visibleW, h);
+
+  // Sprites-per-line sparkline (0-10, the hardware's per-line sprite cap) across the visible region.
+  ctx.strokeStyle = '#4ade80'; ctx.lineWidth = 1.5; ctx.beginPath();
+  for (let line = 0; line < 144; line++) {
+    const x = (line / 154) * w;
+    const y = h - 3 - (entry.spritesPerLine[line] / 10) * (h - 8);
+    if (line === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Event ticks: interrupts, DMA, bank switches, APU triggers, placed at the scanline they fired on.
+  for (const ev of entry.events) {
+    const x = (ev.line / 154) * w;
+    ctx.fillStyle = FRAME_EVENT_COLORS[ev.kind] || '#fff';
+    ctx.fillRect(x - 1.5, 2, 3, h - 4);
+  }
+
+  // Highlight the currently-selected scanline (if any) with an outlined column, so it's clear
+  // which slice "Anatomy of line" below is describing.
+  if (selectedAnatomyLine !== null) {
+    const lineW = w / 154;
+    ctx.strokeStyle = '#ffdd00'; ctx.lineWidth = 2;
+    ctx.strokeRect(selectedAnatomyLine * lineW + 1, 1, lineW - 2, h - 2);
+  }
+
+  const ints = entry.interrupts;
+  const intTotal = ints.vblank + ints.stat + ints.timer + ints.serial + ints.joypad;
+  frameAnatomyStatsEl.innerHTML =
+    `<span><b>${entry.instructions.toLocaleString()}</b> instructions</span>` +
+    `<span><b>${intTotal}</b> interrupts (V-Blank ${ints.vblank}, STAT ${ints.stat}, Timer ${ints.timer}, Serial ${ints.serial}, Joypad ${ints.joypad})</span>` +
+    `<span><b>${entry.spritesTotal}</b> sprites drawn (peak ${entry.spritesMaxLine}/line)</span>` +
+    `<span><b>${entry.dma}</b> OAM DMA</span>` +
+    `<span><b>${entry.bankSwitches}</b> bank switches</span>` +
+    `<span><b>${entry.apuTriggers}</b> APU triggers</span>`;
+}
+
+// Clicking a scanline in "Anatomy of frame" pins the "Anatomy of line" view below it to that line.
+frameAnatomyCanvas.addEventListener('click', (e) => {
+  if (!getSelectedAnatomyEntry()) return;
+  const rect = frameAnatomyCanvas.getBoundingClientRect();
+  const frac = (e.clientX - rect.left) / rect.width;
+  selectedAnatomyLine = Math.min(153, Math.max(0, Math.floor(frac * 154)));
+  drawFrameAnatomy(); // redraw to show the highlighted column
+  drawLineAnatomy();
+});
+
+// Draws the selected scanline's fixed 456T mode timeline (Mode 2/3/0 for a visible line, or a
+// single Mode 1 span for a V-Blank line) and lists exactly what was recorded on that line:
+// sprites drawn and any interrupt/DMA/bank/APU events. This emulator uses fixed-length modes
+// (see the Scanline Timeline tool above), so the mode split is always the same shape for every
+// visible line - what differs line to line is only the sprite count and the events list.
+function drawLineAnatomy() {
+  const ctx = lineAnatomyCanvas.getContext('2d');
+  const w = lineAnatomyCanvas.width, h = lineAnatomyCanvas.height;
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, w, h);
+
+  const entry = getSelectedAnatomyEntry();
+  if (!entry || selectedAnatomyLine === null) {
+    lineAnatomyIndexEl.textContent = '—';
+    lineAnatomyFrameIndexEl.textContent = '—';
+    lineAnatomyStatsEl.textContent = 'Click a scanline in the "Anatomy of frame" chart above to see its details.';
+    return;
+  }
+  const line = selectedAnatomyLine;
+  lineAnatomyIndexEl.textContent = line;
+  lineAnatomyFrameIndexEl.textContent = '#' + entry.index;
+
+  if (line < 144) {
+    // Mode 2 (80T) -> Mode 3 (172T) -> Mode 0 (204T), drawn to scale across the 456T line.
+    const modes = [
+      { t: 80,  color: '#e0b45a' },
+      { t: 172, color: '#5ac2e0' },
+      { t: 204, color: '#4a4a55' },
+    ];
+    let x = 0;
+    for (const m of modes) {
+      const mw = (m.t / 456) * w;
+      ctx.fillStyle = m.color; ctx.fillRect(x, 0, mw, h);
+      x += mw;
+    }
+  } else {
+    // V-Blank lines are Mode 1 for their entire 456T - no OAM Search / Pixel Transfer / H-Blank split.
+    ctx.fillStyle = '#8a5ac2'; ctx.fillRect(0, 0, w, h);
+  }
+
+  const events = entry.events.filter(ev => ev.line === line);
+  const sprites = line < 144 ? entry.spritesPerLine[line] : 0;
+  const pctOfLine = (t) => ((t / 456) * 100).toFixed(1) + '%';
+  const pctOfFrame = (t) => ((t / 70224) * 100).toFixed(2) + '%';
+
+  let html = '';
+  if (line < 144) {
+    html += `<span><b>Visible line</b> — Mode 2 80T (${pctOfLine(80)} of line, ${pctOfFrame(80)} of frame) &rarr; `
+          + `Mode 3 172T (${pctOfLine(172)}, ${pctOfFrame(172)}) &rarr; Mode 0 204T (${pctOfLine(204)}, ${pctOfFrame(204)})</span>`;
+    html += `<span><b>${sprites}</b>/10 sprites drawn on this line</span>`;
+  } else {
+    html += `<span><b>V-Blank line</b> — Mode 1 for the whole 456T (${pctOfFrame(456)} of frame)</span>`;
+  }
+  if (events.length === 0) {
+    html += `<span>No interrupt/DMA/bank/APU events recorded on this line this frame.</span>`;
+  } else {
+    // Group same-kind events (e.g. two APU triggers on one line) into a single "x N" entry.
+    const counts = {};
+    for (const ev of events) counts[ev.kind] = (counts[ev.kind] || 0) + 1;
+    for (const kind of Object.keys(counts)) {
+      html += `<span><i style="background:${FRAME_EVENT_COLORS[kind] || '#fff'};width:10px;height:10px;border-radius:2px;display:inline-block;margin-right:5px;"></i>`
+            + `${FRAME_EVENT_LABELS[kind] || kind}${counts[kind] > 1 ? ' &times;' + counts[kind] : ''}</span>`;
+    }
+  }
+  lineAnatomyStatsEl.innerHTML = html;
+}
+
 function drawDisassembly() {
   if (!lastROMBytes) { disasmList.innerHTML = '<div class="disasm-empty">Load a ROM to see disassembly.</div>'; return; }
   const mmu = emulator.mmu, pc = emulator.cpu.PC;
@@ -3932,6 +4359,12 @@ function refreshDebugTools() {
   else if (activeVisual === 'palettes') drawPalettes();
   else if (activeVisual === 'oscilloscope') drawOscilloscope();
   else if (activeVisual === 'scanline') drawScanlineTimeline();
+
+  // Frame Activity isn't a tab - it's always visible below the 3-column layout - so it
+  // redraws every time regardless of which tabs are currently active above.
+  drawFrameActivity();
+  drawFrameAnatomy();
+  drawLineAnatomy();
 }
 
 // Fallback redraw for when the emulator isn't actively running (paused, stepping, or no
@@ -4185,6 +4618,9 @@ updateStateButtons();
 applyMode();
 applyScreenModel();
 applyScanlineMark();
+drawFrameActivity();
+drawFrameAnatomy();
+drawLineAnatomy();
 
 </script>
 </body>

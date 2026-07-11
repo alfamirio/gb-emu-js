@@ -6,7 +6,7 @@
 <title>JS GB Emulator — Educational Project</title>
 <style>
   :root {
-    --screen-bg: #0f380f;
+    --screen-bg: #343434;
     --accent: #6b4fa0;
     --accent-dark: #4e3878;
     --text: #2b2b2b;
@@ -36,7 +36,11 @@
   }
   .navbar .nav-title { font-size: 1.3rem; font-weight: 600; letter-spacing: 1px; color: #eee; }
 
-  .mode-toggle { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 0.82rem; color: #888; }
+  .model-toggle { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 0.82rem; color: #888; }
+  .model-toggle .model-label { transition: color .15s; }
+  .model-toggle .model-label.active { color: #eee; font-weight: 600; }
+
+  .mode-toggle { display: flex; align-items: center; gap: 10px; font-size: 0.82rem; color: #888; }
   .mode-toggle .mode-label { transition: color .15s; }
   .mode-toggle .mode-label.active { color: #eee; font-weight: 600; }
   .switch { position: relative; display: inline-block; width: 42px; height: 22px; flex-shrink: 0; }
@@ -444,6 +448,14 @@
 
 <nav class="navbar">
   <span class="nav-title">JS GB Emulator</span>
+  <div class="model-toggle">
+    <span class="model-label" id="modelLabelGB">GB</span>
+    <label class="switch">
+      <input type="checkbox" id="modelToggle" checked>
+      <span class="toggle-track"><span class="toggle-thumb"></span></span>
+    </label>
+    <span class="model-label active" id="modelLabelGBP">GBP</span>
+  </div>
   <div class="mode-toggle">
     <span class="mode-label" id="modeLabelPlay">Play</span>
     <label class="switch">
@@ -1376,8 +1388,13 @@ function explainInstruction(mnemonicText) {
 /* ==================================== 3. PPU (graphics) ================================= */
 
 class PPU {
-  // The classic four-shade DMG green palette.
-  static SHADES = [[155, 188, 15], [139, 172, 15], [48, 98, 48], [15, 56, 15]];
+  // Two selectable four-shade palettes: the classic DMG (original Game Boy) green tint,
+  // and the neutral grayscale used by the Game Boy Pocket's screen. SHADES points at
+  // whichever is currently active (see setScreenModel() on Emulator) and is what
+  // applyPalette() actually reads from.
+  static PALETTE_GB  = [[155, 188, 15], [139, 172, 15], [48, 98, 48], [15, 56, 15]];
+  static PALETTE_GBP = [[255, 255, 255], [169, 169, 169], [84, 84, 84], [0, 0, 0]];
+  static SHADES = PPU.PALETTE_GBP;
 
   constructor(emulator) {
     this.emulator = emulator;
@@ -2660,6 +2677,26 @@ if (savedDebugging !== null) modeToggle.checked = savedDebugging;
 
 modeToggle.addEventListener('change', applyMode);
 applyMode();
+
+/* ---- screen model toggle: checked = GBP (grayscale, default), unchecked = GB (green tint) ---- */
+const modelToggle = document.getElementById('modelToggle');
+const modelLabelGB = document.getElementById('modelLabelGB');
+const modelLabelGBP = document.getElementById('modelLabelGBP');
+
+function applyScreenModel() {
+  const isGBP = modelToggle.checked;
+  PPU.SHADES = isGBP ? PPU.PALETTE_GBP : PPU.PALETTE_GB;
+  document.documentElement.style.setProperty('--screen-bg', isGBP ? '#343434' : '#0f380f');
+  modelLabelGBP.classList.toggle('active', isGBP);
+  modelLabelGB.classList.toggle('active', !isGBP);
+  // Repaint immediately with the new palette instead of waiting for the next emulated frame,
+  // and refresh any open debug/visualization panels that render colors (tile map, palettes, etc).
+  if (emulator.mmu.rom && emulator.mmu.rom.length) emulator.draw();
+  refreshDebugTools();
+}
+
+modelToggle.addEventListener('change', applyScreenModel);
+applyScreenModel();
 
 /* ---- 1. VRAM tile viewer: every tile in 0x8000-0x97FF, raw, no palette ---- */
 function drawTileViewer() {

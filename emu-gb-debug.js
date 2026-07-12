@@ -692,6 +692,19 @@ function updateCpuControlsVisibility(tool) {
   cpuDebugControls.classList.toggle('hidden', !TOOLS_NEEDING_CPU_CONTROLS.includes(tool));
 }
 
+// MMU.noteAccess() (Mem Map/Banking) and the CPU's per-instruction trace snapshot/diff
+// (Execution Trace) are the two hottest pieces of debug instrumentation - each runs on
+// every memory access or every instruction respectively. Both are wasted work unless the
+// one specific tab that consumes them is actually the open tab, so keep emulator.trackMemMap
+// / emulator.trackTrace synced to (debug mode on) AND (that tab is active), rather than just
+// mirroring the play/debug toggle the way the coarser emulator.trackAccess does. Called both
+// on tab switches and from applyMode() (play/debug toggle) so either kind of change is caught.
+function syncAccessTracking(activeDebugTool) {
+  const debugging = !document.body.classList.contains('playing-mode');
+  emulator.trackMemMap = debugging && (activeDebugTool === 'memmap' || activeDebugTool === 'banking');
+  emulator.trackTrace = debugging && (activeDebugTool === 'trace');
+}
+
 function setupTabGroup(container) {
   const tabs = container.querySelectorAll('.tool-tab');
   const panels = container.querySelectorAll('.tool-panel');
@@ -701,7 +714,10 @@ function setupTabGroup(container) {
       panels.forEach(p => p.classList.add('hidden'));
       btn.classList.add('active');
       document.getElementById('panel-' + btn.dataset.tool).classList.remove('hidden');
-      if (container === debugToolsContainer) updateCpuControlsVisibility(btn.dataset.tool);
+      if (container === debugToolsContainer) {
+        updateCpuControlsVisibility(btn.dataset.tool);
+        syncAccessTracking(btn.dataset.tool);
+      }
       refreshDebugTools();
     });
   });
@@ -711,6 +727,7 @@ setupTabGroup(debugToolsContainer);
 setupTabGroup(visualToolsContainer);
 
 updateCpuControlsVisibility(debugToolsContainer.querySelector('.tool-tab.active').dataset.tool);
+syncAccessTracking(debugToolsContainer.querySelector('.tool-tab.active').dataset.tool);
 
 // Keep the trace panel's height matched to its sibling column across window resizes, but
 // only while it's actually the visible tab - other debug panels are unaffected either way.
@@ -734,7 +751,8 @@ const modeLabelDebug = document.getElementById('modeLabelDebug');
 function applyMode() {
   const debugging = modeToggle.checked;
   document.body.classList.toggle('playing-mode', !debugging);
-  emulator.trackAccess = debugging; // skip MMU noteAccess bookkeeping entirely while just playing
+  emulator.trackAccess = debugging; // skip the coarser frame-activity bookkeeping entirely while just playing
+  syncAccessTracking(debugToolsContainer.querySelector('.tool-tab.active').dataset.tool); // and the finer memmap/trace gates
   modeLabelDebug.classList.toggle('active', debugging);
   modeLabelPlay.classList.toggle('active', !debugging);
   saveUIConfig({ debugMode: debugging });
@@ -1728,34 +1746,61 @@ function drawLineAnatomy() {
   lineAnatomyStatsEl.innerHTML = html;
 }
 
+// Cache of the previous frame's "before PC" resync result for the Disassembly panel. PC
+// almost always advances by exactly the length of whatever instruction was "current" last
+// frame (straight-line execution - no jump/call/ret actually taken this step), in which case
+// the previous frame's already-resynced boundaries are still valid: just slide the window
+// forward by pushing that now-past instruction onto the tail and dropping the oldest line,
+// with zero new resync decoding needed. Also short-circuits when PC didn't move at all (e.g.
+// HALTed). Only falls back to the up-to-12x-forward-decode resync search when neither holds
+// (an actual jump was taken, single-stepped over one, a breakpoint landed elsewhere, or a
+// new ROM was loaded - the `rom` reference check below invalidates the cache in that case).
+let disasmResyncCache = null; // { pc, rom, beforeLines, currentText, nextExpectedPc } or null
+
 function drawDisassembly() {
-  if (!lastROMBytes) { disasmList.innerHTML = '<div class="disasm-empty">Load a ROM to see disassembly.</div>'; return; }
+  if (!lastROMBytes) { disasmList.innerHTML = '<div class="disasm-empty">Load a ROM to see disassembly.</div>'; disasmResyncCache = null; return; }
   const mmu = emulator.mmu, pc = emulator.cpu.PC;
   const COUNT_BEFORE = 5, COUNT_AFTER = 9, MAX_LOOKBACK = 12;
 
-  // GB machine code isn't self-synchronizing, so to find instruction boundaries *before* PC,
-  // try progressively shorter lookbacks and keep the longest one that decodes forward and
-  // lands exactly back on PC (a genuine resync), rather than guessing at a byte offset.
-  let beforeLines = [];
-  for (let back = MAX_LOOKBACK; back >= 1; back--) {
-    let addr = pc - back;
-    if (addr < 0) continue;
-    const insns = [];
-    while (addr < pc) {
-      const { text, length } = disassembleAt(mmu, addr & 0xFFFF);
-      insns.push({ addr: addr & 0xFFFF, text });
-      addr += length;
+  let beforeLines;
+  const cache = disasmResyncCache;
+  if (cache && cache.rom === mmu.rom && cache.pc === pc) {
+    // PC hasn't moved since the last redraw (e.g. HALTed) - identical result, no work needed.
+    beforeLines = cache.beforeLines;
+  } else if (cache && cache.rom === mmu.rom && cache.nextExpectedPc === pc) {
+    // Straight-line advance from last frame: slide the window forward instead of re-running
+    // the resync search - the instruction that was "current" becomes the new newest "before" line.
+    beforeLines = cache.beforeLines.slice(1);
+    beforeLines.push({ addr: cache.pc, text: cache.currentText });
+  } else {
+    // GB machine code isn't self-synchronizing, so to find instruction boundaries *before*
+    // PC, try progressively shorter lookbacks and keep the longest one that decodes forward
+    // and lands exactly back on PC (a genuine resync), rather than guessing at a byte offset.
+    beforeLines = [];
+    for (let back = MAX_LOOKBACK; back >= 1; back--) {
+      let addr = pc - back;
+      if (addr < 0) continue;
+      const insns = [];
+      while (addr < pc) {
+        const { text, length } = disassembleAt(mmu, addr & 0xFFFF);
+        insns.push({ addr: addr & 0xFFFF, text });
+        addr += length;
+      }
+      if (addr === pc) { beforeLines = insns.slice(-COUNT_BEFORE); break; }
     }
-    if (addr === pc) { beforeLines = insns.slice(-COUNT_BEFORE); break; }
   }
 
   const lines = beforeLines.map(l => ({ ...l, current: false }));
   let addr = pc;
+  let currentText = null, currentLength = 0;
   for (let i = 0; i <= COUNT_AFTER; i++) {
     const { text, length } = disassembleAt(mmu, addr & 0xFFFF);
     lines.push({ addr: addr & 0xFFFF, text, current: i === 0 });
+    if (i === 0) { currentText = text; currentLength = length; }
     addr += length;
   }
+
+  disasmResyncCache = { pc, rom: mmu.rom, beforeLines, currentText, nextExpectedPc: (pc + currentLength) & 0xFFFF };
 
   disasmList.innerHTML = lines.map(l =>
     `<div class="disasm-line${l.current ? ' current' : ''}">${hex16(l.addr)}&nbsp;&nbsp;${l.text}</div>`
@@ -1828,8 +1873,11 @@ function drawStack() {
   const rows = [];
   for (let i = -WORDS_ABOVE; i <= WORDS_BELOW; i++) {
     const addr = (sp + i * 2) & 0xFFFF;
-    const lo = mmu.read8(addr);
-    const hi = mmu.read8((addr + 1) & 0xFFFF);
+    // peek8, not read8: this is the debugger looking at memory, not something the CPU/game
+    // actually did - read8 would both pay noteAccess's bookkeeping cost needlessly and
+    // misattribute these 29 reads/frame to CPU activity on the Mem Map's "last access" flash.
+    const lo = mmu.peek8(addr);
+    const hi = mmu.peek8((addr + 1) & 0xFFFF);
     const word = lo | (hi << 8);
     rows.push({ addr, word, current: i === 0, below: i > 0 });
   }
@@ -1940,6 +1988,28 @@ function isTraceAtBottom() {
   return traceList.scrollHeight - traceList.scrollTop - traceList.clientHeight < 24;
 }
 
+// Cache of decoded mnemonic + plain-English explanation for each execution-trace ring-buffer
+// slot (0..TRACE_SIZE-1), so drawTrace() doesn't have to re-run disassembleBytes()/
+// explainInstruction() for every visible row on every redraw - only for slots whose content
+// actually changed since we last drew that physical index. A game idling in a wait loop (the
+// common case while staring at the Trace tab) tends to keep landing on the same handful of
+// (addr, opcode) pairs at roughly the same ring-buffer offsets frame to frame, so most slots
+// hit the cache; addr/b0/b1/b2 are checked on every lookup so a slot that really did get
+// overwritten with different bytes is always recomputed rather than shown stale.
+const traceDecodeCache = new Array(emulator.TRACE_SIZE).fill(null);
+
+function getTraceDecoded(idx, addr, b0, b1, b2) {
+  const cached = traceDecodeCache[idx];
+  if (cached && cached.addr === addr && cached.b0 === b0 && cached.b1 === b1 && cached.b2 === b2) {
+    return cached;
+  }
+  const { text } = disassembleBytes((off) => (off === 0 ? b0 : off === 1 ? b1 : b2), addr);
+  const explain = explainInstruction(text);
+  const entry = { addr, b0, b1, b2, text, explain };
+  traceDecodeCache[idx] = entry;
+  return entry;
+}
+
 function drawTrace() {
   syncTraceListHeight();
 
@@ -1966,15 +2036,17 @@ function drawTrace() {
   // Collapse runs of consecutive entries that share the same (addr, opcode) - e.g. a tight
   // `JR NZ,-5`-style spin loop landing on the same instruction over and over - into a single
   // row with a "× N" badge, so the interesting instructions before/after it aren't buried.
+  // idx is carried along from the first entry in the run - decode only depends on the bytes
+  // (identical for the whole group by construction), so any member's slot works as the cache key.
   const groups = [];
   for (const e of recent) {
     const last = groups[groups.length - 1];
     if (last && last.addr === e.addr && last.b0 === e.b0) { last.count++; last.last = e; }
-    else groups.push({ addr: e.addr, b0: e.b0, b1: e.b1, b2: e.b2, count: 1, last: e });
+    else groups.push({ addr: e.addr, b0: e.b0, b1: e.b1, b2: e.b2, idx: e.idx, count: 1, last: e });
   }
 
   traceList.innerHTML = groups.map((g, i) => {
-    const { text } = disassembleBytes((off) => (off === 0 ? g.b0 : off === 1 ? g.b1 : g.b2), g.addr);
+    const { text, explain } = getTraceDecoded(g.idx, g.addr, g.b0, g.b1, g.b2);
     const isLatest = i === groups.length - 1;
     // Show the diff from the most recent occurrence in the run - the one whose effect is
     // still visible in the current register state.
@@ -1984,7 +2056,7 @@ function drawTrace() {
              `<span class="trace-code">${hex16(g.addr)}&nbsp;&nbsp;${hex8(g.b0)}&nbsp;&nbsp;${text}</span>` +
              repeatBadge +
              (diff ? `<span class="trace-diff">${diff}</span>` : '') +
-             `<span class="trace-explain">${explainInstruction(text)}</span>` +
+             `<span class="trace-explain">${explain}</span>` +
            `</div>`;
   }).join('');
   traceList.scrollTop = traceList.scrollHeight; // we're pinned to the bottom, so stay pinned

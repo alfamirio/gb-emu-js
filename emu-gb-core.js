@@ -122,6 +122,16 @@ const EMU_CORE_CONFIG = {
 
 /* ============================== 1. MMU (Memory Management Unit) ======================= */
 
+// Small-int ids for the Memory Map / Banking visualizer's region buckets. Used as the array
+// index into MMU.regionLastTouch (a Uint32Array) so the hottest path in the emulator - a
+// bookkeeping write on every single memory access - never touches a string-keyed object.
+// REGION_NAMES maps back to the string labels the debug UI (and MEM_REGIONS in
+// emu-gb-debug.js) expects.
+const REGION_ROM0 = 0, REGION_ROMX = 1, REGION_VRAM = 2, REGION_ERAM = 3, REGION_WRAM = 4,
+      REGION_OAM = 5, REGION_UNUSED = 6, REGION_IO = 7, REGION_HRAM = 8, REGION_IE = 9;
+const REGION_COUNT = 10;
+const REGION_NAMES = ['ROM0', 'ROMX', 'VRAM', 'ERAM', 'WRAM', 'OAM', 'UNUSED', 'IO', 'HRAM', 'IE'];
+
 class MMU {
   constructor(emulator) {
     this.emulator = emulator;
@@ -157,36 +167,44 @@ class MMU {
     this.ie      = 0;                      // 0xFFFF interrupt enable register
 
     // ---- live instrumentation for the Memory Map / Banking visualizers (no effect on
-    // emulation itself - purely observational state the UI reads on each redraw). ----
+    // emulation itself - purely observational state the UI reads on each redraw). Only
+    // actually populated while emulator.trackMemMap is on (Memory Map or Banking tab is the
+    // active debug tab) - see read8/write8 below and emu-gb-debug.js's tab-switching code. ----
     this.accessSeq = 0;                                  // monotonic counter, bumped on every read/write
     this.lastAccess = { addr: 0, region: 'ROM0', type: 'read', seq: 0 }; // mutated in place (avoid per-access GC)
-    this.regionLastTouch = { ROM0: 0, ROMX: 0, VRAM: 0, ERAM: 0, WRAM: 0, OAM: 0, UNUSED: 0, IO: 0, HRAM: 0, IE: 0 };
+    // Uint32Array indexed by REGION_* id (see above MMU) instead of a string-keyed object, so
+    // noteAccess() - called on every single memory access while it's active - does a
+    // small-int array write rather than a hashed property write.
+    this.regionLastTouch = new Uint32Array(REGION_COUNT);
     this.lastBankSwitch = null;                           // { kind, addr, val, romBank, ramBank, t } or null
   }
 
-  // Classifies an address into the same region buckets the Memory Map view draws.
+  // Classifies an address into the same region buckets the Memory Map view draws. Returns a
+  // small-int REGION_* id (not a string) so the hot path (noteAccess below) never touches a
+  // string-keyed lookup; REGION_NAMES[id] recovers the string label the UI wants.
   regionForAddr(addr) {
     const MEM = EMU_CORE_CONFIG.MEMORY;
-    if (addr < MEM.ROM0_END) return 'ROM0';
-    if (addr < MEM.ROMX_END) return 'ROMX';
-    if (addr < MEM.VRAM_END) return 'VRAM';
-    if (addr < MEM.ERAM_END) return 'ERAM';
-    if (addr < MEM.WRAM_END) return 'WRAM';
-    if (addr < MEM.ECHO_END) return 'WRAM'; // echo RAM mirrors WRAM
-    if (addr < MEM.OAM_END) return 'OAM';
-    if (addr < MEM.UNUSABLE_END) return 'UNUSED';
-    if (addr < MEM.IO_END) return 'IO';
-    if (addr < MEM.HRAM_END) return 'HRAM';
-    return 'IE';
+    if (addr < MEM.ROM0_END) return REGION_ROM0;
+    if (addr < MEM.ROMX_END) return REGION_ROMX;
+    if (addr < MEM.VRAM_END) return REGION_VRAM;
+    if (addr < MEM.ERAM_END) return REGION_ERAM;
+    if (addr < MEM.WRAM_END) return REGION_WRAM;
+    if (addr < MEM.ECHO_END) return REGION_WRAM; // echo RAM mirrors WRAM
+    if (addr < MEM.OAM_END) return REGION_OAM;
+    if (addr < MEM.UNUSABLE_END) return REGION_UNUSED;
+    if (addr < MEM.IO_END) return REGION_IO;
+    if (addr < MEM.HRAM_END) return REGION_HRAM;
+    return REGION_IE;
   }
 
-  // Records that the CPU just touched `addr` (read or write), for the Memory Map view.
+  // Records that the CPU just touched `addr` (read or write), for the Memory Map view. Only
+  // called at all while emulator.trackMemMap is on (see read8/write8 below).
   noteAccess(addr, type) {
-    const region = this.regionForAddr(addr);
+    const regionId = this.regionForAddr(addr);
     this.accessSeq++;
-    this.regionLastTouch[region] = this.accessSeq;
+    this.regionLastTouch[regionId] = this.accessSeq;
     const a = this.lastAccess;
-    a.addr = addr; a.region = region; a.type = type; a.seq = this.accessSeq;
+    a.addr = addr; a.region = REGION_NAMES[regionId]; a.type = type; a.seq = this.accessSeq;
   }
 
   loadROM(bytes) {
@@ -217,7 +235,7 @@ class MMU {
     // Reset the visualizer instrumentation on every (re)load.
     this.accessSeq = 0;
     this.lastAccess.addr = 0; this.lastAccess.region = 'ROM0'; this.lastAccess.type = 'read'; this.lastAccess.seq = 0;
-    for (const k in this.regionLastTouch) this.regionLastTouch[k] = 0;
+    this.regionLastTouch.fill(0);
     this.lastBankSwitch = null;
 
     // Values the real boot ROM would have left behind by the time a game starts running.
@@ -269,7 +287,7 @@ class MMU {
 
   read8(addr) {
     addr &= 0xFFFF;
-    if (this.emulator.trackAccess) this.noteAccess(addr, 'read');
+    if (this.emulator.trackMemMap) this.noteAccess(addr, 'read');
     return this.peek8(addr);
   }
 
@@ -307,7 +325,7 @@ class MMU {
 
   write8(addr, val) {
     addr &= 0xFFFF; val &= 0xFF;
-    if (this.emulator.trackAccess) this.noteAccess(addr, 'write');
+    if (this.emulator.trackMemMap) this.noteAccess(addr, 'write');
     const MEM = EMU_CORE_CONFIG.MEMORY;
     if (addr < MEM.ROMX_END) { this.handleBanking(addr, val); return; }
     if (addr < MEM.VRAM_END) { this.vram[addr - MEM.ROMX_END] = val; return; }
@@ -2110,12 +2128,22 @@ class Emulator {
     this.markCurrentLine = false;
     this.layerTint = false;
 
-    // Gates MMU.noteAccess() bookkeeping (Memory Map / Banking visualizer instrumentation).
-    // That bookkeeping runs on every single memory read/write the CPU makes, so it's only
-    // worth paying for while a debug panel that actually shows it is visible - the UI layer
+    // Gates the frame-activity/interrupt-log style bookkeeping that's cheap enough to leave
+    // running for any debug tab (see requestInterrupt() etc below) - the UI layer
     // (emu-gb-debug.js's applyMode()) flips this to match the play/debug mode toggle.
     // Defaults to true since debug mode is the default UI state (see applyMode()).
     this.trackAccess = true;
+
+    // Finer-grained gates for the two hottest pieces of debug instrumentation, each of which
+    // runs on every single memory access or every single instruction. Unlike trackAccess
+    // above, these track whether the *specific* tab that consumes them is actually the open
+    // one - not just whether debug mode as a whole is on - since paying their cost while,
+    // say, the Tile Viewer or Trace tab is open (for trackMemMap) is pure waste. Both default
+    // to false even though debug mode defaults to on, because the default active debug tab
+    // is Registers, not Mem Map/Banking/Trace. Kept in sync by emu-gb-debug.js's tab-
+    // switching code and applyMode().
+    this.trackMemMap = false; // Memory Map or MBC Banking tab is the active debug tab
+    this.trackTrace = false;  // Execution Trace tab is the active debug tab
 
     this.speed = 1;          // 0.1-1.0 multiplier applied to how fast emulated frames advance
     this._lastTime = null;   // real-time timestamp of the previous loop() tick
@@ -2277,9 +2305,10 @@ class Emulator {
     // snapshotRegs/pushTrace/diffRegs below exist purely to feed the Execution Trace debug
     // panel, but without this gate they used to run on *every instruction* (~1M times/sec):
     // a fresh register-snapshot object plus a diff string allocated every single step,
-    // whether or not any debug panel was even visible. trackAccess already mirrors the
-    // play/debug mode toggle (see MMU.noteAccess), so reuse it here too.
-    const tracking = this.trackAccess;
+    // whether or not the Trace panel was even the visible tab. trackTrace mirrors whether
+    // the Execution Trace tab is actually open (see emu-gb-debug.js's tab-switching code),
+    // not just whether debug mode as a whole is on.
+    const tracking = this.trackTrace;
     let opcode = null;
     let traceIndex = -1;
     let regsBefore = null;
@@ -2468,13 +2497,17 @@ class Emulator {
     return parts.join(' ');
   }
 
-  // Returns trace entries oldest-first, most-recently-executed last.
+  // Returns trace entries oldest-first, most-recently-executed last. Each entry includes the
+  // ring buffer's physical `idx` (0..TRACE_SIZE-1) it was read from, so a caller like
+  // drawTrace() can cache per-slot decoded/explained text instead of recomputing it every
+  // redraw - the same idx tends to hold the same instruction bytes across consecutive frames
+  // whenever the game is spinning in a loop.
   getTraceEntries() {
     const entries = [];
     const oldest = this.traceFilled < this.TRACE_SIZE ? 0 : this.traceWritePos;
     for (let i = 0; i < this.traceFilled; i++) {
       const idx = (oldest + i) % this.TRACE_SIZE;
-      entries.push({ addr: this.traceAddr[idx], b0: this.traceB0[idx], b1: this.traceB1[idx], b2: this.traceB2[idx], diff: this.traceDiff[idx] });
+      entries.push({ idx, addr: this.traceAddr[idx], b0: this.traceB0[idx], b1: this.traceB1[idx], b2: this.traceB2[idx], diff: this.traceDiff[idx] });
     }
     return entries;
   }

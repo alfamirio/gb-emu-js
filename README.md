@@ -2,7 +2,8 @@
 
 A from-scratch, single-file DMG (original Game Boy) emulator written in plain JavaScript. Built as an educational reference demonstrating how the LR35902 CPU, PPU, and memory map work together to turn a ROM file into a running game.
 
-**This project is intended for educational use** — for learning how a real CPU/PPU/memory bus fits together, not as a polished player. Alongside normal emulation, it exposes the machine's internals as you go:
+**This project is intended for educational use** — for learning how a real CPU/PPU/memory bus fits together, not as a polished player. 
+Alongside normal emulation, it exposes the machine's internals as you go:
 
 * **Live execution traces:** step through decoded instructions as the CPU fetches and runs them, with registers/flags updated in real time.
 * **Memory inspection:** browse live RAM/VRAM/OAM/I/O contents and an interactive map of the full `0x0000`–`0xFFFF` address space.

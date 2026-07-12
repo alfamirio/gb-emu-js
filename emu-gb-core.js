@@ -2172,13 +2172,16 @@ class Emulator {
     this._bpSkipFirstMatch = false; // avoids instantly re-triggering a PC breakpoint we're already sitting on
     this.onBreakpointHit = null;   // optional callback(reason), wired up by the UI
 
-    /* ---- rewind: in-memory-only ring buffer of full state snapshots, taken once per emulated
-       second, holding up to REWIND_MAX_SECONDS of history. Deliberately kept as plain JS
-       objects in a normal array - never touches localStorage or the save-state slots, so it
-       vanishes on page reload and can't collide with anything the user explicitly saved. ---- */
-    this.REWIND_MAX_SECONDS = 15;
+    /* ---- rewind: in-memory-only ring buffer of full state snapshots, taken every
+       REWIND_SNAPSHOT_INTERVAL_SECONDS of emulated time, holding up to REWIND_MAX_SNAPSHOTS of
+       history. Both are plain tunable numbers - bump either to make rewind deeper or more/less
+       granular. Deliberately kept as plain JS objects in a normal array - never touches
+       localStorage or the save-state slots, so it vanishes on page reload and can't collide
+       with anything the user explicitly saved. ---- */
+    this.REWIND_MAX_SNAPSHOTS = 10;              // how many snapshots the ring buffer keeps (oldest dropped first)
+    this.REWIND_SNAPSHOT_INTERVAL_SECONDS = 2;   // emulated seconds between snapshots
     this.rewindBuffer = [];      // oldest first, most recent last; each entry is a getSaveState() snapshot
-    this.rewindFrameAcc = 0;     // counts frames since the last snapshot was taken (60 = ~1s)
+    this.rewindFrameAcc = 0;     // counts frames since the last snapshot was taken
 
     /* ---- frame activity: emulated-hardware content per frame (instructions, interrupts,
        sprites, DMA, banking, APU triggers) - purely observational, for the Frame Activity
@@ -2366,28 +2369,32 @@ class Emulator {
     this.frameCounter++;
 
     this.rewindFrameAcc++;
-    if (this.rewindFrameAcc >= 60) { // ~1 emulated second at 59.73fps, same granularity as stepOneSecond()
+    // ~59.73fps, so this is the frame count for REWIND_SNAPSHOT_INTERVAL_SECONDS of emulated
+    // time (same 59.73fps approximation used elsewhere in this file, e.g. stepOneSecond()).
+    const rewindIntervalFrames = Math.round(this.REWIND_SNAPSHOT_INTERVAL_SECONDS * 59.73);
+    if (this.rewindFrameAcc >= rewindIntervalFrames) {
       this.rewindFrameAcc = 0;
       this.pushRewindSnapshot();
     }
   }
 
-  // Records a snapshot for the rewind buffer, capped to REWIND_MAX_SECONDS entries (oldest
+  // Records a snapshot for the rewind buffer, capped to REWIND_MAX_SNAPSHOTS entries (oldest
   // dropped first). In-memory only - never written to localStorage or the save-state slots.
   pushRewindSnapshot() {
     this.rewindBuffer.push(this.getSaveState());
-    if (this.rewindBuffer.length > this.REWIND_MAX_SECONDS) this.rewindBuffer.shift();
+    if (this.rewindBuffer.length > this.REWIND_MAX_SNAPSHOTS) this.rewindBuffer.shift();
   }
 
-  // Steps backward one second at a time: pops the most recent rewind snapshot and restores
-  // it, pausing the emulator. Each call goes one second further back; returns false once the
-  // buffer (up to REWIND_MAX_SECONDS deep) is exhausted.
+  // Steps backward one snapshot at a time (REWIND_SNAPSHOT_INTERVAL_SECONDS of emulated time
+  // per call): pops the most recent rewind snapshot and restores it, pausing the emulator.
+  // Each call goes one snapshot further back; returns false once the buffer (up to
+  // REWIND_MAX_SNAPSHOTS deep) is exhausted.
   rewind() {
     if (this.rewindBuffer.length === 0) return false;
     if (this.running) this.pause();
     const state = this.rewindBuffer.pop();
     this.loadSaveState(state);
-    this.rewindFrameAcc = 0; // the restored moment shouldn't count as partway into a new second
+    this.rewindFrameAcc = 0; // the restored moment shouldn't count as partway into the next snapshot
     this.draw();
     refreshDebugTools();
     return true;

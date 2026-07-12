@@ -461,13 +461,16 @@ btnReset.addEventListener('click', () => {
   }
 });
 
-/* ---- rewind: in-memory-only, up to 15s deep in 1s steps (see Emulator.rewind()) ---- */
+/* ---- rewind: in-memory-only, up to Emulator.REWIND_MAX_SNAPSHOTS deep, one snapshot every
+   Emulator.REWIND_SNAPSHOT_INTERVAL_SECONDS of emulated time (see Emulator.rewind()) ---- */
 function updateRewindButton() {
-  const secs = emulator.rewindBuffer.length;
-  btnRewind.disabled = secs === 0;
-  rewindInfo.textContent = secs > 0
-    ? `${secs}s of rewind history available (up to ${emulator.REWIND_MAX_SECONDS}s).`
-    : (lastROMBytes ? 'No rewind history yet — play for a second first.' : '');
+  const snapshots = emulator.rewindBuffer.length;
+  const interval = emulator.REWIND_SNAPSHOT_INTERVAL_SECONDS;
+  const maxSnapshots = emulator.REWIND_MAX_SNAPSHOTS;
+  btnRewind.disabled = snapshots === 0;
+  rewindInfo.textContent = snapshots > 0
+    ? `${snapshots * interval}s of rewind (${snapshots}/${maxSnapshots} snapshots, every ${interval}s).`
+    : (lastROMBytes ? `No rewind history yet — play for ${interval}s first.` : '');
 }
 setInterval(updateRewindButton, 250); // buffer grows in the background while playing, not just on clicks
 
@@ -475,7 +478,7 @@ btnRewind.addEventListener('click', () => {
   const ok = emulator.rewind();
   if (ok) {
     btnPause.textContent = '▶ Resume';
-    bpStatus.textContent = `Rewound 1s — PC=${hex16(emulator.cpu.PC)}`;
+    bpStatus.textContent = `Rewound ${emulator.REWIND_SNAPSHOT_INTERVAL_SECONDS}s — PC=${hex16(emulator.cpu.PC)}`;
     refreshDebugTools();
   }
   updateRewindButton();

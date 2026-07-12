@@ -1556,15 +1556,19 @@ function drawFrameActivity() {
   frameActivityCountEl.textContent = slice.length;
   if (slice.length === 0) return;
 
-  const maxInstr = Math.max(1, ...slice.map(f => f.instructions));
+  // Manual max instead of Math.max(1, ...slice.map(...)) - that allocated a fresh array via
+  // map() and another via the spread every call, up to 60x/sec while running in debug mode.
+  let maxInstr = 1;
+  for (let i = 0; i < slice.length; i++) if (slice[i].instructions > maxInstr) maxInstr = slice[i].instructions;
   const barW = w / slice.length;
   const selected = selectedFrameStatsIndex === null ? slice[slice.length - 1].index : selectedFrameStatsIndex;
 
-  slice.forEach((f, i) => {
+  for (let i = 0; i < slice.length; i++) {
+    const f = slice[i];
     const barH = Math.max(1, (f.instructions / maxInstr) * (h - 4));
     ctx.fillStyle = f.index === selected ? '#ffdd00' : '#5ac2e0';
     ctx.fillRect(i * barW + 1, h - barH, Math.max(1, barW - 2), barH);
-  });
+  }
 }
 
 // Clicking a bar pins the anatomy view to that specific frame; the x position maps directly

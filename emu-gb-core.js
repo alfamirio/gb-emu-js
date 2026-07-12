@@ -431,7 +431,7 @@ class MMU {
         this.ramEnabled !== prevEnabled || this.bankingMode !== prevMode) {
       const fs = this.emulator.frameStats;
       fs.bankSwitches++;
-      fs.events.push({ line: this.emulator.ppu.ly, kind: 'bank' });
+      if (this.emulator.trackAccess) fs.events.push({ line: this.emulator.ppu.ly, kind: 'bank' });
     }
   }
 
@@ -527,7 +527,7 @@ class MMU {
     for (let i = 0; i < EMU_CORE_CONFIG.OAM_DMA_BYTES; i++) this.oam[i] = this.read8(src + i);
     const fs = this.emulator.frameStats;
     fs.dma++;
-    fs.events.push({ line: this.emulator.ppu.ly, kind: 'dma' });
+    if (this.emulator.trackAccess) fs.events.push({ line: this.emulator.ppu.ly, kind: 'dma' });
   }
 }
 
@@ -1875,7 +1875,7 @@ class APU {
   noteTrigger() {
     const fs = this.emulator.frameStats;
     fs.apuTriggers++;
-    fs.events.push({ line: this.emulator.ppu.ly, kind: 'apu' });
+    if (this.emulator.trackAccess) fs.events.push({ line: this.emulator.ppu.ly, kind: 'apu' });
   }
   triggerCh1() {
     this.noteTrigger();
@@ -2188,10 +2188,13 @@ class Emulator {
 
   requestInterrupt(bit) {
     this.mmu.io[0x0F] |= (1 << bit);
-    const kind = ['vblank', 'stat', 'timer', 'serial', 'joypad'][bit];
+    const kind = INTERRUPT_KIND_NAMES[bit];
     if (kind) {
       this.frameStats.interrupts[kind]++;
-      this.frameStats.events.push({ line: this.ppu.ly, kind: 'int-' + kind });
+      // events[] purely feeds the Frame Anatomy debug strip - skip the allocation while
+      // just playing. VBlank alone fires 60x/sec no matter what, and STAT interrupts can
+      // fire far more often than that in games that use them for raster effects.
+      if (this.trackAccess) this.frameStats.events.push({ line: this.ppu.ly, kind: 'int-' + kind });
     }
   }
 
@@ -2271,13 +2274,24 @@ class Emulator {
 
     const pcBefore = this.cpu.PC;
     const wasHalted = this.cpu.halted;
+    // snapshotRegs/pushTrace/diffRegs below exist purely to feed the Execution Trace debug
+    // panel, but without this gate they used to run on *every instruction* (~1M times/sec):
+    // a fresh register-snapshot object plus a diff string allocated every single step,
+    // whether or not any debug panel was even visible. trackAccess already mirrors the
+    // play/debug mode toggle (see MMU.noteAccess), so reuse it here too.
+    const tracking = this.trackAccess;
     let opcode = null;
     let traceIndex = -1;
     let regsBefore = null;
     if (!wasHalted) {
-      opcode = this.mmu.read8(pcBefore);
-      regsBefore = this.snapshotRegs();
-      traceIndex = this.pushTrace(pcBefore, opcode, this.mmu.read8((pcBefore + 1) & 0xFFFF), this.mmu.read8((pcBefore + 2) & 0xFFFF));
+      // peek8, not read8: this is an inspection read for breakpoint-matching/tracing, not
+      // a real CPU memory access (the CPU's own fetch8() inside cpu.step() below is the
+      // real one) - no reason to pay noteAccess's bookkeeping cost for it twice.
+      opcode = this.mmu.peek8(pcBefore);
+      if (tracking) {
+        regsBefore = this.snapshotRegs();
+        traceIndex = this.pushTrace(pcBefore, opcode, this.mmu.peek8((pcBefore + 1) & 0xFFFF), this.mmu.peek8((pcBefore + 2) & 0xFFFF));
+      }
     }
 
     const cycles = this.cpu.step();
@@ -2285,7 +2299,7 @@ class Emulator {
     this.timer.step(cycles);
     this.apu.step(cycles);
 
-    if (!wasHalted) {
+    if (!wasHalted && tracking) {
       this.traceDiff[traceIndex] = this.diffRegs(regsBefore, this.snapshotRegs());
     }
 
@@ -2538,6 +2552,10 @@ class Emulator {
 
 function hex8(v) { return '0x' + v.toString(16).padStart(2, '0').toUpperCase(); }
 function hex16(v) { return '0x' + v.toString(16).padStart(4, '0').toUpperCase(); }
+
+// Interrupt bit -> name, shared by Emulator.requestInterrupt(). Module-level so it's
+// allocated once instead of being rebuilt as a fresh array literal on every interrupt.
+const INTERRUPT_KIND_NAMES = ['vblank', 'stat', 'timer', 'serial', 'joypad'];
 
 // Typed arrays (VRAM, WRAM, etc.) go into save-state JSON as base64 strings rather than
 // JSON number arrays - much smaller, and fast to encode/decode via the browser's atob/btoa.

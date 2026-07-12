@@ -175,6 +175,9 @@
   button.ui-btn.danger { background: #b93a3a; }
   button.ui-btn.danger:hover { background: #922c2c; }
   button.ui-btn.danger:disabled { background: #444; cursor: not-allowed; }
+  button.ui-btn.recording { background: #b93a3a; animation: recPulse 1.1s ease-in-out infinite; }
+  button.ui-btn.recording:hover { background: #922c2c; }
+  @keyframes recPulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 
   label.ui-btn {
     background: var(--accent);
@@ -875,6 +878,12 @@
           <input type="range" id="speedSlider" min="1" max="10" step="1" value="10">
           <span class="speed-value" id="speedValue">100%</span>
         </div>
+
+        <div class="btn-row">
+          <button class="ui-btn" id="btnScreenshot" disabled>📸 Screenshot</button>
+          <button class="ui-btn" id="btnRecordClip" disabled>⏺ Record Clip</button>
+        </div>
+        <div class="state-info" id="captureInfo"></div>
 
         <div class="keymap">
           <table>
@@ -4710,6 +4719,9 @@ function updateStateButtons() {
   btnSaveState.disabled = !hasROM;
   btnExportState.disabled = !hasROM;
   btnImportStateLabel.classList.toggle('disabled', !hasROM);
+  btnScreenshot.disabled = !hasROM;
+  // Don't yank the record button out from under an in-progress recording.
+  if (!(clipRecorder && clipRecorder.state !== 'inactive')) btnRecordClip.disabled = !hasROM;
 
   const slots = hasROM ? loadSlots() : [];
   btnLoadState.disabled = slots.length === 0;
@@ -4897,6 +4909,109 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     if (!btnLoadState.disabled) quickLoadState();
   }
+});
+
+/* ---- media capture: single-frame WEBP screenshots + WEBM gameplay clips (video+audio) ----
+   Both use browser-native encoding (canvas.toBlob / MediaRecorder) - no extra libraries. */
+const btnScreenshot = document.getElementById('btnScreenshot');
+const btnRecordClip = document.getElementById('btnRecordClip');
+const captureInfo = document.getElementById('captureInfo');
+
+function safeRomName() { return (emulator.romTitle || 'rom').replace(/[^a-z0-9_-]+/gi, '_'); }
+
+// Triggers a browser download for an in-memory blob, then cleans up the object URL.
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+btnScreenshot.addEventListener('click', () => {
+  canvas.toBlob(blob => {
+    if (!blob) { alert('Could not capture screenshot (WEBP encoding is not supported in this browser).'); return; }
+    downloadBlob(blob, `${safeRomName()}_${Date.now()}.webp`);
+    captureInfo.textContent = 'Screenshot saved ✓';
+  }, 'image/webp', 0.92);
+});
+
+/* ---- gameplay clip recording ----
+   canvas.captureStream() gives a live video track straight from the screen canvas; the APU's
+   masterGain node (already feeding the speakers) is additionally tapped into a
+   MediaStreamAudioDestinationNode so the recording gets sound too. MediaRecorder then encodes
+   both together as WEBM in real time - no re-encoding step, no bundled codec library. */
+let clipRecorder = null;
+let clipChunks = [];
+let clipAudioDest = null;
+let clipTimerId = null;
+let clipStartedAt = 0;
+
+function pickClipMimeType() {
+  const candidates = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  return candidates.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+}
+
+function updateClipTimer() {
+  const secs = Math.floor((Date.now() - clipStartedAt) / 1000);
+  const mm = String(Math.floor(secs / 60)).padStart(2, '0');
+  const ss = String(secs % 60).padStart(2, '0');
+  captureInfo.textContent = `⏺ Recording... ${mm}:${ss}`;
+}
+
+function startClipRecording() {
+  if (!window.MediaRecorder) { alert('This browser does not support MediaRecorder, so gameplay clips cannot be recorded.'); return; }
+  const mimeType = pickClipMimeType();
+  if (!mimeType) { alert('No supported WEBM video codec found in this browser.'); return; }
+
+  emulator.apu.initAudio(); // no-op if already set up; safe here since a click is a user gesture
+
+  const videoStream = canvas.captureStream(60);
+  const tracks = [...videoStream.getVideoTracks()];
+  if (emulator.apu.audioCtx && emulator.apu.masterGain) {
+    clipAudioDest = emulator.apu.audioCtx.createMediaStreamDestination();
+    emulator.apu.masterGain.connect(clipAudioDest); // fans out alongside the existing speaker connection
+    tracks.push(...clipAudioDest.stream.getAudioTracks());
+  }
+
+  clipChunks = [];
+  clipRecorder = new MediaRecorder(new MediaStream(tracks), { mimeType });
+  clipRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) clipChunks.push(e.data); };
+  clipRecorder.onstop = () => {
+    if (clipAudioDest) { emulator.apu.masterGain.disconnect(clipAudioDest); clipAudioDest = null; }
+    videoStream.getTracks().forEach(t => t.stop());
+    clearInterval(clipTimerId);
+    const blob = new Blob(clipChunks, { type: mimeType.split(';')[0] });
+    clipChunks = [];
+    if (blob.size > 0) {
+      downloadBlob(blob, `${safeRomName()}_${Date.now()}.webm`);
+      captureInfo.textContent = 'Clip saved ✓';
+    } else {
+      captureInfo.textContent = 'Recording produced no data.';
+    }
+  };
+
+  clipRecorder.start();
+  clipStartedAt = Date.now();
+  updateClipTimer();
+  clipTimerId = setInterval(updateClipTimer, 500);
+  btnRecordClip.textContent = '⏹ Stop Recording';
+  btnRecordClip.classList.add('recording');
+}
+
+function stopClipRecording() {
+  if (clipRecorder && clipRecorder.state !== 'inactive') clipRecorder.stop();
+  clipRecorder = null;
+  btnRecordClip.textContent = '⏺ Record Clip';
+  btnRecordClip.classList.remove('recording');
+}
+
+btnRecordClip.addEventListener('click', () => {
+  if (clipRecorder && clipRecorder.state !== 'inactive') stopClipRecording();
+  else startClipRecording();
 });
 
 updateStateButtons();

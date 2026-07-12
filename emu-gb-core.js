@@ -2149,6 +2149,17 @@ class Emulator {
     this._lastTime = null;   // real-time timestamp of the previous loop() tick
     this._frameAcc = 0;      // accumulated (speed-scaled) ms available to spend on emulated frames
 
+    // Rendering (canvas draw + debug panel refresh) is paced against *real* elapsed time,
+    // separately from _frameAcc above. _frameAcc is deliberately scaled by this.speed (that's
+    // what makes 2x/3x/4x actually run the game faster), but that means at speed > 1 it crosses
+    // the "one emulated frame is ready" threshold more often per real second than a display's
+    // refresh interval would otherwise allow - e.g. a 144Hz screen throttles draws to ~59.73/s
+    // at 1x (each draw needs ~16.74ms of real time to accumulate), but at 4x only ~4.2ms of real
+    // time is needed per draw, so draws can fire close to the display's native 144Hz instead.
+    // _lastRenderTime/RENDER_INTERVAL_MS below gate draw()/refreshDebugTools() to ~60/s no
+    // matter how fast emulation itself is running or how high the display's refresh rate is.
+    this._lastRenderTime = 0;
+
     this._fpsFrames = 0;
     this._fpsLast = performance.now();
 
@@ -2546,12 +2557,27 @@ class Emulator {
     }
 
     if (framesRun > 0) {
-      this.draw();
-      this._fpsFrames += framesRun;
-      // Redraw the trace/disasm/tile/etc. panels only when a frame actually ran, so their
-      // visible update rate is paced by real emulation speed instead of a fixed wall-clock
-      // timer (which used to make them look identical regardless of the speed slider).
-      refreshDebugTools();
+      // Cap actual rendering (canvas draw + debug panel refresh) to ~60/s using a plain
+      // real-time gate, independent of _frameAcc. Without this, _frameAcc's threshold gets
+      // crossed more often per real second at speed > 1 (it's speed-scaled on purpose, so
+      // 2x/3x/4x really do run the game faster), which on a >60Hz display let draws fire at
+      // close to the panel's native refresh rate instead of staying capped near 60 - wasted
+      // work with no visible smoothness benefit since the game itself only produces a new
+      // frame every ~16.74ms of emulated time regardless of how fast that time passes.
+      const RENDER_MS = 1000 / 60;
+      if (now - this._lastRenderTime >= RENDER_MS - 1) { // -1ms slack absorbs rAF jitter
+        this._lastRenderTime = now;
+        this.draw();
+        // this._fpsFrames counts *renders*, not emulated frames run, so the on-screen "fps"
+        // label reflects what's actually being painted (capped ~60) instead of the emulated-
+        // frame throughput, which would legitimately read ~120/180/240 at 2x/3x/4x speed and
+        // look like the cap above wasn't working even though rendering itself was capped fine.
+        this._fpsFrames++;
+        // Redraw the trace/disasm/tile/etc. panels only when we actually draw, so their
+        // visible update rate stays tied to the same ~60fps render cap instead of running
+        // ahead of it at higher emulation speeds.
+        refreshDebugTools();
+      }
     }
     if (now - this._fpsLast >= 1000) {
       document.getElementById('fps').textContent = this._fpsFrames + ' fps';

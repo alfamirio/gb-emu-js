@@ -1377,12 +1377,10 @@
 
     <div class="tool-panel hidden" id="panel-interrupts">
       <p class="tool-desc">
-        The five interrupt sources, in hardware priority order (top wins if several are
-        pending at once): V-Blank, LCD STAT, Timer, Serial, Joypad. IME (Interrupt Master
+        The five interrupt sources, in hardware priority order: V-Blank, LCD STAT, Timer, Serial, Joypad. IME (Interrupt Master
         Enable) is the CPU's own on/off switch — set by EI/RETI, cleared by DI or automatically
         the instant an interrupt is taken. IE (0xFFFF) is which sources the game has opted
-        into; IF (0xFF0F) is which sources currently have a request pending. A source only
-        actually fires once IME is on and its bit is set in <i>both</i> IE and IF.
+        into; IF (0xFF0F) is which sources currently have a request pending.
       </p>
       <div class="int-summary" id="intSummary">—</div>
       <div class="int-table" id="intTable"><!-- built in JS --></div>
@@ -1419,9 +1417,7 @@
         actually pushes and pops — PUSH BC/DE/HL/AF, CALL, RST, and interrupts all write a
         register pair or return address as two bytes, and POP/RET read one back the same way.
         The Game Boy's stack grows downward: each PUSH decrements SP first, so lower addresses
-        are "deeper". The highlighted row is the current top of stack — what the next POP or RET
-        would read; rows above it (lower addresses) are still free/unused stack space, rows below
-        it (higher addresses) hold values pushed earlier that haven't been popped yet.
+        are "deeper". The highlighted row is the current top of stack.
       </p>
       <div class="stack-sp-readout" id="stackSpReadout">—</div>
       <div class="disasm-list" id="stackList"><div class="disasm-empty">Load a ROM to see the stack.</div></div>

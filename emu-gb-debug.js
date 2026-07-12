@@ -1,12 +1,14 @@
 /* =========================================================================================
    emu-gb-debug.js — debugging / visualization tools
    -----------------------------------------------------------------------------------------
-   The read-only inspector panels: VRAM tile viewer, tile map viewer, per-layer viewer, OAM
-   / sprite inspector, palette viewer, per-channel oscilloscope, scanline timeline, live
-   disassembler, stack panel, interrupts panel, execution trace, memory map strip, and MBC
-   banking panel - plus the tab-switching, mode/model/scanline-mark/layer-tint/dot-matrix
-   toggles, and the refreshDebugTools() orchestrator that redraws whichever tab is active.
-   These are purely observational: they read emulator state, never write to it.
+   The inspector panels: an editable CPU registers/flags panel (the one panel here that can
+   write back to emulator state - directly onto the CPU instance's own fields, never through
+   the MMU - and only while paused), plus the read-only ones: VRAM tile viewer, tile map
+   viewer, per-layer viewer, OAM/sprite inspector, palette viewer, per-channel oscilloscope,
+   scanline timeline, live disassembler, stack panel, interrupts panel, execution trace, memory
+   map strip, and MBC banking panel - plus the tab-switching, mode/model/scanline-mark/layer-
+   tint/dot-matrix toggles, and the refreshDebugTools() orchestrator that redraws whichever tab
+   is active.
 
    Depends on: emu-gb-core.js (Emulator instance, EMU_CORE_CONFIG, hex8/hex16) AND
    emu-gb-app.js (savedUIConfig/saveUIConfig, APP_CONFIG, getMBCName, the `emulator` global,
@@ -23,6 +25,30 @@
    their own low-frequency timer (not the main 60fps loop) since they're for inspection,
    not real-time display; only the active tab's view is redrawn.
    ========================================================================================= */
+
+/* ---- 0. CPU registers editor refs ---- */
+const regPausedNote = document.getElementById('regPausedNote');
+const regIoReadout = document.getElementById('regIoReadout');
+// 8-bit registers (A B C D E H L) + 16-bit registers (SP PC), each { el, key, bits }
+const REG_INPUTS = ['A', 'B', 'C', 'D', 'E', 'H', 'L', 'SP', 'PC'].map(key => {
+  const el = document.getElementById('reg' + key);
+  return { el, key, bits: (key === 'SP' || key === 'PC') ? 16 : 8 };
+});
+// Flags + CPU state toggles - checkbox element paired with the exact CPU property name it
+// reads/writes (flagZ/flagN/flagH/flagC/IME/halted are all plain boolean fields on the CPU).
+const REG_FLAGS = [
+  { el: document.getElementById('regFlagZ'), key: 'flagZ' },
+  { el: document.getElementById('regFlagN'), key: 'flagN' },
+  { el: document.getElementById('regFlagH'), key: 'flagH' },
+  { el: document.getElementById('regFlagC'), key: 'flagC' },
+  { el: document.getElementById('regIME'), key: 'IME' },
+  { el: document.getElementById('regHalted'), key: 'halted' },
+];
+const REG_DERIVED = {
+  BC: document.querySelector('[data-derived="BC"]'),
+  DE: document.querySelector('[data-derived="DE"]'),
+  HL: document.querySelector('[data-derived="HL"]'),
+};
 
 /* ---- 1. VRAM tile viewer refs ---- */
 const tileViewerCanvas = document.getElementById('tileViewerCanvas');
@@ -1211,6 +1237,75 @@ function drawStack() {
   if (cur) cur.scrollIntoView({ block: 'center' });
 }
 
+/* ---- 5b. CPU registers editor: reads straight off (and, when paused, writes straight onto)
+   the CPU instance's own fields - A B C D E H L, SP, PC, the four flag bits, and IME/halted.
+   These are plain JS properties on the CPU object, not memory addresses, so edits never go
+   through the MMU (no mmu.write8() involved) - just `cpu[key] = value` directly. ---- */
+
+// Accepts an optional "0x" prefix (case-insensitive) so the field can round-trip hex8/hex16's
+// own formatting; returns null (meaning "reject, keep the old value") for anything that isn't
+// clean hex, rather than trying to guess what the student meant.
+function parseHexInput(str, maxVal) {
+  const clean = str.trim().replace(/^0x/i, '');
+  if (!/^[0-9a-f]+$/i.test(clean)) return null;
+  const v = parseInt(clean, 16);
+  if (Number.isNaN(v)) return null;
+  return Math.max(0, Math.min(maxVal, v));
+}
+
+// Applies one 8/16-bit register field on blur/Enter. Bails out (just redrawing to restore the
+// live value) if the emulator is running - inputs are disabled while running, but this is a
+// second line of defense in case a value was already in flight when Start/Resume was pressed.
+function commitRegInput(input) {
+  const spec = REG_INPUTS.find(r => r.el === input);
+  if (!emulator.running && spec) {
+    const parsed = parseHexInput(input.value, spec.bits === 16 ? 0xFFFF : 0xFF);
+    if (parsed !== null) emulator.cpu[spec.key] = parsed;
+  }
+  drawRegisters();
+}
+
+function commitRegFlag(checkbox) {
+  if (!emulator.running) {
+    const spec = REG_FLAGS.find(r => r.el === checkbox);
+    if (spec) emulator.cpu[spec.key] = checkbox.checked;
+  }
+  drawRegisters();
+}
+
+REG_INPUTS.forEach(({ el }) => {
+  el.addEventListener('blur', () => commitRegInput(el));
+  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
+});
+REG_FLAGS.forEach(({ el }) => { el.addEventListener('change', () => commitRegFlag(el)); });
+
+function drawRegisters() {
+  const cpu = emulator.cpu;
+  const running = emulator.running;
+
+  REG_INPUTS.forEach(({ el, key, bits }) => {
+    // Never stomp on what's currently being typed - only the field the student isn't
+    // actively focused on gets repainted from the live CPU value.
+    if (document.activeElement !== el) el.value = bits === 16 ? hex16(cpu[key]) : hex8(cpu[key]);
+    el.disabled = running;
+  });
+
+  REG_FLAGS.forEach(({ el, key }) => {
+    el.checked = !!cpu[key];
+    el.disabled = running;
+  });
+
+  REG_DERIVED.BC.textContent = `BC = ${hex16(cpu.getBC())}`;
+  REG_DERIVED.DE.textContent = `DE = ${hex16(cpu.getDE())}`;
+  REG_DERIVED.HL.textContent = `HL = ${hex16(cpu.getHL())}`;
+
+  regPausedNote.style.display = running ? '' : 'none';
+
+  regIoReadout.textContent = `LY=${emulator.ppu.ly}  Mode=${emulator.ppu.mode}  LCDC=${hex8(emulator.ppu.lcdc)}`;
+}
+
+drawRegisters(); // paint the boot-state register values immediately, before any ROM is loaded
+
 /* ---- 6. Execution trace: scrollback of the last instructions actually executed ---- */
 
 // Sizes #traceList to match the height of the neighboring main-content column (screen +
@@ -1360,7 +1455,8 @@ function refreshDebugTools() {
   if (document.body.classList.contains('playing-mode')) return;
 
   const activeDebug = debugToolsContainer.querySelector('.tool-tab.active').dataset.tool;
-  if (activeDebug === 'disasm') drawDisassembly();
+  if (activeDebug === 'registers') drawRegisters();
+  else if (activeDebug === 'disasm') drawDisassembly();
   else if (activeDebug === 'trace') drawTrace();
   else if (activeDebug === 'stack') drawStack();
   else if (activeDebug === 'memmap') drawMemMap();

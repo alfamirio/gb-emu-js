@@ -338,18 +338,6 @@
   .keymap td { padding: 2px 4px; border-bottom: 1px solid #333; }
   .keymap td:first-child { color: #fff; font-family: monospace; }
 
-  #debugOut {
-    background: #111;
-    border-radius: 6px;
-    padding: 10px;
-    white-space: pre;
-    font-family: 'Consolas', monospace;
-    font-size: 0.72rem;
-    line-height: 1.4;
-    color: #7fd67f;
-    overflow-x: auto;
-  }
-
   footer {
     margin-top: 30px;
     max-width: 760px;
@@ -677,6 +665,88 @@
   }
   .trace-empty, .disasm-empty { color: #777; padding: 2px 5px; }
 
+  /* ---- CPU Registers editor panel ---- */
+  .reg-editor { display: flex; flex-direction: column; gap: 14px; }
+  .reg-group {
+    background: #1b1b22;
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .reg-group-title {
+    margin: 0 0 8px;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #999;
+    font-weight: 600;
+  }
+  .reg-pairs { display: flex; flex-wrap: wrap; gap: 14px 18px; align-items: flex-end; }
+  .reg-pair { display: flex; flex-direction: column; gap: 6px; }
+  .reg-row { display: flex; align-items: center; gap: 8px; }
+  .reg-row label {
+    font-family: 'Consolas', monospace;
+    font-size: 0.75rem;
+    color: #bbb;
+    width: 16px;
+    flex-shrink: 0;
+  }
+  .reg-input {
+    width: 62px;
+    background: #111;
+    border: 1px solid #444;
+    color: #eee;
+    border-radius: 4px;
+    padding: 5px 7px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+  }
+  .reg-input.reg-input-16 { width: 76px; }
+  .reg-input:focus { outline: none; border-color: var(--accent); }
+  .reg-input:disabled { opacity: 0.45; cursor: not-allowed; border-color: #333; }
+  .reg-derived {
+    font-family: 'Consolas', monospace;
+    font-size: 0.68rem;
+    color: #7fa8d6;
+    background: #111;
+    border-radius: 4px;
+    padding: 3px 7px;
+    text-align: center;
+  }
+  .reg-flags-row { display: flex; flex-wrap: wrap; gap: 18px; }
+  .reg-flag-item { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .reg-flag-label {
+    font-family: 'Consolas', monospace;
+    font-size: 0.78rem;
+    color: #ccc;
+    font-weight: 600;
+  }
+  .reg-state-row { display: flex; flex-wrap: wrap; gap: 22px; margin-bottom: 4px; }
+  .reg-state-item { display: flex; align-items: center; gap: 10px; }
+  .reg-state-item .reg-flag-label { font-size: 0.75rem; }
+  .reg-note {
+    color: #888;
+    font-family: 'Segoe UI', Tahoma, Verdana, sans-serif;
+    font-style: italic;
+    font-size: 0.7rem;
+    line-height: 1.5;
+    margin: 8px 0 0;
+  }
+  .reg-note.reg-warning { color: #e0a05a; }
+  .reg-paused-note {
+    color: #e8c46b;
+    font-size: 0.72rem;
+    background: #2a2410;
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin: 0 0 4px;
+  }
+  .reg-io-readout {
+    font-family: 'Consolas', monospace;
+    font-size: 0.72rem;
+    color: #888;
+  }
+
   /* ---- Interrupts panel ---- */
   .int-summary {
     display: flex;
@@ -931,15 +1001,107 @@
       <button class="tool-tab active" data-tool="registers">Registers</button>
       <button class="tool-tab" data-tool="interrupts">Interrupts</button>
       <button class="tool-tab" data-tool="trace">Execution Trace</button>
-      <button class="tool-tab" data-tool="disasm">Disassembler</button>
       <button class="tool-tab" data-tool="stack">Stack</button>
+      <button class="tool-tab" data-tool="disasm">Disassembler</button>
       <button class="tool-tab" data-tool="memmap">Memory Map</button>
       <button class="tool-tab" data-tool="banking">MBC Banking</button>
     </div>
 
     <div class="tool-panel" id="panel-registers">
-      <p class="tool-desc">Raw CPU registers, flags, and key PPU/timer I/O values, updated live as the emulator runs.</p>
-      <div id="debugOut">—</div>
+      <p class="tool-desc">
+        A live register editor for the CPU allows direct modification of <code>CPU</code> state. 
+        Modifications can only be made while the emulator is paused.
+      </p>
+      <p class="reg-paused-note" id="regPausedNote" style="display:none;">
+        ⏸ Pause the emulator to edit registers — while it's running, these fields only show
+        the current value.
+      </p>
+      <div class="reg-editor" id="regEditor">
+
+        <div class="reg-group" id="regGroup8">
+          <h3 class="reg-group-title">8-bit registers</h3>
+          <div class="reg-pairs">
+            <div class="reg-pair" data-pair="BC">
+              <div class="reg-row"><label for="regB">B</label><input class="reg-input" id="regB" data-reg="B" maxlength="4" spellcheck="false"></div>
+              <div class="reg-row"><label for="regC">C</label><input class="reg-input" id="regC" data-reg="C" maxlength="4" spellcheck="false"></div>
+              <div class="reg-derived" data-derived="BC">BC = 0x0000</div>
+            </div>
+            <div class="reg-pair" data-pair="DE">
+              <div class="reg-row"><label for="regD">D</label><input class="reg-input" id="regD" data-reg="D" maxlength="4" spellcheck="false"></div>
+              <div class="reg-row"><label for="regE">E</label><input class="reg-input" id="regE" data-reg="E" maxlength="4" spellcheck="false"></div>
+              <div class="reg-derived" data-derived="DE">DE = 0x0000</div>
+            </div>
+            <div class="reg-pair" data-pair="HL">
+              <div class="reg-row"><label for="regH">H</label><input class="reg-input" id="regH" data-reg="H" maxlength="4" spellcheck="false"></div>
+              <div class="reg-row"><label for="regL">L</label><input class="reg-input" id="regL" data-reg="L" maxlength="4" spellcheck="false"></div>
+              <div class="reg-derived" data-derived="HL">HL = 0x0000</div>
+            </div>
+            <div class="reg-pair" data-pair="A">
+              <div class="reg-row"><label for="regA">A</label><input class="reg-input" id="regA" data-reg="A" maxlength="4" spellcheck="false"></div>
+            </div>
+          </div>
+          <p class="reg-note">
+            BC, DE, and HL are the 8-bit register pairs combined as 16 bits for indirect
+            addressing.
+          </p>
+        </div>
+
+        <div class="reg-group" id="regGroup16">
+          <h3 class="reg-group-title">16-bit registers</h3>
+          <div class="reg-row"><label for="regSP">SP</label><input class="reg-input reg-input-16" id="regSP" data-reg="SP" maxlength="6" spellcheck="false"></div>
+          <div class="reg-row"><label for="regPC">PC</label><input class="reg-input reg-input-16" id="regPC" data-reg="PC" maxlength="6" spellcheck="false"></div>
+          <p class="reg-note reg-warning">
+            ⚠ Moving PC by hand while the emulator is running could leave it executing in the
+            middle of an already-fetched instruction.
+          </p>
+        </div>
+
+        <div class="reg-group" id="regGroupFlags">
+          <h3 class="reg-group-title">Flags</h3>
+          <div class="reg-flags-row">
+            <div class="reg-flag-item">
+              <span class="reg-flag-label">Z</span>
+              <label class="switch"><input type="checkbox" data-flag="flagZ" id="regFlagZ"><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
+            </div>
+            <div class="reg-flag-item">
+              <span class="reg-flag-label">N</span>
+              <label class="switch"><input type="checkbox" data-flag="flagN" id="regFlagN"><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
+            </div>
+            <div class="reg-flag-item">
+              <span class="reg-flag-label">H</span>
+              <label class="switch"><input type="checkbox" data-flag="flagH" id="regFlagH"><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
+            </div>
+            <div class="reg-flag-item">
+              <span class="reg-flag-label">C</span>
+              <label class="switch"><input type="checkbox" data-flag="flagC" id="regFlagC"><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
+            </div>
+          </div>
+          <p class="reg-note">
+            Changing a flag by hand has no visible effect until the next conditional instruction
+            (JP/JR/CALL/RET <i>cc</i>, etc.).
+          </p>
+        </div>
+
+        <div class="reg-group" id="regGroupState">
+          <h3 class="reg-group-title">CPU state</h3>
+          <div class="reg-state-row">
+            <div class="reg-state-item">
+              <span class="reg-flag-label">IME</span>
+              <label class="switch"><input type="checkbox" data-flag="IME" id="regIME"><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
+            </div>
+            <div class="reg-state-item">
+              <span class="reg-flag-label">Halted</span>
+              <label class="switch"><input type="checkbox" data-flag="halted" id="regHalted" title="Turning this on without a pending interrupt to wake the CPU will leave the emulator stuck forever."><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
+            </div>
+          </div>
+          <p class="reg-note reg-warning">
+            ⚠ Turning "Halted" on by hand without a pending interrupt to wake it back up leaves
+            the CPU stuck forever.
+          </p>
+        </div>
+
+        <div class="reg-io-readout" id="regIoReadout">—</div>
+      </div>
     </div>
 
     <div class="tool-panel hidden" id="panel-interrupts">
@@ -1122,11 +1284,11 @@
     <div class="tools-tabs">
       <button class="tool-tab active" data-tool="layers">Layers</button>
       <button class="tool-tab" data-tool="scanline">Scanline Timeline</button>
-      <button class="tool-tab" data-tool="tiles">Tile Viewer (VRAM)</button>
+      <button class="tool-tab" data-tool="oscilloscope">Oscilloscope</button>
+      <button class="tool-tab" data-tool="palettes">Palettes</button>
+      <button class="tool-tab" data-tool="tiles">Tiles</button>
       <button class="tool-tab" data-tool="tilemap">Tile Map</button>
       <button class="tool-tab" data-tool="oam">Sprites (OAM)</button>
-      <button class="tool-tab" data-tool="palettes">Palettes</button>
-      <button class="tool-tab" data-tool="oscilloscope">Oscilloscope</button>
     </div>
 
     <div class="tool-panel hidden" id="panel-scanline">

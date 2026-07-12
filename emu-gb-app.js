@@ -735,7 +735,7 @@ function applyLoadedState(state) {
   emulator.pause();
   emulator.loadSaveState(state);
   emulator.draw();        // repaint immediately from the restored framebuffer
-  emulator.updateDebug();
+  refreshDebugTools();
   if (wasRunning) emulator.start();
 }
 

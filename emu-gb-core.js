@@ -2278,7 +2278,7 @@ class Emulator {
     this.loadSaveState(state);
     this.rewindFrameAcc = 0; // the restored moment shouldn't count as partway into a new second
     this.draw();
-    this.updateDebug();
+    refreshDebugTools();
     return true;
   }
 
@@ -2299,7 +2299,7 @@ class Emulator {
     if (this.running) this.pause();
     this.stepInstruction();
     this.draw();
-    this.updateDebug();
+    refreshDebugTools();
   }
 
   // Runs instructions until the PPU moves on to the next scanline (LY changes), then redraws.
@@ -2317,7 +2317,7 @@ class Emulator {
     }
     this.running = false;
     this.draw();
-    this.updateDebug();
+    refreshDebugTools();
   }
 
   // Runs exactly one full frame's worth of cycles (same budget runFrame() uses for normal
@@ -2328,7 +2328,7 @@ class Emulator {
     this.runFrame();
     this.running = false;
     this.draw();
-    this.updateDebug();
+    refreshDebugTools();
   }
 
   // Runs 60 full frames back to back (~1.005s of emulated time, matching the ~60fps figure
@@ -2344,7 +2344,7 @@ class Emulator {
     }
     this.running = false;
     this.draw();
-    this.updateDebug();
+    refreshDebugTools();
   }
 
   // Resumes continuous execution, but auto-pauses (via triggerBreakpoint) the moment PC
@@ -2453,7 +2453,6 @@ class Emulator {
       document.getElementById('fps').textContent = this._fpsFrames + ' fps';
       this._fpsFrames = 0; this._fpsLast = now;
     }
-    this.updateDebug();
     this._rafId = requestAnimationFrame((t) => this.loop(t));
   }
 
@@ -2478,19 +2477,6 @@ class Emulator {
     ctx.restore();
   }
 
-  updateDebug() {
-    const out = document.getElementById('debugOut');
-    const panel = document.getElementById('panel-registers');
-    if (document.body.classList.contains('playing-mode') || panel.classList.contains('hidden')) return;
-    const c = this.cpu;
-    out.textContent =
-`PC=${hex16(c.PC)}  SP=${hex16(c.SP)}
-AF=${hex16(c.getAF())}  BC=${hex16(c.getBC())}
-DE=${hex16(c.getDE())}  HL=${hex16(c.getHL())}
-Flags: Z=${c.flagZ?1:0} N=${c.flagN?1:0} H=${c.flagH?1:0} C=${c.flagC?1:0}
-IME=${c.IME?1:0}  Halted=${c.halted?1:0}
-LY=${this.ppu.ly}  Mode=${this.ppu.mode}  LCDC=${hex8(this.ppu.lcdc)}`;
-  }
 }
 
 function hex8(v) { return '0x' + v.toString(16).padStart(2, '0').toUpperCase(); }

@@ -455,6 +455,27 @@
   .scope-block.muted canvas { opacity: 0.35; }
   .scope-block canvas { display: block; width: 100%; height: 80px; background: #000; border-radius: 4px; }
   .swatch-row { display: flex; gap: 6px; }
+
+  .layers-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+  .layer-block { background: #1b1b22; border-radius: 8px; padding: 10px 12px; }
+  .layer-block h3 {
+    margin: 0 0 8px; font-size: 0.82rem; color: #eee;
+    display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  }
+  .layer-title { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+  .layer-status { font-size: 0.68rem; color: #4ade80; font-weight: normal; white-space: nowrap; }
+  .layer-status.off { color: #b93a3a; }
+  .layer-block.dimmed canvas { opacity: 0.4; }
+  .layer-block canvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 160 / 144;
+    background: #000;
+    border-radius: 4px;
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+  }
   .swatch { width: 40px; text-align: center; }
   .swatch .chip { width: 40px; height: 40px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); }
   .swatch .label { font-size: 0.65rem; color: #999; margin-top: 4px; font-family: 'Consolas', monospace; }
@@ -895,7 +916,8 @@
     <h2>Visualization Tools</h2>
 
     <div class="tools-tabs">
-      <button class="tool-tab active" data-tool="scanline">Scanline Timeline</button>
+      <button class="tool-tab active" data-tool="layers">Layers</button>
+      <button class="tool-tab" data-tool="scanline">Scanline Timeline</button>
       <button class="tool-tab" data-tool="tiles">Tile Viewer (VRAM)</button>
       <button class="tool-tab" data-tool="tilemap">Tile Map</button>
       <button class="tool-tab" data-tool="oam">Sprites (OAM)</button>
@@ -903,7 +925,7 @@
       <button class="tool-tab" data-tool="oscilloscope">Oscilloscope</button>
     </div>
 
-    <div class="tool-panel" id="panel-scanline">
+    <div class="tool-panel hidden" id="panel-scanline">
       <p class="tool-desc">
         How the PPU spends its time drawing one frame. A frame is 154 scanlines &times; 456
         T-cycles each = <b>70,224 T-cycles</b> (~16.74ms, ~59.73Hz). Each of the 144 visible
@@ -979,6 +1001,31 @@
     <div class="tool-panel hidden" id="panel-palettes">
       <p class="tool-desc">The current BGP / OBP0 / OBP1 register values, decoded into the four shades they map to.</p>
       <div id="paletteGrid" class="palette-grid"></div>
+    </div>
+
+    <div class="tool-panel" id="panel-layers">
+      <p class="tool-desc">
+        The same three sources the PPU composites together on the real screen, rendered
+        independently at full 160&times;144 resolution so each one can be inspected on its
+        own. Background always fills the frame; Window is shown wherever WX/WY currently
+        place it, black elsewhere; Sprites shows every OAM entry that's on-screen right now,
+        ignoring BG-priority occlusion so nothing is hidden behind the background. A layer
+        switched off via LCDC is dimmed and labeled.
+      </p>
+      <div class="layers-grid">
+        <div class="layer-block">
+          <h3><span class="layer-title">Background</span><span class="layer-status" id="layerStatusBG">On</span></h3>
+          <canvas id="layerCanvasBG" width="160" height="144"></canvas>
+        </div>
+        <div class="layer-block">
+          <h3><span class="layer-title">Window <span class="scope-sub">"Tiles"</span></span><span class="layer-status" id="layerStatusWindow">On</span></h3>
+          <canvas id="layerCanvasWindow" width="160" height="144"></canvas>
+        </div>
+        <div class="layer-block">
+          <h3><span class="layer-title">Sprites</span><span class="layer-status" id="layerStatusSprites">On</span></h3>
+          <canvas id="layerCanvasSprites" width="160" height="144"></canvas>
+        </div>
+      </div>
     </div>
 
     <div class="tool-panel hidden" id="panel-oscilloscope">
@@ -3774,6 +3821,152 @@ function drawTileMap() {
   tileMapCtx.putImageData(tileMapImageData, 0, 0);
 }
 
+/* ---- 2b. Layer viewer: background / window / sprites, each rendered independently at full
+   160x144 frame resolution using the PPU's *current* registers - a static "what does this
+   layer alone look like right now" snapshot, not tied to the current scanline like the real
+   per-line renderer. Window and sprites fill with black where they don't draw anything, so
+   it reads as "transparent" the same way the oscilloscope's flat line reads as "silent". ---- */
+const layerCanvasBG = document.getElementById('layerCanvasBG');
+const layerCtxBG = layerCanvasBG.getContext('2d');
+const layerImageDataBG = layerCtxBG.createImageData(160, 144);
+const layerCanvasWindow = document.getElementById('layerCanvasWindow');
+const layerCtxWindow = layerCanvasWindow.getContext('2d');
+const layerImageDataWindow = layerCtxWindow.createImageData(160, 144);
+const layerCanvasSprites = document.getElementById('layerCanvasSprites');
+const layerCtxSprites = layerCanvasSprites.getContext('2d');
+const layerImageDataSprites = layerCtxSprites.createImageData(160, 144);
+
+const layerStatusBG = document.getElementById('layerStatusBG');
+const layerStatusWindow = document.getElementById('layerStatusWindow');
+const layerStatusSprites = document.getElementById('layerStatusSprites');
+
+function fillLayerImage(imgData, r, g, b) {
+  const data = imgData.data;
+  for (let i = 0; i < data.length; i += 4) { data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255; }
+}
+
+function setLayerStatus(el, blockEl, on, offReason) {
+  el.textContent = on ? 'On' : `Off (${offReason})`;
+  el.classList.toggle('off', !on);
+  blockEl.classList.toggle('dimmed', !on);
+}
+
+function drawLayers() {
+  const ppu = emulator.ppu;
+  const vram = ppu.mmu.vram;
+
+  /* ---- Background: always covers the full 160x144 frame when enabled ---- */
+  const bgOn = !!(ppu.lcdc & 0x01);
+  setLayerStatus(layerStatusBG, layerCanvasBG.closest('.layer-block'), bgOn, 'LCDC.0');
+  if (!bgOn) {
+    fillLayerImage(layerImageDataBG, 255, 255, 255); // matches real hardware: BG off = blank white
+  } else {
+    const tileMapBase = (ppu.lcdc & 0x08) ? 0x9C00 : 0x9800;
+    const signedIndex = !(ppu.lcdc & 0x10);
+    const tileDataBase = signedIndex ? 0x9000 : 0x8000;
+    const scx = ppu.scx, scy = ppu.scy;
+    const data = layerImageDataBG.data;
+    for (let y = 0; y < 144; y++) {
+      const bgY = (y + scy) & 0xFF, tileRow = bgY >> 3;
+      for (let x = 0; x < 160; x++) {
+        const bgX = (x + scx) & 0xFF, tileCol = bgX >> 3;
+        const tileIndexRaw = vram[(tileMapBase + tileRow * 32 + tileCol) - 0x8000];
+        const tileIndex = signedIndex ? ppu.toSigned8(tileIndexRaw) : tileIndexRaw;
+        const tileAddr = tileDataBase + tileIndex * 16;
+        const py = bgY & 7, px = bgX & 7;
+        const lo = vram[(tileAddr - 0x8000) + py * 2], hi = vram[(tileAddr - 0x8000) + py * 2 + 1];
+        const bit = 7 - px;
+        const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
+        const [r, g, b] = ppu.applyPalette(colorNum, ppu.bgp);
+        const idx = (y * 160 + x) * 4;
+        data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
+      }
+    }
+  }
+  layerCtxBG.putImageData(layerImageDataBG, 0, 0);
+
+  /* ---- Window: only draws where WX/WY currently place it; black elsewhere. Real hardware
+     also requires BG to be on for the window to render at all. ---- */
+  const winOn = bgOn && !!(ppu.lcdc & 0x20);
+  setLayerStatus(layerStatusWindow, layerCanvasWindow.closest('.layer-block'), winOn, bgOn ? 'LCDC.5' : 'LCDC.0');
+  fillLayerImage(layerImageDataWindow, 0, 0, 0);
+  if (winOn) {
+    const tileMapBase = (ppu.lcdc & 0x40) ? 0x9C00 : 0x9800;
+    const signedIndex = !(ppu.lcdc & 0x10);
+    const tileDataBase = signedIndex ? 0x9000 : 0x8000;
+    const wx = ppu.wx - 7, wy = ppu.wy;
+    if (wx <= 159) {
+      const data = layerImageDataWindow.data;
+      for (let y = Math.max(wy, 0); y < 144; y++) {
+        const winY = y - wy, tileRow = winY >> 3;
+        for (let x = Math.max(wx, 0); x < 160; x++) {
+          const winX = x - wx, tileCol = winX >> 3;
+          const tileIndexRaw = vram[(tileMapBase + tileRow * 32 + tileCol) - 0x8000];
+          const tileIndex = signedIndex ? ppu.toSigned8(tileIndexRaw) : tileIndexRaw;
+          const tileAddr = tileDataBase + tileIndex * 16;
+          const py = winY & 7, px = winX & 7;
+          const lo = vram[(tileAddr - 0x8000) + py * 2], hi = vram[(tileAddr - 0x8000) + py * 2 + 1];
+          const bit = 7 - px;
+          const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
+          const [r, g, b] = ppu.applyPalette(colorNum, ppu.bgp);
+          const idx = (y * 160 + x) * 4;
+          data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
+        }
+      }
+    }
+  }
+  layerCtxWindow.putImageData(layerImageDataWindow, 0, 0);
+
+  /* ---- Sprites: every OAM entry currently on-screen, drawn with the real 10-per-line
+     hardware cap and OAM-index priority - but ignoring BG-priority occlusion, so the full
+     sprite layer is visible even where the background would normally sit on top of it. ---- */
+  const sprOn = !!(ppu.lcdc & 0x02);
+  setLayerStatus(layerStatusSprites, layerCanvasSprites.closest('.layer-block'), sprOn, 'LCDC.1');
+  fillLayerImage(layerImageDataSprites, 0, 0, 0);
+  if (sprOn) {
+    const oam = ppu.mmu.oam;
+    const spriteHeight = (ppu.lcdc & 0x04) ? 16 : 8;
+    const data = layerImageDataSprites.data;
+    for (let y = 0; y < 144; y++) {
+      const candidates = [];
+      for (let i = 0; i < 40 && candidates.length < 10; i++) {
+        const base = i * 4;
+        const spriteY = oam[base] - 16;
+        if (y >= spriteY && y < spriteY + spriteHeight) {
+          candidates.push({ spriteY, spriteX: oam[base + 1] - 8, tileIndex: oam[base + 2], attrs: oam[base + 3], oamIndex: i });
+        }
+      }
+      candidates.sort((a, b) => (b.spriteX - a.spriteX) || (b.oamIndex - a.oamIndex));
+
+      for (const s of candidates) {
+        if (s.spriteX <= -8 || s.spriteX >= 160) continue;
+        const yFlip = !!(s.attrs & 0x40), xFlip = !!(s.attrs & 0x20);
+        const palette = (s.attrs & 0x10) ? ppu.obp1 : ppu.obp0;
+        let tileIndex = s.tileIndex;
+        if (spriteHeight === 16) tileIndex &= 0xFE;
+
+        let rowInSprite = y - s.spriteY;
+        if (yFlip) rowInSprite = spriteHeight - 1 - rowInSprite;
+        let tileOffset = tileIndex * 16;
+        if (rowInSprite >= 8) { tileOffset += 16; rowInSprite -= 8; }
+
+        const lo = vram[tileOffset + rowInSprite * 2], hi = vram[tileOffset + rowInSprite * 2 + 1];
+        for (let px = 0; px < 8; px++) {
+          const sx = s.spriteX + px;
+          if (sx < 0 || sx >= 160) continue;
+          const bit = xFlip ? px : 7 - px;
+          const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
+          if (colorNum === 0) continue; // color 0 is always transparent for sprites
+          const [r, g, b] = ppu.applyPalette(colorNum, palette);
+          const idx = (y * 160 + sx) * 4;
+          data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
+        }
+      }
+    }
+  }
+  layerCtxSprites.putImageData(layerImageDataSprites, 0, 0);
+}
+
 /* ---- 3. OAM / sprite inspector: all 40 entries, decoded ---- */
 function makeTd(text) { const td = document.createElement('td'); td.textContent = text; return td; }
 
@@ -4452,6 +4645,7 @@ function refreshDebugTools() {
   else if (activeVisual === 'tilemap') drawTileMap();
   else if (activeVisual === 'oam') drawOAMTable();
   else if (activeVisual === 'palettes') drawPalettes();
+  else if (activeVisual === 'layers') drawLayers();
   else if (activeVisual === 'oscilloscope') drawOscilloscope();
   else if (activeVisual === 'scanline') drawScanlineTimeline();
 

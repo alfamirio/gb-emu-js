@@ -907,8 +907,9 @@
         </div>
 
         <div class="btn-row">
+          <button class="ui-btn" id="btnRecordClip" disabled>⏺ Rec Video</button>
+          <button class="ui-btn" id="btnRecordAudio" disabled>🎵 Rec Audio</button>
           <button class="ui-btn" id="btnScreenshot" disabled>📸 Screenshot</button>
-          <button class="ui-btn" id="btnRecordClip" disabled>⏺ Record Clip</button>
         </div>
         <div class="state-info" id="captureInfo"></div>
 
@@ -4844,6 +4845,7 @@ function updateStateButtons() {
   btnScreenshot.disabled = !hasROM;
   // Don't yank the record button out from under an in-progress recording.
   if (!(clipRecorder && clipRecorder.state !== 'inactive')) btnRecordClip.disabled = !hasROM;
+  if (!(audioRecorder && audioRecorder.state !== 'inactive')) btnRecordAudio.disabled = !hasROM;
 
   const slots = hasROM ? loadSlots() : [];
   btnLoadState.disabled = slots.length === 0;
@@ -5033,10 +5035,12 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-/* ---- media capture: single-frame WEBP screenshots + WEBM gameplay clips (video+audio) ----
-   Both use browser-native encoding (canvas.toBlob / MediaRecorder) - no extra libraries. */
+/* ---- media capture: single-frame WEBP screenshots, WEBM gameplay clips (video+audio), and
+   standalone Opus audio export - all via browser-native encoding (canvas.toBlob /
+   MediaRecorder), no extra libraries. ---- */
 const btnScreenshot = document.getElementById('btnScreenshot');
 const btnRecordClip = document.getElementById('btnRecordClip');
+const btnRecordAudio = document.getElementById('btnRecordAudio');
 const captureInfo = document.getElementById('captureInfo');
 
 function safeRomName() { return (emulator.romTitle || 'rom').replace(/[^a-z0-9_-]+/gi, '_'); }
@@ -5120,20 +5124,99 @@ function startClipRecording() {
   clipStartedAt = Date.now();
   updateClipTimer();
   clipTimerId = setInterval(updateClipTimer, 500);
-  btnRecordClip.textContent = '⏹ Stop Recording';
+  btnRecordClip.textContent = '⏹ Stop Video';
   btnRecordClip.classList.add('recording');
 }
 
 function stopClipRecording() {
   if (clipRecorder && clipRecorder.state !== 'inactive') clipRecorder.stop();
   clipRecorder = null;
-  btnRecordClip.textContent = '⏺ Record Clip';
+  btnRecordClip.textContent = '⏺ Rec Video';
   btnRecordClip.classList.remove('recording');
 }
 
 btnRecordClip.addEventListener('click', () => {
   if (clipRecorder && clipRecorder.state !== 'inactive') stopClipRecording();
   else startClipRecording();
+});
+
+/* ---- audio-only export (Opus) ----
+   Taps the exact same masterGain node that feeds the speakers and the gameplay-clip
+   recorder above - the APU already zeroes out a channel's contribution to masterGain the
+   moment it's muted (master Mute button or a per-channel CH1-4 mute in the Oscilloscope
+   panel, see APU.mixSample), so the exported audio automatically reflects whatever is
+   actually mixed in right now. Nothing extra to filter here. MediaRecorder is asked for an
+   Opus codec explicitly; Ogg/Opus is preferred when the browser supports it since it's a
+   "real" standalone .opus file, falling back to WebM/Opus (still Opus audio, just a
+   different container) otherwise. */
+let audioRecorder = null;
+let audioChunks = [];
+let audioDest = null;
+let audioTimerId = null;
+let audioStartedAt = 0;
+
+function pickAudioMimeType() {
+  const candidates = ['audio/ogg;codecs=opus', 'audio/webm;codecs=opus'];
+  return candidates.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+}
+
+function audioFileExtension(mimeType) {
+  return mimeType.startsWith('audio/ogg') ? 'opus' : 'weba'; // WebM-container Opus audio; .weba avoids implying a video file
+}
+
+function updateAudioTimer() {
+  const secs = Math.floor((Date.now() - audioStartedAt) / 1000);
+  const mm = String(Math.floor(secs / 60)).padStart(2, '0');
+  const ss = String(secs % 60).padStart(2, '0');
+  captureInfo.textContent = `⏺ Recording audio... ${mm}:${ss}`;
+}
+
+function startAudioRecording() {
+  if (!window.MediaRecorder) { alert('This browser does not support MediaRecorder, so audio cannot be exported.'); return; }
+  const mimeType = pickAudioMimeType();
+  if (!mimeType) { alert('No supported Opus audio codec found in this browser.'); return; }
+
+  emulator.apu.initAudio(); // no-op if already set up; safe here since a click is a user gesture
+  if (!emulator.apu.audioCtx || !emulator.apu.masterGain) { alert('Audio is not available in this browser.'); return; }
+
+  audioDest = emulator.apu.audioCtx.createMediaStreamDestination();
+  emulator.apu.masterGain.connect(audioDest); // fans out alongside the existing speaker connection
+
+  audioChunks = [];
+  audioRecorder = new MediaRecorder(audioDest.stream, { mimeType });
+  audioRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
+  audioRecorder.onstop = () => {
+    emulator.apu.masterGain.disconnect(audioDest);
+    audioDest = null;
+    clearInterval(audioTimerId);
+    const blob = new Blob(audioChunks, { type: mimeType.split(';')[0] });
+    audioChunks = [];
+    if (blob.size > 0) {
+      downloadBlob(blob, `${safeRomName()}_${Date.now()}.${audioFileExtension(mimeType)}`);
+      captureInfo.textContent = 'Audio saved ✓';
+    } else {
+      captureInfo.textContent = 'Recording produced no data.';
+    }
+  };
+
+  audioRecorder.start();
+  audioStartedAt = Date.now();
+  updateAudioTimer();
+  audioTimerId = setInterval(updateAudioTimer, 500);
+  btnRecordAudio.textContent = '⏹ Stop Audio';
+  btnRecordAudio.classList.add('recording');
+}
+
+function stopAudioRecording() {
+  if (audioRecorder && audioRecorder.state !== 'inactive') audioRecorder.stop();
+  audioRecorder = null;
+  btnRecordAudio.textContent = '🎵 Rec Audio';
+  btnRecordAudio.classList.remove('recording');
+}
+
+btnRecordAudio.addEventListener('click', () => {
+  if (audioRecorder && audioRecorder.state !== 'inactive') stopAudioRecording();
+  else startAudioRecording();
 });
 
 updateStateButtons();

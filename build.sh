@@ -1,84 +1,50 @@
 #!/usr/bin/env bash
 #
-# build.sh - assemble every .asm file in a folder into a GB ROM
-#            with RGBDS, without the logo.
+# build.sh - Master script to run both assembly and C build processes
 #
 # Usage:
 #   ./build.sh [source_dir] [output_dir]
-#
-# Defaults to the current directory for both source and output if no
-# arguments are given. Each foo.asm produces foo.gb.
-#
-# Note: skipping the logo means the header will fail the boot-logo check
-# on real GB hardware (and on strict emulators/flash carts that
-# enforce it). Most emulators (BGB, Emulicious, SameBoy in non-strict
-# mode, mGBA, etc.) don't check it and will run the ROM fine.
 
 set -euo pipefail
 
-SRC_DIR="${1:-.}"
+SRC_DIR="${1:-./games}"
 OUT_DIR="${2:-$SRC_DIR}"
 
-for tool in rgbasm rgblink rgbfix; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-        echo "error: '$tool' not found in PATH. Install RGBDS: https://rgbds.gbdev.io/install" >&2
-        exit 1
-    fi
-done
+echo "============================================="
+echo " Starting Master Game Boy Build Pipeline"
+echo "============================================="
+echo "Source Directory: $SRC_DIR"
+echo "Output Directory: $OUT_DIR"
+echo "---------------------------------------------"
 
-if [ ! -d "$SRC_DIR" ]; then
-    echo "error: source directory '$SRC_DIR' not found" >&2
+# Check for required child scripts in the current directory
+if [ ! -x "./build-asm.sh" ] || [ ! -x "./build-c.sh" ]; then
+    echo "error: build-asm.sh and build-c.sh must exist and be executable in this directory." >&2
     exit 1
 fi
 
-mkdir -p "$OUT_DIR"
-
-shopt -s nullglob
-asm_files=("$SRC_DIR"/*.asm)
-shopt -u nullglob
-
-if [ ${#asm_files[@]} -eq 0 ]; then
-    echo "error: no .asm files found in '$SRC_DIR'" >&2
-    exit 1
+# Run Assembly Compilation
+if [ -f "$SRC_DIR/snake.asm" ]; then
+    echo ">>> Processing Assembly targets (found snake.asm)..."
+    if ! ./build-asm.sh "$SRC_DIR" "$OUT_DIR"; then
+        echo "Warning or error occurred during C compilation."
+    fi
+else
+    echo ">>> Skipping Assembly targets (no recognized Assembly entry file found in $SRC_DIR)."
 fi
 
-fail_count=0
+echo "---------------------------------------------"
 
-for src in "${asm_files[@]}"; do
-    name="$(basename "$src" .asm)"
-    obj="$(mktemp -u --suffix=.o)"
-    out="$OUT_DIR/$name.gb"
-
-    echo "=== $name ==="
-    echo "Assembling $src ..."
-    if ! rgbasm -o "$obj" "$src"; then
-        echo "error: failed to assemble $src" >&2
-        rm -f "$obj"
-        fail_count=$((fail_count + 1))
-        continue
+# Run C Compilation
+if [ -f "$SRC_DIR/main.c" ]; then
+    echo ">>> Processing C targets (found main.c)..."
+    if ! ./build-c.sh "$SRC_DIR" "$OUT_DIR"; then
+        echo "Warning or error occurred during C compilation."
     fi
-
-    echo "Linking -> $out ..."
-    if ! rgblink -o "$out" "$obj"; then
-        echo "error: failed to link $src" >&2
-        rm -f "$obj"
-        fail_count=$((fail_count + 1))
-        continue
-    fi
-
-    echo "Fixing header (checksums only, no logo) ..."
-    # -f hg = fix header checksum (h) + global checksum (g).
-    # The 'l' flag (which writes the real logo) is deliberately omitted.
-    rgbfix -f hg -p 0xFF "$out"
-
-    rm -f "$obj"
-    echo "Done: $out"
-    echo
-done
-
-if [ "$fail_count" -gt 0 ]; then
-    echo "Finished with $fail_count failure(s)." >&2
-    exit 1
+else
+    echo ">>> Skipping C targets (no recognized C entry file found in $SRC_DIR)."
 fi
 
-echo "All ROMs built successfully."
+echo "============================================="
+echo " Master Pipeline Execution Completed."
+echo "============================================="

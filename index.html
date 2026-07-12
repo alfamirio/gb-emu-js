@@ -120,6 +120,23 @@
     image-rendering: crisp-edges;
     border-radius: 2px;
   }
+  .screen-stage { position: relative; }
+  /* Pixel dot-matrix shader: a hairline grid drawn over the screen at the GB's native
+     160x144 resolution, mimicking the visible pixel grid of a real Game Boy LCD.
+     Off by default; toggled via the navbar and persisted in the UI config. */
+  .dot-matrix-overlay {
+    position: absolute;
+    inset: 0;
+    border-radius: 2px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .15s;
+    background-image:
+      linear-gradient(to right, rgba(0,0,0,.45) 0, rgba(0,0,0,.45) 1px, transparent 1px, transparent 100%),
+      linear-gradient(to bottom, rgba(0,0,0,.45) 0, rgba(0,0,0,.45) 1px, transparent 1px, transparent 100%);
+    background-size: calc(100% / 160) calc(100% / 144);
+  }
+  body.dot-matrix-on .dot-matrix-overlay { opacity: 1; }
   .drop-hint {
     text-align: center;
     color: #777;
@@ -780,6 +797,14 @@
     </label>
     <span class="mode-label" id="layerTintLabelOn">Layers</span>
   </div>
+  <div class="mode-toggle dot-matrix-toggle">
+    <span class="mode-label" id="dotMatrixLabelOff">Off</span>
+    <label class="switch">
+      <input type="checkbox" id="dotMatrixToggle">
+      <span class="toggle-track"><span class="toggle-thumb"></span></span>
+    </label>
+    <span class="mode-label" id="dotMatrixLabelOn">Dot Matrix</span>
+  </div>
   <div class="model-toggle">
     <span class="model-label" id="modelLabelGB">GB</span>
     <label class="switch">
@@ -891,7 +916,10 @@
       <!-- Screen -->
       <div class="screen-bezel">
         <div class="screen-label"><span>DOT MATRIX</span><span id="fps">0 fps</span></div>
-        <canvas id="screen" width="160" height="144"></canvas>
+        <div class="screen-stage">
+          <canvas id="screen" width="160" height="144"></canvas>
+          <div class="dot-matrix-overlay" id="dotMatrixOverlay"></div>
+        </div>
       </div>
 
       <!-- Control panel -->
@@ -3872,6 +3900,25 @@ if (typeof savedUIConfig.layerTint === 'boolean') layerTintToggle.checked = save
 
 layerTintToggle.addEventListener('change', applyLayerTint);
 
+/* ---- navbar toggle: overlay a hairline pixel grid on the GB screen, mimicking the visible
+   dot matrix of a real Game Boy LCD. Purely cosmetic (CSS overlay, no canvas/shader work
+   needed), so no repaint is required when toggling. ---- */
+const dotMatrixToggle = document.getElementById('dotMatrixToggle');
+const dotMatrixLabelOff = document.getElementById('dotMatrixLabelOff');
+const dotMatrixLabelOn = document.getElementById('dotMatrixLabelOn');
+
+function applyDotMatrix() {
+  const on = dotMatrixToggle.checked;
+  document.body.classList.toggle('dot-matrix-on', on);
+  dotMatrixLabelOn.classList.toggle('active', on);
+  dotMatrixLabelOff.classList.toggle('active', !on);
+  saveUIConfig({ dotMatrix: on });
+}
+
+if (typeof savedUIConfig.dotMatrix === 'boolean') dotMatrixToggle.checked = savedUIConfig.dotMatrix;
+
+dotMatrixToggle.addEventListener('change', applyDotMatrix);
+
 /* ---- 1. VRAM tile viewer: every tile in 0x8000-0x97FF, raw, no palette ---- */
 function drawTileViewer() {
   const vram = emulator.mmu.vram;
@@ -5265,6 +5312,7 @@ applyMode();
 applyScreenModel();
 applyScanlineMark();
 applyLayerTint();
+applyDotMatrix();
 drawFrameActivity();
 drawFrameAnatomy();
 drawLineAnatomy();

@@ -178,6 +178,7 @@
 
   .sound-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
   .sound-row input[type="range"] { flex: 1; accent-color: var(--accent); }
+  .volume-label { font-size: 0.8rem; color: #bbb; min-width: 34px; text-align: right; flex-shrink: 0; }
   .speed-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 0.82rem; color: #bbb; }
   .speed-label { white-space: nowrap; }
   .speed-badges { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -1053,7 +1054,8 @@
 
         <div class="sound-row">
           <button class="ui-btn" id="btnMute">🔊 Mute</button>
-          <input type="range" id="volumeSlider" min="0" max="100" value="50">
+          <input type="range" id="volumeSlider" min="0" max="100" step="5" value="50">
+          <span class="volume-label" id="volumeLabel">50%</span>
         </div>
 
         <div class="speed-row">
@@ -4185,14 +4187,16 @@ function loadSoundConfig() {
 
 const btnMute = document.getElementById('btnMute');
 const volumeSlider = document.getElementById('volumeSlider');
+const volumeLabel = document.getElementById('volumeLabel');
 
 const savedSoundConfig = loadSoundConfig();
-if (savedSoundConfig && typeof savedSoundConfig.volume === 'number') volumeSlider.value = savedSoundConfig.volume;
+if (savedSoundConfig && typeof savedSoundConfig.volume === 'number') volumeSlider.value = Math.round(savedSoundConfig.volume / 5) * 5;
 let isMuted = !!(savedSoundConfig && savedSoundConfig.muted);
 
 emulator.apu.setVolume(volumeSlider.value / 100);
 emulator.apu.setMuted(isMuted);
 btnMute.textContent = isMuted ? '🔇 Unmute' : '🔊 Mute';
+volumeLabel.textContent = volumeSlider.value + '%';
 
 btnMute.addEventListener('click', () => {
   isMuted = !isMuted;
@@ -4202,40 +4206,37 @@ btnMute.addEventListener('click', () => {
 });
 volumeSlider.addEventListener('input', () => {
   emulator.apu.setVolume(volumeSlider.value / 100);
+  volumeLabel.textContent = volumeSlider.value + '%';
   saveSoundConfig();
 });
 
 /* ---- speed control: preset badges (x0.25 - 4x) set the emulation speed multiplier ----
-   Persisted in the shared UI config so the chosen speed is restored on the next visit. */
+   Deliberately NOT persisted - always starts at 1x on load/refresh, regardless of what
+   speed was last used, so a forgotten turbo/slowdown setting never carries over silently. */
 const speedBadges = [...document.querySelectorAll('.speed-badge')];
 
-function setSpeed(value, persist) {
+function setSpeed(value) {
   emulator.speed = value;
   speedBadges.forEach(b => b.classList.toggle('active', Number(b.dataset.speed) === value));
-  if (persist) saveUIConfig({ speed: value });
 }
 
-let initialSpeed = 1;
-if (typeof savedUIConfig.speed === 'number' && speedBadges.some(b => Number(b.dataset.speed) === savedUIConfig.speed)) {
-  initialSpeed = savedUIConfig.speed;
-}
-setSpeed(initialSpeed, false);
+setSpeed(1);
 
 speedBadges.forEach(badge => {
-  badge.addEventListener('click', () => setSpeed(Number(badge.dataset.speed), true));
+  badge.addEventListener('click', () => setSpeed(Number(badge.dataset.speed)));
 });
 
 /* ---- turbo hotkey: T toggles between 1x and 2x speed ----
    Goes through the same setSpeed() the speed badges use, so the 2x badge lights up while
-   turbo is on and the choice is persisted/restored like any other speed pick. Skipped while
-   a text input/textarea has focus (e.g. the breakpoint PC field) so typing the letter T
-   doesn't accidentally toggle emulation speed. */
+   turbo is on. Not persisted, same as the speed badges above. Skipped while a text
+   input/textarea has focus (e.g. the breakpoint PC field) so typing the letter T doesn't
+   accidentally toggle emulation speed. */
 window.addEventListener('keydown', (e) => {
   if (e.key !== 't' && e.key !== 'T') return;
   const tag = e.target.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA') return;
   e.preventDefault();
-  setSpeed(emulator.speed === 2 ? 1 : 2, true);
+  setSpeed(emulator.speed === 2 ? 1 : 2);
 });
 
 /* ---- keyboard input ---- */

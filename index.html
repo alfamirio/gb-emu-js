@@ -473,7 +473,7 @@
     display: block;
     width: 100%;
     aspect-ratio: 160 / 144;
-    background: #000;
+    background: transparent;
     border-radius: 4px;
     image-rendering: pixelated;
     image-rendering: -moz-crisp-edges;
@@ -482,6 +482,17 @@
   .swatch { width: 40px; text-align: center; }
   .swatch .chip { width: 40px; height: 40px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); }
   .swatch .label { font-size: 0.65rem; color: #999; margin-top: 4px; font-family: 'Consolas', monospace; }
+
+  .layer-download-btn {
+    display: flex; align-items: center; justify-content: center;
+    margin-top: 8px; margin-left: auto;
+    width: 26px; height: 26px;
+    background: #2f2f3a; border: 1px solid #444; color: #bbb;
+    border-radius: 6px; cursor: pointer; padding: 0;
+  }
+  .layer-download-btn:hover { color: #fff; border-color: #666; }
+  .layer-download-btn:disabled { color: #555; border-color: #333; cursor: not-allowed; }
+  .layer-download-btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; }
 
   /* ---- CPU step / breakpoint controls ---- */
   .cpu-debug-controls {
@@ -1042,25 +1053,31 @@
 
     <div class="tool-panel" id="panel-layers">
       <p class="tool-desc">
-        The same three sources the PPU composites together on the real screen, rendered
-        independently at full 160&times;144 resolution so each one can be inspected on its
-        own. Background always fills the frame; Window is shown wherever WX/WY currently
-        place it, black elsewhere; Sprites shows every OAM entry that's on-screen right now,
-        ignoring BG-priority occlusion so nothing is hidden behind the background. A layer
-        switched off via LCDC is dimmed and labeled.
+        The three sources the PPU composites on screen, rendered separately at full
+        resolution. Background always fills the frame; Window shows only where WX/WY
+        place it; Sprites shows every on-screen OAM entry. A layer off via LCDC is dimmed.
       </p>
       <div class="layers-grid">
         <div class="layer-block">
           <h3><span class="layer-title">Background</span><span class="layer-status" id="layerStatusBG">On</span></h3>
           <canvas id="layerCanvasBG" width="160" height="144"></canvas>
+          <button type="button" class="layer-download-btn" data-layer-canvas="layerCanvasBG" data-layer-name="background" title="Download WEBP" aria-label="Download Background layer as WEBP" disabled>
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13"/><path d="M6 12l6 6 6-6"/><path d="M5 21h14"/></svg>
+          </button>
         </div>
         <div class="layer-block">
           <h3><span class="layer-title">Window <span class="scope-sub">"Tiles"</span></span><span class="layer-status" id="layerStatusWindow">On</span></h3>
           <canvas id="layerCanvasWindow" width="160" height="144"></canvas>
+          <button type="button" class="layer-download-btn" data-layer-canvas="layerCanvasWindow" data-layer-name="window" title="Download WEBP" aria-label="Download Window layer as WEBP" disabled>
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13"/><path d="M6 12l6 6 6-6"/><path d="M5 21h14"/></svg>
+          </button>
         </div>
         <div class="layer-block">
           <h3><span class="layer-title">Sprites</span><span class="layer-status" id="layerStatusSprites">On</span></h3>
           <canvas id="layerCanvasSprites" width="160" height="144"></canvas>
+          <button type="button" class="layer-download-btn" data-layer-canvas="layerCanvasSprites" data-layer-name="sprites" title="Download WEBP" aria-label="Download Sprites layer as WEBP" disabled>
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13"/><path d="M6 12l6 6 6-6"/><path d="M5 21h14"/></svg>
+          </button>
         </div>
       </div>
     </div>
@@ -3925,8 +3942,8 @@ function drawTileMap() {
 /* ---- 2b. Layer viewer: background / window / sprites, each rendered independently at full
    160x144 frame resolution using the PPU's *current* registers - a static "what does this
    layer alone look like right now" snapshot, not tied to the current scanline like the real
-   per-line renderer. Window and sprites fill with black where they don't draw anything, so
-   it reads as "transparent" the same way the oscilloscope's flat line reads as "silent". ---- */
+   per-line renderer. Window and sprites fill with transparent pixels where they don't draw
+   anything, so empty areas show through to whatever sits behind the canvas. ---- */
 const layerCanvasBG = document.getElementById('layerCanvasBG');
 const layerCtxBG = layerCanvasBG.getContext('2d');
 const layerImageDataBG = layerCtxBG.createImageData(160, 144);
@@ -3941,9 +3958,9 @@ const layerStatusBG = document.getElementById('layerStatusBG');
 const layerStatusWindow = document.getElementById('layerStatusWindow');
 const layerStatusSprites = document.getElementById('layerStatusSprites');
 
-function fillLayerImage(imgData, r, g, b) {
+function fillLayerImage(imgData, r, g, b, a = 255) {
   const data = imgData.data;
-  for (let i = 0; i < data.length; i += 4) { data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255; }
+  for (let i = 0; i < data.length; i += 4) { data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = a; }
 }
 
 function setLayerStatus(el, blockEl, on, offReason) {
@@ -3951,6 +3968,23 @@ function setLayerStatus(el, blockEl, on, offReason) {
   el.classList.toggle('off', !on);
   blockEl.classList.toggle('dimmed', !on);
 }
+
+document.querySelectorAll('.layer-download-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const canvas = document.getElementById(btn.dataset.layerCanvas);
+    canvas.toBlob(blob => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `layer-${btn.dataset.layerName}.webp`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }, 'image/webp');
+  });
+});
 
 function drawLayers() {
   const ppu = emulator.ppu;
@@ -3990,7 +4024,7 @@ function drawLayers() {
      also requires BG to be on for the window to render at all. ---- */
   const winOn = bgOn && !!(ppu.lcdc & 0x20);
   setLayerStatus(layerStatusWindow, layerCanvasWindow.closest('.layer-block'), winOn, bgOn ? 'LCDC.5' : 'LCDC.0');
-  fillLayerImage(layerImageDataWindow, 0, 0, 0);
+  fillLayerImage(layerImageDataWindow, 0, 0, 0, 0);
   if (winOn) {
     const tileMapBase = (ppu.lcdc & 0x40) ? 0x9C00 : 0x9800;
     const signedIndex = !(ppu.lcdc & 0x10);
@@ -4023,7 +4057,7 @@ function drawLayers() {
      sprite layer is visible even where the background would normally sit on top of it. ---- */
   const sprOn = !!(ppu.lcdc & 0x02);
   setLayerStatus(layerStatusSprites, layerCanvasSprites.closest('.layer-block'), sprOn, 'LCDC.1');
-  fillLayerImage(layerImageDataSprites, 0, 0, 0);
+  fillLayerImage(layerImageDataSprites, 0, 0, 0, 0);
   if (sprOn) {
     const oam = ppu.mmu.oam;
     const spriteHeight = (ppu.lcdc & 0x04) ? 16 : 8;
@@ -4846,6 +4880,7 @@ function updateStateButtons() {
   // Don't yank the record button out from under an in-progress recording.
   if (!(clipRecorder && clipRecorder.state !== 'inactive')) btnRecordClip.disabled = !hasROM;
   if (!(audioRecorder && audioRecorder.state !== 'inactive')) btnRecordAudio.disabled = !hasROM;
+  document.querySelectorAll('.layer-download-btn').forEach(btn => { btn.disabled = !hasROM; });
 
   const slots = hasROM ? loadSlots() : [];
   btnLoadState.disabled = slots.length === 0;

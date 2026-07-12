@@ -2572,7 +2572,7 @@ class PPU {
   renderScanline() {
     const y = this.ly;
     if (y >= EMU_CORE_CONFIG.SCREEN.HEIGHT) return;
-    const bgPriority = new Uint8Array(160); // tracks BG/window color index per pixel, for sprite priority
+    const bgPriority = new Uint8Array(EMU_CORE_CONFIG.SCREEN.WIDTH); // tracks BG/window color index per pixel, for sprite priority
 
     if (this.lcdc & 0x01) {
       this.renderBackgroundLine(y, bgPriority);
@@ -2583,64 +2583,59 @@ class PPU {
     if (this.lcdc & 0x02) this.renderSpritesLine(y, bgPriority);
   }
 
-  renderBackgroundLine(y, bgPriority) {
+  /* ---- Shared pixel-decoding helpers ----
+     Single source of truth for tile/sprite pixel math. Both the real per-scanline renderer
+     below (renderBackgroundLine/renderWindowLine/renderSpritesLine) and the debug "layer
+     viewer" (drawLayers(), further down in the file) call these, so a rendering fix only
+     ever needs to be made once and the debug view can never silently drift from what's
+     actually on screen. */
+
+  // Decodes the 2bpp color index (0-3) of the pixel at tile-space coordinates (mapX, mapY)
+  // for the given tile map / tile data configuration. mapX/mapY are already-resolved pixel
+  // coordinates into that tile map's own space (BG wraps them mod 256; window doesn't need to).
+  getTileColorIndex(tileMapBase, tileDataBase, signedIndex, mapX, mapY) {
+    const tileRow = mapY >> 3, tileCol = mapX >> 3;
+    const tileIndexRaw = this.mmu.vram[(tileMapBase + tileRow * 32 + tileCol) - 0x8000];
+    const tileIndex = signedIndex ? this.toSigned8(tileIndexRaw) : tileIndexRaw;
+    const tileAddr = tileDataBase + tileIndex * 16;
+    const py = mapY & 7, px = mapX & 7;
+    const lo = this.mmu.vram[(tileAddr - 0x8000) + py * 2];
+    const hi = this.mmu.vram[(tileAddr - 0x8000) + py * 2 + 1];
+    const bit = 7 - px;
+    return (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
+  }
+
+  // Tile-data addressing (LCDC.4) is shared between the BG and window layers.
+  bgWindowTileDataConfig() {
+    const signedIndex = !(this.lcdc & 0x10);
+    return { tileDataBase: signedIndex ? 0x9000 : 0x8000, signedIndex };
+  }
+
+  // Color index of the background pixel that would be shown at screen (x, y) right now,
+  // per current SCX/SCY/LCDC.
+  getBackgroundColorIndex(x, y) {
     const tileMapBase = (this.lcdc & 0x08) ? 0x9C00 : 0x9800;
-    const signedIndex = !(this.lcdc & 0x10);
-    const tileDataBase = signedIndex ? 0x9000 : 0x8000;
-    const scy = this.scy, scx = this.scx;
-    const bgY = (y + scy) & 0xFF;
-    const tileRow = bgY >> 3;
-
-    for (let x = 0; x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
-      const bgX = (x + scx) & 0xFF;
-      const tileCol = bgX >> 3;
-      const tileIndexRaw = this.mmu.vram[(tileMapBase + tileRow * 32 + tileCol) - 0x8000];
-      const tileIndex = signedIndex ? this.toSigned8(tileIndexRaw) : tileIndexRaw;
-      const tileAddr = tileDataBase + tileIndex * 16;
-      const py = bgY & 7, px = bgX & 7;
-      const lo = this.mmu.vram[(tileAddr - 0x8000) + py * 2];
-      const hi = this.mmu.vram[(tileAddr - 0x8000) + py * 2 + 1];
-      const bit = 7 - px;
-      const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
-      bgPriority[x] = colorNum;
-      const [r, g, b] = this.tintForLayer(...this.applyPalette(colorNum, this.bgp), 'bg');
-      this.setPixel(x, y, r, g, b);
-    }
+    const { tileDataBase, signedIndex } = this.bgWindowTileDataConfig();
+    const bgX = (x + this.scx) & 0xFF, bgY = (y + this.scy) & 0xFF;
+    return this.getTileColorIndex(tileMapBase, tileDataBase, signedIndex, bgX, bgY);
   }
 
-  renderWindowLine(y, bgPriority) {
-    if (y < this.wy) return;
-    const wx = this.wx - 7;
-    if (wx > EMU_CORE_CONFIG.SCREEN.WIDTH - 1) return;
+  // Color index of the window pixel at window-space coordinates (winX, winY). Callers
+  // resolve winY differently (the real renderer advances an internal window-line counter;
+  // the debug layer viewer just uses y - WY per line) but the tile lookup itself is identical.
+  getWindowColorIndex(winX, winY) {
     const tileMapBase = (this.lcdc & 0x40) ? 0x9C00 : 0x9800;
-    const signedIndex = !(this.lcdc & 0x10);
-    const tileDataBase = signedIndex ? 0x9000 : 0x8000;
-    const winY = this.windowLineCounter;
-    const tileRow = winY >> 3;
-    let drewAny = false;
-
-    for (let x = Math.max(wx, 0); x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
-      const winX = x - wx;
-      const tileCol = winX >> 3;
-      const tileIndexRaw = this.mmu.vram[(tileMapBase + tileRow * 32 + tileCol) - 0x8000];
-      const tileIndex = signedIndex ? this.toSigned8(tileIndexRaw) : tileIndexRaw;
-      const tileAddr = tileDataBase + tileIndex * 16;
-      const py = winY & 7, px = winX & 7;
-      const lo = this.mmu.vram[(tileAddr - 0x8000) + py * 2];
-      const hi = this.mmu.vram[(tileAddr - 0x8000) + py * 2 + 1];
-      const bit = 7 - px;
-      const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
-      bgPriority[x] = colorNum;
-      const [r, g, b] = this.tintForLayer(...this.applyPalette(colorNum, this.bgp), 'window');
-      this.setPixel(x, y, r, g, b);
-      drewAny = true;
-    }
-    if (drewAny) this.windowLineCounter++;
+    const { tileDataBase, signedIndex } = this.bgWindowTileDataConfig();
+    return this.getTileColorIndex(tileMapBase, tileDataBase, signedIndex, winX, winY);
   }
 
-  renderSpritesLine(y, bgPriority) {
+  // Sprite candidates for scanline y: OAM entries whose Y range covers this line, capped at
+  // the hardware's 10-per-line limit and sorted lowest-priority-first (drawing them in this
+  // order and letting later draws win overlap reproduces the real X-then-OAM-index priority
+  // rule). Pure - doesn't touch frameStats - so both the real renderer and the debug layer
+  // viewer can safely call it.
+  getSpriteCandidatesForLine(y, spriteHeight) {
     const SPR = EMU_CORE_CONFIG.SPRITES;
-    const spriteHeight = (this.lcdc & 0x04) ? SPR.HEIGHT_TALL : SPR.HEIGHT_SMALL;
     const candidates = [];
     for (let i = 0; i < SPR.MAX_TOTAL && candidates.length < SPR.MAX_PER_LINE; i++) { // hardware limit: 10 sprites/line
       const base = i * 4;
@@ -2652,35 +2647,82 @@ class PPU {
         });
       }
     }
+    candidates.sort((a, b) => (b.spriteX - a.spriteX) || (b.oamIndex - a.oamIndex));
+    return candidates;
+  }
+
+  // Decodes a sprite's bit-planes (lo/hi) for its row on scanline y, honoring Y-flip and
+  // (for 8x16 sprites) which half-tile the row falls in. Decoded once per sprite per
+  // scanline; spriteRowColorIndex() below just extracts individual pixel bits from it.
+  getSpriteRowBits(sprite, y, spriteHeight) {
+    const yFlip = !!(sprite.attrs & 0x40), xFlip = !!(sprite.attrs & 0x20);
+    let tileIndex = sprite.tileIndex;
+    if (spriteHeight === 16) tileIndex &= 0xFE;
+
+    let rowInSprite = y - sprite.spriteY;
+    if (yFlip) rowInSprite = spriteHeight - 1 - rowInSprite;
+    let tileOffset = tileIndex * 16;
+    if (rowInSprite >= 8) { tileOffset += 16; rowInSprite -= 8; }
+
+    return {
+      lo: this.mmu.vram[tileOffset + rowInSprite * 2],
+      hi: this.mmu.vram[tileOffset + rowInSprite * 2 + 1],
+      xFlip,
+    };
+  }
+
+  // Color index (0-3) at column px (0-7) within a sprite row, given the bit-planes from getSpriteRowBits().
+  static spriteRowColorIndex(lo, hi, xFlip, px) {
+    const bit = xFlip ? px : 7 - px;
+    return (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
+  }
+
+  renderBackgroundLine(y, bgPriority) {
+    for (let x = 0; x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
+      const colorNum = this.getBackgroundColorIndex(x, y);
+      bgPriority[x] = colorNum;
+      const [r, g, b] = this.tintForLayer(...this.applyPalette(colorNum, this.bgp), 'bg');
+      this.setPixel(x, y, r, g, b);
+    }
+  }
+
+  renderWindowLine(y, bgPriority) {
+    if (y < this.wy) return;
+    const wx = this.wx - 7;
+    if (wx > EMU_CORE_CONFIG.SCREEN.WIDTH - 1) return;
+    const winY = this.windowLineCounter;
+    let drewAny = false;
+
+    for (let x = Math.max(wx, 0); x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
+      const colorNum = this.getWindowColorIndex(x - wx, winY);
+      bgPriority[x] = colorNum;
+      const [r, g, b] = this.tintForLayer(...this.applyPalette(colorNum, this.bgp), 'window');
+      this.setPixel(x, y, r, g, b);
+      drewAny = true;
+    }
+    if (drewAny) this.windowLineCounter++;
+  }
+
+  renderSpritesLine(y, bgPriority) {
+    const SPR = EMU_CORE_CONFIG.SPRITES;
+    const spriteHeight = (this.lcdc & 0x04) ? SPR.HEIGHT_TALL : SPR.HEIGHT_SMALL;
+    const candidates = this.getSpriteCandidatesForLine(y, spriteHeight);
+
     const fs = this.emulator.frameStats;
     fs.spritesPerLine[y] = candidates.length;
     fs.spritesTotal += candidates.length;
     if (candidates.length > fs.spritesMaxLine) fs.spritesMaxLine = candidates.length;
 
-    // Draw lowest-priority sprites first so higher-priority ones (smaller X, then lower
-    // OAM index) end up drawn last and win any overlap.
-    candidates.sort((a, b) => (b.spriteX - a.spriteX) || (b.oamIndex - a.oamIndex));
-
     for (const s of candidates) {
       if (s.spriteX <= -8 || s.spriteX >= EMU_CORE_CONFIG.SCREEN.WIDTH) continue;
-      const yFlip = !!(s.attrs & 0x40), xFlip = !!(s.attrs & 0x20), behindBG = !!(s.attrs & 0x80);
+      const behindBG = !!(s.attrs & 0x80);
       const palette = (s.attrs & 0x10) ? this.obp1 : this.obp0;
-      let tileIndex = s.tileIndex;
-      if (spriteHeight === 16) tileIndex &= 0xFE;
-
-      let rowInSprite = y - s.spriteY;
-      if (yFlip) rowInSprite = spriteHeight - 1 - rowInSprite;
-      let tileOffset = tileIndex * 16;
-      if (rowInSprite >= 8) { tileOffset += 16; rowInSprite -= 8; }
-
-      const lo = this.mmu.vram[tileOffset + rowInSprite * 2];
-      const hi = this.mmu.vram[tileOffset + rowInSprite * 2 + 1];
+      const { lo, hi, xFlip } = this.getSpriteRowBits(s, y, spriteHeight);
 
       for (let px = 0; px < 8; px++) {
         const sx = s.spriteX + px;
         if (sx < 0 || sx >= EMU_CORE_CONFIG.SCREEN.WIDTH) continue;
-        const bit = xFlip ? px : 7 - px;
-        const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
+        const colorNum = PPU.spriteRowColorIndex(lo, hi, xFlip, px);
         if (colorNum === 0) continue; // color 0 is always transparent for sprites
         if (behindBG && bgPriority[sx] !== 0) continue;
         const [r, g, b] = this.tintForLayer(...this.applyPalette(colorNum, palette), 'sprite');
@@ -3414,7 +3456,7 @@ class Emulator {
       dma: 0,
       bankSwitches: 0,
       apuTriggers: 0,
-      spritesPerLine: new Uint8Array(144),
+      spritesPerLine: new Uint8Array(EMU_CORE_CONFIG.SCREEN.HEIGHT),
       spritesTotal: 0,
       spritesMaxLine: 0,
     };
@@ -3758,14 +3800,14 @@ class Emulator {
   // see the raster position on the actual screen output, not just in the Scanline Timeline panel.
   drawCurrentLineMarker() {
     const ly = this.ppu.ly;
-    if (ly > 143) return; // V-Blank lines (144-153) are off the visible 144-line screen
+    if (ly > EMU_CORE_CONFIG.SCREEN.HEIGHT - 1) return; // V-Blank lines are off the visible screen
     const ctx = this.ctx;
     ctx.save();
     ctx.fillStyle = 'rgba(255, 221, 0, 0.55)';
-    ctx.fillRect(0, ly, 160, 1);
+    ctx.fillRect(0, ly, EMU_CORE_CONFIG.SCREEN.WIDTH, 1);
     ctx.strokeStyle = 'rgba(255, 221, 0, 0.9)';
     ctx.lineWidth = 1;
-    ctx.strokeRect(0, Math.max(0, ly - 0.5), 160, 1);
+    ctx.strokeRect(0, Math.max(0, ly - 0.5), EMU_CORE_CONFIG.SCREEN.WIDTH, 1);
     ctx.restore();
   }
 
@@ -3806,18 +3848,24 @@ function base64ToU8(b64) {
 
 /* ======================================= UI wiring ======================================= */
 
+/* ---- screen canvas + emulator instance ---- */
 const canvas = document.getElementById('screen');
 const emulator = new Emulator(canvas);
 
+/* ---- ROM loading panel refs (file picker, drag-drop zone, ROM header info) ---- */
 const fileInput = document.getElementById('fileInput');
 const dropZone = document.getElementById('dropZone');
 const romInfo = document.getElementById('romInfo');
 const checksumBadges = document.getElementById('checksumBadges');
+
+/* ---- playback controls refs (start/pause/reset/rewind) ---- */
 const btnStart = document.getElementById('btnStart');
 const btnPause = document.getElementById('btnPause');
 const btnReset = document.getElementById('btnReset');
 const btnRewind = document.getElementById('btnRewind');
 const rewindInfo = document.getElementById('rewindInfo');
+
+/* ---- step/breakpoint debugging controls refs ---- */
 const btnStep = document.getElementById('btnStep');
 const btnStepLine = document.getElementById('btnStepLine');
 const btnStepFrame = document.getElementById('btnStepFrame');
@@ -3853,25 +3901,35 @@ const APP_CONFIG = {
   AUDIO_EXPORT_BITRATE_KBPS: 32,     // target bitrate for the standalone audio-only export
 };
 
+/* ---- localStorage-persisted config helper ----
+   Small factory for the "load merged JSON from a key, save merged JSON back to it" pattern.
+   Both the UI config (model/mode/etc., below) and the sound config (mute/volume/channel
+   mutes, further down) are exactly this shape - this is the one place that pattern is
+   written, so the next persisted setting just needs `makePersistedConfig('some:key')`. */
+function makePersistedConfig(key, defaults = {}) {
+  function load() {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw === null ? { ...defaults } : Object.assign({ ...defaults }, JSON.parse(raw));
+    } catch (e) { return { ...defaults }; }
+  }
+  function save(partial) {
+    try {
+      const merged = Object.assign(load(), partial);
+      localStorage.setItem(key, JSON.stringify(merged));
+      return merged;
+    } catch (e) { /* storage unavailable/full - ignore, settings just won't persist */ }
+  }
+  return { load, save };
+}
+
 /* ---- unified UI config: model (GB/GBP), play/debug mode, and "mark current line" all live
    together in one localStorage entry so they're restored together on next visit (sound
    mute/volume keep their own separate entry below, since they're wired up independently;
    emulation speed is deliberately NOT persisted here - it always starts back at 1x). */
-const UI_CONFIG_STORAGE_KEY = 'jsgb-config:ui';
-
-function loadUIConfig() {
-  try {
-    const raw = localStorage.getItem(UI_CONFIG_STORAGE_KEY);
-    return raw === null ? {} : JSON.parse(raw);
-  } catch (e) { return {}; }
-}
-
-function saveUIConfig(partial) {
-  try {
-    const merged = Object.assign(loadUIConfig(), partial);
-    localStorage.setItem(UI_CONFIG_STORAGE_KEY, JSON.stringify(merged));
-  } catch (e) { /* storage unavailable/full - ignore, settings just won't persist */ }
-}
+const uiConfigStore = makePersistedConfig('jsgb-config:ui');
+function loadUIConfig() { return uiConfigStore.load(); }
+function saveUIConfig(partial) { uiConfigStore.save(partial); }
 
 const savedUIConfig = loadUIConfig();
 
@@ -4291,29 +4349,25 @@ btnStep1s.addEventListener('click', () => {
 
 /* ---- sound controls ---- */
 /* Mute state + volume level are persisted in localStorage so they're restored on the next visit
-   (same pattern as the play/debug mode toggle above). */
-const SOUND_STORAGE_KEY = 'jsgb-config:sound';
-
+   (same pattern as the play/debug mode toggle above, via the shared makePersistedConfig() helper). */
+const soundConfigStore = makePersistedConfig('jsgb-config:sound');
 function saveSoundConfig() {
-  try { localStorage.setItem(SOUND_STORAGE_KEY, JSON.stringify({ muted: isMuted, volume: Number(volumeSlider.value), channelMuted: emulator.apu.chMuted })); }
-  catch (e) { /* storage unavailable/full - ignore, setting just won't persist */ }
+  soundConfigStore.save({ muted: isMuted, volume: Number(soundControls.volumeSlider.value), channelMuted: emulator.apu.chMuted });
 }
+function loadSoundConfig() { return soundConfigStore.load(); }
 
-function loadSoundConfig() {
-  try {
-    const raw = localStorage.getItem(SOUND_STORAGE_KEY);
-    return raw === null ? null : JSON.parse(raw);
-  } catch (e) { return null; }
-}
+// DOM refs for this panel grouped together so it's obvious at a glance what the sound
+// controls touch (and safe to find/delete as a unit).
+const soundControls = {
+  btnMute: document.getElementById('btnMute'),
+  volumeSlider: document.getElementById('volumeSlider'),
+  volumeLabel: document.getElementById('volumeLabel'),
+};
 
-const btnMute = document.getElementById('btnMute');
-const volumeSlider = document.getElementById('volumeSlider');
-const volumeLabel = document.getElementById('volumeLabel');
-
-volumeSlider.min = APP_CONFIG.VOLUME_MIN;
-volumeSlider.max = APP_CONFIG.VOLUME_MAX;
-volumeSlider.step = APP_CONFIG.VOLUME_STEP;
-volumeSlider.value = APP_CONFIG.VOLUME_DEFAULT;
+soundControls.volumeSlider.min = APP_CONFIG.VOLUME_MIN;
+soundControls.volumeSlider.max = APP_CONFIG.VOLUME_MAX;
+soundControls.volumeSlider.step = APP_CONFIG.VOLUME_STEP;
+soundControls.volumeSlider.value = APP_CONFIG.VOLUME_DEFAULT;
 
 // Snaps a percentage onto the configured step (e.g. a value saved before VOLUME_STEP
 // existed, or from editing config by hand) so the slider and label are never out of sync
@@ -4323,23 +4377,23 @@ function snapToVolumeStep(pct) {
 }
 
 const savedSoundConfig = loadSoundConfig();
-if (savedSoundConfig && typeof savedSoundConfig.volume === 'number') volumeSlider.value = snapToVolumeStep(savedSoundConfig.volume);
+if (savedSoundConfig && typeof savedSoundConfig.volume === 'number') soundControls.volumeSlider.value = snapToVolumeStep(savedSoundConfig.volume);
 let isMuted = !!(savedSoundConfig && savedSoundConfig.muted);
 
-emulator.apu.setVolume(volumeSlider.value / APP_CONFIG.VOLUME_MAX);
+emulator.apu.setVolume(soundControls.volumeSlider.value / APP_CONFIG.VOLUME_MAX);
 emulator.apu.setMuted(isMuted);
-btnMute.textContent = isMuted ? '🔇 Unmute' : '🔊 Mute';
-volumeLabel.textContent = volumeSlider.value + '%';
+soundControls.btnMute.textContent = isMuted ? '🔇 Unmute' : '🔊 Mute';
+soundControls.volumeLabel.textContent = soundControls.volumeSlider.value + '%';
 
-btnMute.addEventListener('click', () => {
+soundControls.btnMute.addEventListener('click', () => {
   isMuted = !isMuted;
   emulator.apu.setMuted(isMuted);
-  btnMute.textContent = isMuted ? '🔇 Unmute' : '🔊 Mute';
+  soundControls.btnMute.textContent = isMuted ? '🔇 Unmute' : '🔊 Mute';
   saveSoundConfig();
 });
-volumeSlider.addEventListener('input', () => {
-  emulator.apu.setVolume(volumeSlider.value / APP_CONFIG.VOLUME_MAX);
-  volumeLabel.textContent = volumeSlider.value + '%';
+soundControls.volumeSlider.addEventListener('input', () => {
+  emulator.apu.setVolume(soundControls.volumeSlider.value / APP_CONFIG.VOLUME_MAX);
+  soundControls.volumeLabel.textContent = soundControls.volumeSlider.value + '%';
   saveSoundConfig();
 });
 
@@ -4390,28 +4444,45 @@ window.addEventListener('keyup', (e) => { const m = KEY_MAP[e.key]; if (m) { emu
    not real-time display; only the active tab's view is redrawn.
    ========================================================================================= */
 
+/* ---- 1. VRAM tile viewer refs ---- */
 const tileViewerCanvas = document.getElementById('tileViewerCanvas');
 const tileViewerCtx = tileViewerCanvas.getContext('2d');
 const tileViewerImageData = tileViewerCtx.createImageData(128, 192); // 16x24 tiles of 8x8
 
+/* ---- 2a. Tile map viewer refs ---- */
 const tileMapCanvas = document.getElementById('tileMapCanvas');
 const tileMapCtx = tileMapCanvas.getContext('2d');
 const tileMapImageData = tileMapCtx.createImageData(256, 256); // 32x32 tiles of 8x8
 
+/* ---- 3. OAM / sprite inspector refs ---- */
 const oamTableBody = document.getElementById('oamTableBody');
+
+/* ---- 4. Palette panel refs ---- */
 const paletteGrid = document.getElementById('paletteGrid');
+
+/* ---- 5. Disassembly panel refs ---- */
 const disasmList = document.getElementById('disasmList');
+
+/* ---- 6. Stack panel refs ---- */
 const stackList = document.getElementById('stackList');
 const stackSpReadout = document.getElementById('stackSpReadout');
+
+/* ---- 7. Interrupts panel refs ---- */
 const intSummary = document.getElementById('intSummary');
 const intTable = document.getElementById('intTable');
 const intLog = document.getElementById('intLog');
+
+/* ---- 8. Execution trace panel refs ---- */
 const traceList = document.getElementById('traceList');
 const btnExportTrace = document.getElementById('btnExportTrace');
 const btnTraceFollow = document.getElementById('btnTraceFollow');
 const traceFrozenNote = document.getElementById('traceFrozenNote');
+
+/* ---- 9. Memory map panel refs ---- */
 const memmapStrip = document.getElementById('memmapStrip');
 const memmapReadout = document.getElementById('memmapReadout');
+
+/* ---- 10. MBC banking panel refs ---- */
 const bankingDesc = document.getElementById('bankingDesc');
 const bankingWindows = document.getElementById('bankingWindows');
 const romBankGrid = document.getElementById('romBankGrid');
@@ -4820,7 +4891,7 @@ function drawTileMap() {
   }
 
   // Highlight the current 160x144 viewport (SCX/SCY), wrapping around the map edges.
-  const scx = ppu.scx, scy = ppu.scy, vw = 160, vh = 144;
+  const scx = ppu.scx, scy = ppu.scy, vw = EMU_CORE_CONFIG.SCREEN.WIDTH, vh = EMU_CORE_CONFIG.SCREEN.HEIGHT;
   for (let x = 0; x < vw; x++) {
     setMapPixel(data, scx + x, scy, 255, 221, 0);
     setMapPixel(data, scx + x, scy + vh - 1, 255, 221, 0);
@@ -4840,13 +4911,13 @@ function drawTileMap() {
    anything, so empty areas show through to whatever sits behind the canvas. ---- */
 const layerCanvasBG = document.getElementById('layerCanvasBG');
 const layerCtxBG = layerCanvasBG.getContext('2d');
-const layerImageDataBG = layerCtxBG.createImageData(160, 144);
+const layerImageDataBG = layerCtxBG.createImageData(EMU_CORE_CONFIG.SCREEN.WIDTH, EMU_CORE_CONFIG.SCREEN.HEIGHT);
 const layerCanvasWindow = document.getElementById('layerCanvasWindow');
 const layerCtxWindow = layerCanvasWindow.getContext('2d');
-const layerImageDataWindow = layerCtxWindow.createImageData(160, 144);
+const layerImageDataWindow = layerCtxWindow.createImageData(EMU_CORE_CONFIG.SCREEN.WIDTH, EMU_CORE_CONFIG.SCREEN.HEIGHT);
 const layerCanvasSprites = document.getElementById('layerCanvasSprites');
 const layerCtxSprites = layerCanvasSprites.getContext('2d');
-const layerImageDataSprites = layerCtxSprites.createImageData(160, 144);
+const layerImageDataSprites = layerCtxSprites.createImageData(EMU_CORE_CONFIG.SCREEN.WIDTH, EMU_CORE_CONFIG.SCREEN.HEIGHT);
 
 const layerStatusBG = document.getElementById('layerStatusBG');
 const layerStatusWindow = document.getElementById('layerStatusWindow');
@@ -4882,32 +4953,22 @@ document.querySelectorAll('.layer-download-btn').forEach(btn => {
 
 function drawLayers() {
   const ppu = emulator.ppu;
-  const vram = ppu.mmu.vram;
+  const W = EMU_CORE_CONFIG.SCREEN.WIDTH, H = EMU_CORE_CONFIG.SCREEN.HEIGHT;
 
-  /* ---- Background: always covers the full 160x144 frame when enabled ---- */
+  /* ---- Background: always covers the full 160x144 frame when enabled. Pixel decoding
+     goes through PPU.getBackgroundColorIndex() - the same helper renderBackgroundLine()
+     uses - so this view can never drift from what the real renderer draws. ---- */
   const bgOn = !!(ppu.lcdc & 0x01);
   setLayerStatus(layerStatusBG, layerCanvasBG.closest('.layer-block'), bgOn, 'LCDC.0');
   if (!bgOn) {
     fillLayerImage(layerImageDataBG, 255, 255, 255); // matches real hardware: BG off = blank white
   } else {
-    const tileMapBase = (ppu.lcdc & 0x08) ? 0x9C00 : 0x9800;
-    const signedIndex = !(ppu.lcdc & 0x10);
-    const tileDataBase = signedIndex ? 0x9000 : 0x8000;
-    const scx = ppu.scx, scy = ppu.scy;
     const data = layerImageDataBG.data;
-    for (let y = 0; y < 144; y++) {
-      const bgY = (y + scy) & 0xFF, tileRow = bgY >> 3;
-      for (let x = 0; x < 160; x++) {
-        const bgX = (x + scx) & 0xFF, tileCol = bgX >> 3;
-        const tileIndexRaw = vram[(tileMapBase + tileRow * 32 + tileCol) - 0x8000];
-        const tileIndex = signedIndex ? ppu.toSigned8(tileIndexRaw) : tileIndexRaw;
-        const tileAddr = tileDataBase + tileIndex * 16;
-        const py = bgY & 7, px = bgX & 7;
-        const lo = vram[(tileAddr - 0x8000) + py * 2], hi = vram[(tileAddr - 0x8000) + py * 2 + 1];
-        const bit = 7 - px;
-        const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const colorNum = ppu.getBackgroundColorIndex(x, y);
         const [r, g, b] = ppu.applyPalette(colorNum, ppu.bgp);
-        const idx = (y * 160 + x) * 4;
+        const idx = (y * W + x) * 4;
         data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
       }
     }
@@ -4915,30 +4976,23 @@ function drawLayers() {
   layerCtxBG.putImageData(layerImageDataBG, 0, 0);
 
   /* ---- Window: only draws where WX/WY currently place it; black elsewhere. Real hardware
-     also requires BG to be on for the window to render at all. ---- */
+     also requires BG to be on for the window to render at all. Uses a plain y - WY per line
+     (rather than the real renderer's internal window-line counter) since this is a static
+     snapshot, not a live per-scanline render - but the tile lookup itself is the same
+     PPU.getWindowColorIndex() helper renderWindowLine() uses. ---- */
   const winOn = bgOn && !!(ppu.lcdc & 0x20);
   setLayerStatus(layerStatusWindow, layerCanvasWindow.closest('.layer-block'), winOn, bgOn ? 'LCDC.5' : 'LCDC.0');
   fillLayerImage(layerImageDataWindow, 0, 0, 0, 0);
   if (winOn) {
-    const tileMapBase = (ppu.lcdc & 0x40) ? 0x9C00 : 0x9800;
-    const signedIndex = !(ppu.lcdc & 0x10);
-    const tileDataBase = signedIndex ? 0x9000 : 0x8000;
     const wx = ppu.wx - 7, wy = ppu.wy;
-    if (wx <= 159) {
+    if (wx <= W - 1) {
       const data = layerImageDataWindow.data;
-      for (let y = Math.max(wy, 0); y < 144; y++) {
-        const winY = y - wy, tileRow = winY >> 3;
-        for (let x = Math.max(wx, 0); x < 160; x++) {
-          const winX = x - wx, tileCol = winX >> 3;
-          const tileIndexRaw = vram[(tileMapBase + tileRow * 32 + tileCol) - 0x8000];
-          const tileIndex = signedIndex ? ppu.toSigned8(tileIndexRaw) : tileIndexRaw;
-          const tileAddr = tileDataBase + tileIndex * 16;
-          const py = winY & 7, px = winX & 7;
-          const lo = vram[(tileAddr - 0x8000) + py * 2], hi = vram[(tileAddr - 0x8000) + py * 2 + 1];
-          const bit = 7 - px;
-          const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
+      for (let y = Math.max(wy, 0); y < H; y++) {
+        const winY = y - wy;
+        for (let x = Math.max(wx, 0); x < W; x++) {
+          const colorNum = ppu.getWindowColorIndex(x - wx, winY);
           const [r, g, b] = ppu.applyPalette(colorNum, ppu.bgp);
-          const idx = (y * 160 + x) * 4;
+          const idx = (y * W + x) * 4;
           data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
         }
       }
@@ -4947,47 +5001,31 @@ function drawLayers() {
   layerCtxWindow.putImageData(layerImageDataWindow, 0, 0);
 
   /* ---- Sprites: every OAM entry currently on-screen, drawn with the real 10-per-line
-     hardware cap and OAM-index priority - but ignoring BG-priority occlusion, so the full
-     sprite layer is visible even where the background would normally sit on top of it. ---- */
+     hardware cap and OAM-index priority (via PPU.getSpriteCandidatesForLine(), the same
+     candidate selection renderSpritesLine() uses) - but ignoring BG-priority occlusion, so
+     the full sprite layer is visible even where the background would normally sit on top
+     of it. ---- */
   const sprOn = !!(ppu.lcdc & 0x02);
   setLayerStatus(layerStatusSprites, layerCanvasSprites.closest('.layer-block'), sprOn, 'LCDC.1');
   fillLayerImage(layerImageDataSprites, 0, 0, 0, 0);
   if (sprOn) {
-    const oam = ppu.mmu.oam;
-    const spriteHeight = (ppu.lcdc & 0x04) ? 16 : 8;
+    const spriteHeight = (ppu.lcdc & 0x04) ? EMU_CORE_CONFIG.SPRITES.HEIGHT_TALL : EMU_CORE_CONFIG.SPRITES.HEIGHT_SMALL;
     const data = layerImageDataSprites.data;
-    for (let y = 0; y < 144; y++) {
-      const candidates = [];
-      for (let i = 0; i < 40 && candidates.length < 10; i++) {
-        const base = i * 4;
-        const spriteY = oam[base] - 16;
-        if (y >= spriteY && y < spriteY + spriteHeight) {
-          candidates.push({ spriteY, spriteX: oam[base + 1] - 8, tileIndex: oam[base + 2], attrs: oam[base + 3], oamIndex: i });
-        }
-      }
-      candidates.sort((a, b) => (b.spriteX - a.spriteX) || (b.oamIndex - a.oamIndex));
+    for (let y = 0; y < H; y++) {
+      const candidates = ppu.getSpriteCandidatesForLine(y, spriteHeight);
 
       for (const s of candidates) {
-        if (s.spriteX <= -8 || s.spriteX >= 160) continue;
-        const yFlip = !!(s.attrs & 0x40), xFlip = !!(s.attrs & 0x20);
+        if (s.spriteX <= -8 || s.spriteX >= W) continue;
         const palette = (s.attrs & 0x10) ? ppu.obp1 : ppu.obp0;
-        let tileIndex = s.tileIndex;
-        if (spriteHeight === 16) tileIndex &= 0xFE;
+        const { lo, hi, xFlip } = ppu.getSpriteRowBits(s, y, spriteHeight);
 
-        let rowInSprite = y - s.spriteY;
-        if (yFlip) rowInSprite = spriteHeight - 1 - rowInSprite;
-        let tileOffset = tileIndex * 16;
-        if (rowInSprite >= 8) { tileOffset += 16; rowInSprite -= 8; }
-
-        const lo = vram[tileOffset + rowInSprite * 2], hi = vram[tileOffset + rowInSprite * 2 + 1];
         for (let px = 0; px < 8; px++) {
           const sx = s.spriteX + px;
-          if (sx < 0 || sx >= 160) continue;
-          const bit = xFlip ? px : 7 - px;
-          const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
+          if (sx < 0 || sx >= W) continue;
+          const colorNum = PPU.spriteRowColorIndex(lo, hi, xFlip, px);
           if (colorNum === 0) continue; // color 0 is always transparent for sprites
           const [r, g, b] = ppu.applyPalette(colorNum, palette);
-          const idx = (y * 160 + sx) * 4;
+          const idx = (y * W + sx) * 4;
           data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
         }
       }
@@ -5011,7 +5049,7 @@ function drawOAMTable() {
     const spriteY = rawY - 16, spriteX = rawX - 8;
     const tileIndex = mmu.oam[base + 2];
     const attrs = mmu.oam[base + 3];
-    const offscreen = spriteX <= -8 || spriteX >= 160 || spriteY <= -16 || spriteY >= 144;
+    const offscreen = spriteX <= -8 || spriteX >= EMU_CORE_CONFIG.SCREEN.WIDTH || spriteY <= -16 || spriteY >= EMU_CORE_CONFIG.SCREEN.HEIGHT;
     const xFlip = !!(attrs & 0x20), yFlip = !!(attrs & 0x40), behindBG = !!(attrs & 0x80);
     const paletteByte = (attrs & 0x10) ? ppu.obp1 : ppu.obp0;
 
@@ -5153,12 +5191,14 @@ function drawOscilloscope() {
    zoomed-in view of the current line's OAM Search / Pixel Transfer / H-Blank split. Uses the
    same fixed per-mode cycle counts the PPU's step() switch above runs on, so the picture
    always matches this emulator's actual timing model. ---- */
-const SCANLINE_OAM = 80, SCANLINE_TRANSFER = 172, SCANLINE_HBLANK = 204;
-const SCANLINE_LINE_CYCLES = SCANLINE_OAM + SCANLINE_TRANSFER + SCANLINE_HBLANK; // 456
-const SCANLINE_VISIBLE_LINES = 144, SCANLINE_VBLANK_LINES = 10;
-const SCANLINE_TOTAL_LINES = SCANLINE_VISIBLE_LINES + SCANLINE_VBLANK_LINES;     // 154
-const SCANLINE_FRAME_CYCLES = SCANLINE_LINE_CYCLES * SCANLINE_TOTAL_LINES;       // 70224
-const GB_CLOCK_HZ = 4194304;
+const SCANLINE_OAM = EMU_CORE_CONFIG.PPU_MODE_CYCLES.OAM_SEARCH;
+const SCANLINE_TRANSFER = EMU_CORE_CONFIG.PPU_MODE_CYCLES.PIXEL_TRANSFER;
+const SCANLINE_HBLANK = EMU_CORE_CONFIG.PPU_MODE_CYCLES.HBLANK;
+const SCANLINE_LINE_CYCLES = EMU_CORE_CONFIG.FRAME.CYCLES_PER_LINE; // 456
+const SCANLINE_VISIBLE_LINES = EMU_CORE_CONFIG.FRAME.VISIBLE_LINES, SCANLINE_VBLANK_LINES = EMU_CORE_CONFIG.FRAME.VBLANK_LINES;
+const SCANLINE_TOTAL_LINES = EMU_CORE_CONFIG.FRAME.TOTAL_LINES;         // 154
+const SCANLINE_FRAME_CYCLES = EMU_CORE_CONFIG.FRAME.CYCLES_PER_FRAME;   // 70224
+const GB_CLOCK_HZ = EMU_CORE_CONFIG.CLOCK_HZ;
 
 const frameTimelineCanvas = document.getElementById('frameTimelineCanvas');
 const lineTimelineCanvas = document.getElementById('lineTimelineCanvas');
@@ -5846,7 +5886,7 @@ function updateStateButtons() {
 // the same raw pixels the screen itself was showing at save time.
 function drawSlotThumbnail(canvas, state) {
   const ctx = canvas.getContext('2d');
-  const imgData = ctx.createImageData(160, 144);
+  const imgData = ctx.createImageData(EMU_CORE_CONFIG.SCREEN.WIDTH, EMU_CORE_CONFIG.SCREEN.HEIGHT);
   imgData.data.set(base64ToU8(state.ppu.framebuffer));
   ctx.putImageData(imgData, 0, 0);
 }
@@ -5860,7 +5900,7 @@ function renderSlotList(slots) {
     card.className = 'slot-card' + (i === 0 ? ' latest' : '');
 
     const canvas = document.createElement('canvas');
-    canvas.width = 160; canvas.height = 144;
+    canvas.width = EMU_CORE_CONFIG.SCREEN.WIDTH; canvas.height = EMU_CORE_CONFIG.SCREEN.HEIGHT;
     drawSlotThumbnail(canvas, slot.state);
     card.appendChild(canvas);
 

@@ -1080,6 +1080,7 @@
             <tr><td>Z / X</td><td>A / B</td></tr>
             <tr><td>Enter / Shift</td><td>Start / Select</td></tr>
             <tr><td>[ / ]</td><td>Quick save / load state</td></tr>
+            <tr><td>T</td><td>Toggle turbo (1x / 2x speed)</td></tr>
           </table>
         </div>
       </div>
@@ -3859,6 +3860,19 @@ setSpeed(initialSpeed, false);
 
 speedBadges.forEach(badge => {
   badge.addEventListener('click', () => setSpeed(Number(badge.dataset.speed), true));
+});
+
+/* ---- turbo hotkey: T toggles between 1x and 2x speed ----
+   Goes through the same setSpeed() the speed badges use, so the 2x badge lights up while
+   turbo is on and the choice is persisted/restored like any other speed pick. Skipped while
+   a text input/textarea has focus (e.g. the breakpoint PC field) so typing the letter T
+   doesn't accidentally toggle emulation speed. */
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 't' && e.key !== 'T') return;
+  const tag = e.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  e.preventDefault();
+  setSpeed(emulator.speed === 2 ? 1 : 2, true);
 });
 
 /* ---- keyboard input ---- */

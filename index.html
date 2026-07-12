@@ -791,15 +791,20 @@
     <h2>Debugging Tools</h2>
 
     <div class="tools-tabs">
-      <button class="tool-tab active" data-tool="trace">Execution Trace</button>
+      <button class="tool-tab active" data-tool="registers">Registers</button>
+      <button class="tool-tab" data-tool="trace">Execution Trace</button>
       <button class="tool-tab" data-tool="disasm">Disassembler</button>
-      <button class="tool-tab" data-tool="registers">Registers</button>
       <button class="tool-tab" data-tool="stack">Stack</button>
       <button class="tool-tab" data-tool="memmap">Memory Map</button>
       <button class="tool-tab" data-tool="banking">MBC Banking</button>
     </div>
 
-    <div class="tool-panel" id="panel-trace">
+    <div class="tool-panel" id="panel-registers">
+      <p class="tool-desc">Raw CPU registers, flags, and key PPU/timer I/O values, updated live as the emulator runs.</p>
+      <div id="debugOut">—</div>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-trace">
       <p class="tool-desc">
         Scrollback of the last instructions the CPU actually executed, oldest first, most recent
         highlighted at the bottom — with a brief plain-English note on what each one does, useful
@@ -820,11 +825,6 @@
         to execute one instruction at a time, or set a breakpoint below and Run to it.
       </p>
       <div class="disasm-list" id="disasmList"><div class="disasm-empty">Load a ROM to see disassembly.</div></div>
-    </div>
-
-    <div class="tool-panel hidden" id="panel-registers">
-      <p class="tool-desc">Raw CPU registers, flags, and key PPU/timer I/O values, updated live as the emulator runs.</p>
-      <div id="debugOut">—</div>
     </div>
 
     <div class="tool-panel hidden" id="panel-stack">
@@ -3760,10 +3760,11 @@ updateCpuControlsVisibility(debugToolsContainer.querySelector('.tool-tab.active'
 
 // Keep the trace panel's height matched to its sibling column across window resizes, but
 // only while it's actually the visible tab - other debug panels are unaffected either way.
+// (No initial call needed here: Registers is the default active tab, and syncTraceListHeight()
+// runs itself via drawTrace() the moment the Execution Trace tab is actually opened.)
 window.addEventListener('resize', () => {
   if (debugToolsContainer.querySelector('.tool-tab.active').dataset.tool === 'trace') syncTraceListHeight();
 });
-syncTraceListHeight(); // 'Execution Trace' is the default active tab on page load
 
 let tileMapSelect = '9800';
 document.querySelectorAll('input[name="tmSelect"]').forEach(r => {

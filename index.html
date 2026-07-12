@@ -1385,13 +1385,14 @@ class MMU {
     this.emulator = emulator;
 
     this.rom = new Uint8Array(0);        // raw cartridge ROM file
-    this.mbcType = 0;                    // 0 = ROM only, 1 = MBC1, 2 = MBC2, 3 = MBC3
+    this.mbcType = 0;                    // 0 = ROM only, 1 = MBC1, 2 = MBC2, 3 = MBC3, 5 = MBC5
+    this.hasRumble = false;              // MBC5+RUMBLE carts mask an extra bit out of the RAM bank register
     this.currentROMBank = 1;
     this.currentRAMBank = 0;
     this.ramEnabled = false;
     this.bankingMode = 0;                // MBC1: 0 = ROM banking mode, 1 = RAM banking mode
 
-    this.cartRAM = new Uint8Array(0x8000); // up to 4 banks of 8KB external RAM
+    this.cartRAM = new Uint8Array(0x20000); // up to 16 banks of 8KB external RAM (MBC5's max)
 
     // ---- MBC3 Real Time Clock (RTC) state ----
     // `rtc` holds the "live" counters, which keep advancing (based on wall-clock time)
@@ -1452,7 +1453,9 @@ class MMU {
     else if (cartType >= 0x01 && cartType <= 0x03) { this.mbcType = 1; this.cartTypeSupported = true; }
     else if (cartType === 0x05 || cartType === 0x06) { this.mbcType = 2; this.cartTypeSupported = true; }
     else if (cartType >= 0x0F && cartType <= 0x13) { this.mbcType = 3; this.cartTypeSupported = true; }
+    else if (cartType >= 0x19 && cartType <= 0x1E) { this.mbcType = 5; this.cartTypeSupported = true; }
     else { this.mbcType = 1; this.cartTypeSupported = false; } // unrecognized mapper: fall back to MBC1 behavior, best-effort only
+    this.hasRumble = (cartType >= 0x1C && cartType <= 0x1E); // MBC5+RUMBLE variants
 
     this.currentROMBank = 1;
     this.currentRAMBank = 0;
@@ -1630,6 +1633,23 @@ class MMU {
           this.rtc.latched.dh = this.rtc.dh;
         }
         this.rtc.lastLatchWrite = val;
+      }
+    } else if (this.mbcType === 5) {
+      // MBC5 has a full 9-bit ROM bank number (up to 512 banks / 8MB) split across two
+      // registers, and - unlike MBC1/MBC2/MBC3 - bank 0 has no special substitution here:
+      // writing 0 to the low-byte register really does map ROM bank 0 into 0x4000-0x7FFF.
+      if (addr < 0x2000) {
+        this.ramEnabled = (val & 0x0F) === 0x0A;
+      } else if (addr < 0x3000) {
+        this.currentROMBank = (this.currentROMBank & 0x100) | val; // low 8 bits
+      } else if (addr < 0x4000) {
+        this.currentROMBank = (this.currentROMBank & 0xFF) | ((val & 0x01) << 8); // bit 8
+      } else if (addr < 0x6000) {
+        // Bit 3 doubles as the rumble motor control on MBC5+RUMBLE carts, and isn't part of
+        // the RAM bank number there (real rumble carts only ship up to 8 RAM banks anyway).
+        // We don't drive a motor, but still need to mask bit 3 off so it can't be mistaken
+        // for a bank-select bit and switch away from the RAM bank the game actually wants.
+        this.currentRAMBank = val & (this.hasRumble ? 0x07 : 0x0F);
       }
     }
 
@@ -3728,7 +3748,7 @@ const CART_TYPE_NAMES = {
 // The mapper families this emulator actually implements bank-switching logic for.
 // (0x0F-0x13 includes the MBC3 RTC support added above.)
 function isCartTypeSupported(t) {
-  return t === 0x00 || (t >= 0x01 && t <= 0x03) || t === 0x05 || t === 0x06 || (t >= 0x0F && t <= 0x13);
+  return t === 0x00 || (t >= 0x01 && t <= 0x03) || t === 0x05 || t === 0x06 || (t >= 0x0F && t <= 0x13) || (t >= 0x19 && t <= 0x1E);
 }
 function getMBCName(bytes) {
   const t = bytes[0x147];
@@ -3743,6 +3763,34 @@ function getMBCCompatibilityWarning(bytes) {
   if (isCartTypeSupported(t)) return null;
   const name = CART_TYPE_NAMES[t] || ('unknown type 0x' + t.toString(16));
   return `This ROM uses ${name}, which isn't implemented. Falling back to MBC1-style banking - expect glitches, save data that doesn't stick, or a game that doesn't boot.`;
+}
+// Returns a mild informational note (not a warning) for mappers that are fully supported for
+// banking/save purposes but have some real hardware feature this emulator doesn't reproduce -
+// currently just the MBC5 rumble motor, which has no gameplay effect if it's simply silent.
+function getMBCInfoNote(bytes) {
+  const t = bytes[0x147];
+  if (t >= 0x1C && t <= 0x1E) return "This cartridge's rumble motor isn't emulated (no vibration) - everything else works normally.";
+  return null;
+}
+
+// The cartridge header's CGB flag (offset 0x143) tells us whether a ROM requires Game Boy
+// Color hardware to run at all (0xC0), or merely takes advantage of it when present while
+// staying playable on original DMG hardware (0x80). This emulator only implements the
+// original DMG PPU/palette pipeline, so a GBC-only cart is a hard "won't run correctly"
+// case, while a GBC-enhanced cart should still boot and play fine in plain-DMG mode.
+function getGBCCompatibilityWarning(bytes) {
+  const flag = bytes[0x143];
+  if (flag === 0xC0) {
+    return "This is a Game Boy Color-only game. This emulator only supports original Game Boy hardware, so it will likely show a garbled screen or fail to boot.";
+  }
+  return null;
+}
+function getGBCInfoNote(bytes) {
+  const flag = bytes[0x143];
+  if (flag === 0x80) {
+    return "This game has optional Game Boy Color enhancements, which this emulator doesn't render - it will still run in original Game Boy mode.";
+  }
+  return null;
 }
 
 
@@ -3867,9 +3915,15 @@ async function loadROMBytes(bytes) {
   emulator.loadROM(bytes);
   const checksums = await computeChecksums(bytes);
   const mbcWarning = getMBCCompatibilityWarning(bytes);
+  const mbcInfo = getMBCInfoNote(bytes);
+  const gbcWarning = getGBCCompatibilityWarning(bytes);
+  const gbcInfo = getGBCInfoNote(bytes);
   romInfo.innerHTML = `<b>${getROMTitle(bytes)}</b><br>Mapper: ${getMBCName(bytes)}<br>Size: ${(bytes.length / 1024).toFixed(0)} KB` +
     `<br>Checksum: 0x${checksums.crc32}` +
-    (mbcWarning ? `<br><span style="color:#e8794b">⚠ ${mbcWarning}</span>` : '');
+    (gbcWarning ? `<br><span style="color:#e8794b">⚠ ${gbcWarning}</span>` : '') +
+    (!gbcWarning && gbcInfo ? `<br><span style="color:#9aa0a6">ℹ ${gbcInfo}</span>` : '') +
+    (mbcWarning ? `<br><span style="color:#e8794b">⚠ ${mbcWarning}</span>` : '') +
+    (!mbcWarning && mbcInfo ? `<br><span style="color:#9aa0a6">ℹ ${mbcInfo}</span>` : '');
   renderChecksumBadges(checksums);
   lastRenderedAccessSeq = -1;
   lastRenderedBankSwitchT = -1;
@@ -4250,13 +4304,12 @@ function drawMemMap() {
 
 const RTC_REG_LABEL = { 0x08: 'RTC Seconds', 0x09: 'RTC Minutes', 0x0A: 'RTC Hours', 0x0B: 'RTC Day (lo)', 0x0C: 'RTC Day (hi)/Flags' };
 
-// Describes what's currently mapped into the 0xA000-0xBFFF window: a cart RAM bank, an MBC3
-// RTC register, "disabled", or "no cart RAM" for mappers without any external RAM at all.
 // How many switchable 8KB cart-RAM banks a mapper exposes. MBC2 has RAM, but it's a single
 // built-in 512x4-bit chip with no bank switching at all, so it's called out separately rather
 // than counted here (see ramBankTarget/bankingDesc below).
 function getRamBankTotal(mmu) {
   if (mmu.mbcType === 0 || mmu.mbcType === 2) return 0;
+  if (mmu.mbcType === 5) return 16; // MBC5's RAM bank register is a full 4 bits
   return 4; // this MMU always allocates 4 cart-RAM banks' worth of space for MBC1/MBC3
 }
 
@@ -4294,7 +4347,7 @@ function buildBankingPanel() {
       <div class="bw-range">CPU addresses 0x4000–0x7FFF</div>
       <div class="bw-arrow">↓ currently mapped to</div>
       <div class="bw-target" id="bwSwitchableTarget">${romBankTotal ? 'ROM Bank ' + mmu.currentROMBank : '—'}</div>
-      <div class="bw-note">Switched by writing to 0x2000–0x3FFF (MBC1/MBC3), or 0x0000–0x3FFF with address bit 8 set (MBC2). This is what "bank switching" means.</div>
+      <div class="bw-note">Switched by writing to 0x2000–0x3FFF (MBC1/MBC3), 0x0000–0x3FFF with address bit 8 set (MBC2), or 0x2000–0x2FFF + 0x3000–0x3FFF for the low/high bank bits (MBC5). This is what "bank switching" means.</div>
     </div>
     <div class="bank-window" id="bwRam">
       <div class="bw-range">CPU addresses 0xA000–0xBFFF</div>

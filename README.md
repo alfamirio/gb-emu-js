@@ -261,9 +261,9 @@ This emulator only implements **ROM ONLY**, **MBC1**, and **MBC3** (see [Scope l
 |---|---|---|---|---|---|---|---|
 | **ROM ONLY** | ✅ | 32 KB | 8 KB (optional) | No | No | ~2-3% | *Tetris*, *Alleyway* |
 | **MBC1** | ✅ | 2 MB (125 usable banks — banks `0x20`/`0x40`/`0x60` are unreachable due to a hardware quirk) | 32 KB | No | No | ~35-40% | *Pokémon Red/Blue*, *Super Mario Land 2*, *Zelda: Link's Awakening*, *Kirby's Dream Land 2* |
-| **MBC2** | ❌ | 256 KB | 512×4 bits, built into the MBC2 chip itself (no external RAM) | No | No | ~2-3% | *Kirby's Pinball Land*, *Kid Icarus: Of Myths & Monsters*, *Final Fantasy Legend* |
+| **MBC2** | ✅ | 256 KB | 512×4 bits, built into the MBC2 chip itself (no external RAM) | No | No | ~2-3% | *Kirby's Pinball Land*, *Kid Icarus: Of Myths & Monsters*, *Final Fantasy Legend* |
 | **MBC3** | ✅ (basic) | 2 MB | 32 KB (64 KB on Japanese Pokémon Crystal / MBC30) | ✅ | No | ~15-20% | *Pokémon Gold/Silver/Crystal*, *Pokémon Red/Blue* (US) |
-| **MBC5** | ❌ | 8 MB | 128 KB | No | ✅ (optional) | ~35-40% | *Pokémon Yellow*, *Wario Land 3*, *Pokémon Pinball* |
+| **MBC5** | ✅ | 8 MB | 128 KB | No | ✅ (optional) | ~35-40% | *Pokémon Yellow*, *Wario Land 3*, *Pokémon Pinball* |
 | **MBC6** | ❌ | ~4 Mb | Flash memory + battery RAM | No | No | <0.05% (1 game) | *Net de Get - Minigame @ 100* (JP) |
 | **MBC7** | ❌ | 2 MB | EEPROM + built-in accelerometer | No | No | <0.1% (2 games) | *Kirby's Tilt 'n' Tumble*, *Command Master* |
 | **MMM01** | ❌ | 8 MB total | 128 KB | No | No | <0.1% | *Momotarou Collection 2*, *Taito Variety Pack* (multicart "metamapper") |
@@ -277,7 +277,7 @@ A few notes worth calling out:
 * **MBC1 and MBC5 together make up the large majority of the library.** MBC1 dominated the original DMG era; adoption flipped almost overnight to MBC5 once the Game Boy Color launched in 1998, since MBC5 is the only Nintendo mapper guaranteed to work correctly in CGB double-speed mode.
 * **MBC3 is the only mapper here with a built-in real-time clock**, requiring an external 32.768 kHz quartz crystal and a battery to keep ticking while the console is off — this is how *Pokémon Gold/Silver/Crystal* tracked in-game day/night and berry growth even with the cartridge unplugged.
 * **MBC2's RAM lives inside the mapper chip itself** rather than a separate RAM chip, which is why it's capped at a tiny 512×4-bit (256-byte) save area regardless of ROM size.
-* Everything from **MBC6 down to Pocket Camera** was a one-or-two-game custom solution built for a specific piece of hardware the standard mappers couldn't support (Tamagotchi logic, an accelerometer, a physical camera sensor, IR communication) — not worth implementing unless you specifically want to run that one game.
+* Everything from **MBC6 down to Pocket Camera** was a one-or-two-game custom solution built for a specific piece of hardware the standard mappers couldn't support (Tamagotchi logic, an accelerometer, a physical camera sensor, IR communication) — not worth implementing.
 
 ## Further reading
 

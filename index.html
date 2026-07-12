@@ -676,6 +676,62 @@
   }
   .trace-empty, .disasm-empty { color: #777; padding: 2px 5px; }
 
+  /* ---- Interrupts panel ---- */
+  .int-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.8rem;
+    background: #1b1b22;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+  }
+  .int-ime { padding: 2px 8px; border-radius: 999px; font-weight: 600; font-size: 0.75rem; }
+  .int-ime.on { background: #2e5a3a; color: #7be29a; }
+  .int-ime.off { background: #402c2c; color: #e0a0a0; }
+  .int-reg { color: #ccc; }
+  .int-halted { color: #e8c46b; font-style: italic; font-size: 0.75rem; }
+  .int-table { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
+  .int-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
+    align-items: center;
+    gap: 10px;
+    background: #1b1b22;
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 0.78rem;
+  }
+  .int-row-firing { outline: 1px solid var(--accent); background: #2a2135; }
+  .int-name { color: #eee; }
+  .int-vector { color: #888; font-family: 'Consolas', monospace; font-size: 0.72rem; }
+  .int-badge {
+    font-family: 'Consolas', monospace;
+    font-size: 0.68rem;
+    padding: 2px 7px;
+    border-radius: 999px;
+    text-align: center;
+  }
+  .int-badge.int-on { background: #34343f; color: #9fd6ff; }
+  .int-badge.int-pending { background: #5a4a2e; color: #e8c46b; }
+  .int-badge.int-off { background: #2a2a30; color: #666; }
+  .int-log-heading { font-size: 0.85rem; margin: 0 0 6px; color: #ddd; }
+  .int-log {
+    background: #111;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.72rem;
+    line-height: 1.65;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .int-log-empty { color: #777; padding: 2px 5px; }
+  .int-log-line { padding: 1px 5px; color: #9fd6ff; white-space: nowrap; }
+
   /* ---- Memory Map strip ---- */
   .memmap-strip {
     display: flex;
@@ -872,6 +928,7 @@
 
     <div class="tools-tabs">
       <button class="tool-tab active" data-tool="registers">Registers</button>
+      <button class="tool-tab" data-tool="interrupts">Interrupts</button>
       <button class="tool-tab" data-tool="trace">Execution Trace</button>
       <button class="tool-tab" data-tool="disasm">Disassembler</button>
       <button class="tool-tab" data-tool="stack">Stack</button>
@@ -882,6 +939,21 @@
     <div class="tool-panel" id="panel-registers">
       <p class="tool-desc">Raw CPU registers, flags, and key PPU/timer I/O values, updated live as the emulator runs.</p>
       <div id="debugOut">—</div>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-interrupts">
+      <p class="tool-desc">
+        The five interrupt sources, in hardware priority order (top wins if several are
+        pending at once): V-Blank, LCD STAT, Timer, Serial, Joypad. IME (Interrupt Master
+        Enable) is the CPU's own on/off switch — set by EI/RETI, cleared by DI or automatically
+        the instant an interrupt is taken. IE (0xFFFF) is which sources the game has opted
+        into; IF (0xFF0F) is which sources currently have a request pending. A source only
+        actually fires once IME is on and its bit is set in <i>both</i> IE and IF.
+      </p>
+      <div class="int-summary" id="intSummary">—</div>
+      <div class="int-table" id="intTable"><!-- built in JS --></div>
+      <h3 class="int-log-heading">Recently serviced</h3>
+      <div class="int-log" id="intLog"><div class="int-log-empty">No interrupts serviced yet.</div></div>
     </div>
 
     <div class="tool-panel hidden" id="panel-trace">
@@ -1700,6 +1772,7 @@ class CPU {
       if (pending & (1 << i)) {
         this.IME = false;
         this.mmu.io[0x0F] &= ~(1 << i);
+        this.mmu.emulator.logInterruptServiced(i, this.PC);
         this.push16(this.PC);
         this.PC = vectors[i];
         this.tick(20);
@@ -3029,6 +3102,14 @@ class Emulator {
     this.traceDiff = new Array(this.TRACE_SIZE).fill(''); // human-readable "A: 0x00→0x05 Z:1→0" string per entry
     this.traceWritePos = 0;
     this.traceFilled = 0;
+
+    /* ---- interrupt log: ring buffer of the last INTERRUPT_LOG_SIZE interrupts the CPU
+       actually serviced (i.e. dispatched to their handler), for the Interrupts debug panel.
+       Distinct from frameStats.interrupts above, which counts *requests* (IF bit set) - this
+       counts *dispatches*, which only happen once IME is on and the CPU gets around to them. ---- */
+    this.INTERRUPT_LOG_SIZE = 60;
+    this.interruptLog = []; // oldest first; each entry { seq, frame, bit, pcBefore }
+    this.interruptSeq = 0;
   }
 
   // A fresh accumulator for one frame's worth of hardware activity. spritesPerLine is indexed
@@ -3058,6 +3139,14 @@ class Emulator {
     }
   }
 
+  // Called by CPU.handleInterrupts() the instant it actually dispatches an interrupt
+  // (pushes PC and jumps to the handler) - not just when the IF bit gets set. Feeds the
+  // "Recently serviced" list in the Interrupts debug panel.
+  logInterruptServiced(bit, pcBefore) {
+    this.interruptLog.push({ seq: this.interruptSeq++, frame: this.frameCounter, bit, pcBefore });
+    if (this.interruptLog.length > this.INTERRUPT_LOG_SIZE) this.interruptLog.shift();
+  }
+
   loadROM(bytes) {
     this.mmu.loadROM(bytes);
     this.cpu.reset();
@@ -3070,6 +3159,8 @@ class Emulator {
     this.frameStats = this.newFrameStats();
     this.rewindBuffer = [];
     this.rewindFrameAcc = 0;
+    this.interruptLog = [];
+    this.interruptSeq = 0;
 
     let title = '';
     for (let i = 0x134; i < 0x144; i++) {
@@ -3801,6 +3892,9 @@ const paletteGrid = document.getElementById('paletteGrid');
 const disasmList = document.getElementById('disasmList');
 const stackList = document.getElementById('stackList');
 const stackSpReadout = document.getElementById('stackSpReadout');
+const intSummary = document.getElementById('intSummary');
+const intTable = document.getElementById('intTable');
+const intLog = document.getElementById('intLog');
 const traceList = document.getElementById('traceList');
 const btnExportTrace = document.getElementById('btnExportTrace');
 const btnTraceFollow = document.getElementById('btnTraceFollow');
@@ -4884,6 +4978,52 @@ function drawDisassembly() {
   }
 }
 
+/* ---- Interrupts panel: IME/IE/IF live status plus a log of recently-serviced interrupts ---- */
+const INTERRUPT_SOURCES = [
+  { name: 'V-Blank',  bit: 0, vector: 0x40 },
+  { name: 'LCD STAT', bit: 1, vector: 0x48 },
+  { name: 'Timer',    bit: 2, vector: 0x50 },
+  { name: 'Serial',   bit: 3, vector: 0x58 },
+  { name: 'Joypad',   bit: 4, vector: 0x60 },
+];
+
+function drawInterrupts() {
+  if (!lastROMBytes) {
+    intSummary.textContent = '—';
+    intTable.innerHTML = '';
+    intLog.innerHTML = '<div class="int-log-empty">No interrupts serviced yet.</div>';
+    return;
+  }
+  const cpu = emulator.cpu, mmu = emulator.mmu;
+  const ie = mmu.ie & 0x1F;
+  const iff = mmu.io[0x0F] & 0x1F;
+
+  intSummary.innerHTML =
+    `<span class="int-ime ${cpu.IME ? 'on' : 'off'}">IME ${cpu.IME ? 'ON' : 'OFF'}</span>` +
+    `<span class="int-reg">IE=${hex8(ie)}</span>` +
+    `<span class="int-reg">IF=${hex8(iff)}</span>` +
+    (cpu.halted ? `<span class="int-halted">HALTed — waiting for an interrupt</span>` : '');
+
+  intTable.innerHTML = INTERRUPT_SOURCES.map(src => {
+    const enabled = (ie >> src.bit) & 1;
+    const pending = (iff >> src.bit) & 1;
+    return `<div class="int-row${pending && enabled ? ' int-row-firing' : ''}">` +
+      `<span class="int-name">${src.name}</span>` +
+      `<span class="int-vector">${hex16(src.vector)}</span>` +
+      `<span class="int-badge ${enabled ? 'int-on' : 'int-off'}">IE ${enabled}</span>` +
+      `<span class="int-badge ${pending ? 'int-pending' : 'int-off'}">IF ${pending}</span>` +
+      `</div>`;
+  }).join('');
+
+  const log = emulator.interruptLog;
+  intLog.innerHTML = log.length === 0
+    ? '<div class="int-log-empty">No interrupts serviced yet.</div>'
+    : log.slice().reverse().map(e =>
+        `<div class="int-log-line">frame ${e.frame}&nbsp;&nbsp;${INTERRUPT_SOURCES[e.bit].name} → ${hex16(INTERRUPT_SOURCES[e.bit].vector)}` +
+        `&nbsp;&nbsp;(from ${hex16(e.pcBefore)})</div>`
+      ).join('');
+}
+
 /* ---- Stack panel: a window of 16-bit words around SP ----
    Rows are aligned to SP itself (not to an even/odd address) since that's what PUSH/POP
    actually step by two from. WORDS_ABOVE covers still-unused stack space just below SP
@@ -5068,6 +5208,7 @@ function refreshDebugTools() {
   else if (activeDebug === 'stack') drawStack();
   else if (activeDebug === 'memmap') drawMemMap();
   else if (activeDebug === 'banking') drawBanking();
+  else if (activeDebug === 'interrupts') drawInterrupts();
 
   const activeVisual = visualToolsContainer.querySelector('.tool-tab.active').dataset.tool;
   if (activeVisual === 'tiles') drawTileViewer();

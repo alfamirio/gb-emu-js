@@ -2883,9 +2883,7 @@ class APU {
     this.emulator = emulator;
     this.enabled = false; // NR52 master power bit
 
-    this.ch1 = this.newSquareState();
-    this.ch1.sweepPeriodReg = 0; this.ch1.sweepDirection = 0; this.ch1.sweepShift = 0;
-    this.ch1.sweepTimer = 0; this.ch1.sweepEnabled = false; this.ch1.shadowFreq = 0;
+    this.ch1 = this.newCh1State();
 
     this.ch2 = this.newSquareState();
 
@@ -2957,6 +2955,16 @@ class APU {
     return { enabled: false, dacEnabled: false, duty: 2, dutyStep: 0, frequency: 0, freqTimer: 0,
              lengthCounter: 0, lengthEnabled: false,
              envVolume: 0, envDirection: 0, envPeriod: 0, envTimer: 0, volume: 0 };
+  }
+
+  // Channel 1 is a square-wave channel plus a frequency sweep unit the other channels don't
+  // have, so it needs newSquareState()'s fields *and* the sweep ones together. Every place
+  // that resets ch1 to a fresh state (constructor, powerOff(), reset()) wants exactly this.
+  newCh1State() {
+    return Object.assign(this.newSquareState(), {
+      sweepPeriodReg: 0, sweepDirection: 0, sweepShift: 0,
+      sweepTimer: 0, sweepEnabled: false, shadowFreq: 0,
+    });
   }
 
   /* ---- save state ----
@@ -3120,11 +3128,8 @@ class APU {
   powerOff() {
     // Real hardware clears everything except wave RAM (and, on DMG, length counters - skipped here for simplicity).
     this.regs.fill(0);
-    this.ch1 = this.newSquareState();
-    this.ch1.sweepPeriodReg = 0; this.ch1.sweepDirection = 0; this.ch1.sweepShift = 0;
-    this.ch1.sweepTimer = 0; this.ch1.sweepEnabled = false; this.ch1.shadowFreq = 0;
+    this.ch1 = this.newCh1State();
     this.ch2 = this.newSquareState();
-    Object.assign(this.ch3, { enabled: false, dacEnabled: false, frequency: 0, volumeShift: 0, samplePos: 0 });
     Object.assign(this.ch4, { enabled: false, dacEnabled: false, envVolume: 0, envDirection: 0, envPeriod: 0, clockShift: 0, widthMode: 0, divisorCode: 0 });
     this.leftVol = 7; this.rightVol = 7; this.panning = 0;
   }
@@ -3134,8 +3139,7 @@ class APU {
   // plus the standard post-boot-ROM values), matching how MMU.loadROM() does the same for I/O.
   reset() {
     this.regs.fill(0); this.waveRAM.fill(0);
-    this.ch1 = this.newSquareState(); this.ch1.sweepPeriodReg = 0; this.ch1.sweepDirection = 0; this.ch1.sweepShift = 0;
-    this.ch1.sweepTimer = 0; this.ch1.sweepEnabled = false; this.ch1.shadowFreq = 0;
+    this.ch1 = this.newCh1State();
     this.ch2 = this.newSquareState();
     this.ch3 = { enabled: false, dacEnabled: false, frequency: 0, freqTimer: 0, lengthCounter: 0, lengthEnabled: false, volumeShift: 0, samplePos: 0 };
     this.ch4 = { enabled: false, dacEnabled: false, lengthCounter: 0, lengthEnabled: false,
@@ -3150,6 +3154,19 @@ class APU {
     this.write(0xFF1A, 0x7F); this.write(0xFF1B, 0xFF); this.write(0xFF1C, 0x9F); this.write(0xFF1E, 0xBF);
     this.write(0xFF20, 0xFF); this.write(0xFF21, 0x00); this.write(0xFF22, 0x00); this.write(0xFF23, 0xBF);
     this.write(0xFF24, 0x77); this.write(0xFF25, 0xF3);
+
+    // The NR14/NR19/NR1E/NR23 writes above set each channel's trigger bit (bit 7) to match
+    // the register *bytes* real hardware leaves behind post-boot - but routing them through
+    // write() also actually triggers those channels, same as a game would. Channel 1's DAC is
+    // on (NR12 = 0xF3), so that trigger is audible: a stray beep the instant playback starts,
+    // on every ROM load and reset. Real hardware's equivalent is the tail of the boot ROM's
+    // chime, already decayed to silence by the time a game's own code runs; since this snapshot
+    // doesn't replay that whole chime, silence what the trigger just started so only the
+    // (harmless) register values carry over, not an audible reprise.
+    this.ch1.enabled = false;
+    this.ch2.enabled = false;
+    this.ch3.enabled = false;
+    this.ch4.enabled = false;
   }
 
   /* ---- channel triggers (NRx4 bit 7 write) ---- */

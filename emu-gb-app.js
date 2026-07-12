@@ -1095,3 +1095,22 @@ btnRecordAudio.addEventListener('click', () => {
   if (audioRecorder && audioRecorder.state !== 'inactive') stopAudioRecording();
   else startAudioRecording();
 });
+
+/* ---- clear saved config: wipes the persisted UI config (model/mode/mark-line), sound config
+   (mute/volume/channel mutes), and every game's save-state slots (jsgb-saveslots:<rom>) from
+   localStorage, so the app falls back to its defaults next load with a clean slate. Save slots
+   are keyed per-ROM title, so they're found by scanning all localStorage keys for the prefix
+   rather than a single fixed key. */
+const btnClearConfig = document.getElementById('btnClearConfig');
+btnClearConfig.addEventListener('click', () => {
+  const ok = confirm('Clear all saved emulator config (model, play/debug mode, sound settings) AND all game save states? This cannot be undone.');
+  if (!ok) return;
+  try {
+    localStorage.removeItem('jsgb-config:ui');
+    localStorage.removeItem('jsgb-config:sound');
+    Object.keys(localStorage)
+      .filter(k => k.startsWith('jsgb-saveslots:'))
+      .forEach(k => localStorage.removeItem(k));
+  } catch (e) { /* storage unavailable - nothing to clear */ }
+  location.reload();
+});

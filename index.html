@@ -49,6 +49,27 @@
   }
 
   .navbar .nav-title { font-size: 1.15rem; font-weight: 600; letter-spacing: 1px; color: #eee; flex-shrink: 0; }
+  /* Push every control after the title to the right edge of the navbar, so the title stays
+     pinned left and all the mode/toggle switches + the clear-config button cluster together
+     on the right (rather than trailing left-aligned right after the title). */
+  .navbar .nav-title + * { margin-left: auto; }
+
+  .icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: #888;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .icon-btn.danger { color: #d67a7a; }
+  .icon-btn.danger:hover { background: #b93a3a; color: #fff; }
   /* Keep the navbar's height stable when switching modes: instead of removing the debug
      controls from the flex layout (which would let the bar shrink to the height of the
      remaining toggles), just make them invisible and non-interactive while still reserving
@@ -1149,6 +1170,16 @@
     </label>
     <span class="mode-label active" id="modeLabelDebug">Debug</span>
   </div>
+
+  <button class="icon-btn danger" id="btnClearConfig" title="Clear saved config AND all game save states from localStorage">
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="3 6 5 6 21 6"></polyline>
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+      <path d="M10 11v6"></path>
+      <path d="M14 11v6"></path>
+      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
+    </svg>
+  </button>
 </nav>
 
 <div class="page-content">

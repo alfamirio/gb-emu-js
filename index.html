@@ -930,6 +930,110 @@
     color: #e8c15a;
     min-height: 1.2em;
   }
+
+  /* ---- RAM Editor ---- */
+  .ramedit-regions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .ramedit-region-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    background: #1b1b22;
+    border: 1px solid #3a3a45;
+    border-left: 3px solid var(--region-color, #666);
+    border-radius: 6px;
+    padding: 5px 9px;
+    cursor: pointer;
+    color: #ccc;
+    font-family: inherit;
+    transition: background .1s, border-color .1s;
+  }
+  .ramedit-region-btn:hover { border-color: #666; }
+  .ramedit-region-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .ramedit-region-btn.readonly { opacity: .65; }
+  .ramedit-region-btn .ramedit-region-name { font-size: 0.72rem; font-weight: 700; }
+  .ramedit-region-btn .ramedit-region-range { font-size: 0.6rem; font-family: 'Consolas', monospace; opacity: .8; }
+  .ramedit-info {
+    font-size: 0.72rem;
+    color: #999;
+    margin-bottom: 8px;
+  }
+  .ramedit-info .ramedit-info-range { font-family: 'Consolas', monospace; color: #bbb; }
+  .ramedit-readonly-badge {
+    display: inline-block;
+    margin-left: 8px;
+    background: #3a2a2a;
+    color: #e0a05a;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .ramedit-note { margin: 4px 0 0; font-style: italic; color: #888; line-height: 1.5; }
+  .ramedit-dynamic-note { margin: 2px 0 0; color: #7fa8d6; font-family: 'Consolas', monospace; font-size: 0.68rem; }
+  .ramedit-nav-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+  .ramedit-nav-label { font-family: 'Consolas', monospace; font-size: 0.7rem; color: #999; }
+  .ramedit-jump {
+    width: 110px;
+    background: #111;
+    border: 1px solid #444;
+    color: #eee;
+    border-radius: 4px;
+    padding: 4px 7px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.72rem;
+  }
+  .ramedit-jump:focus { outline: none; border-color: var(--accent); }
+  .ramedit-body { max-height: 520px; overflow-y: auto; }
+
+  table.ramedit-hex-table { border-collapse: collapse; width: 100%; font-family: 'Consolas', monospace; font-size: 0.68rem; }
+  table.ramedit-hex-table th {
+    color: #777;
+    font-weight: 600;
+    text-align: center;
+    padding: 3px 2px;
+    border-bottom: 1px solid #333;
+    position: sticky;
+    top: 0;
+    background: #16161c;
+  }
+  table.ramedit-hex-table td { padding: 2px; text-align: center; vertical-align: middle; }
+  table.ramedit-hex-table td.ramedit-addr { color: #7fa8d6; text-align: right; padding-right: 8px; white-space: nowrap; }
+  .ramedit-cell {
+    width: 26px;
+    background: #111;
+    border: 1px solid #333;
+    color: #eee;
+    border-radius: 3px;
+    padding: 2px 0;
+    text-align: center;
+    font-family: 'Consolas', monospace;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+  }
+  .ramedit-cell:focus { outline: none; border-color: var(--accent); }
+  .ramedit-cell-ro {
+    display: inline-block;
+    width: 26px;
+    color: #666;
+    padding: 2px 0;
+  }
+  td.ramedit-ascii { color: #6a6a75; text-align: left; padding-left: 10px; white-space: pre; letter-spacing: 1px; }
+
+  .ramedit-io-list { display: flex; flex-direction: column; gap: 6px; }
+  .ramedit-io-row { background: #1b1b22; border: 1px solid #333; border-radius: 6px; padding: 7px 10px; }
+  .ramedit-io-head { display: flex; align-items: center; gap: 8px; font-family: 'Consolas', monospace; }
+  .ramedit-io-addr { color: #7fa8d6; font-size: 0.72rem; }
+  .ramedit-io-name { color: #fff; font-weight: 700; font-size: 0.75rem; }
+  .ramedit-io-hex { margin-left: auto; color: #e8c15a; font-size: 0.75rem; }
+  .ramedit-io-desc { color: #888; font-size: 0.66rem; margin-top: 3px; line-height: 1.5; }
+  .ramedit-io-bits { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .ramedit-bit { display: flex; flex-direction: column; align-items: center; gap: 3px; cursor: pointer; }
+  .ramedit-bit input { accent-color: var(--accent); cursor: pointer; }
+  .ramedit-bit span { font-size: 0.6rem; color: #999; font-family: 'Consolas', monospace; max-width: 54px; text-align: center; line-height: 1.2; }
+  .ramedit-io-hexrow { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .ramedit-io-unknown-note { color: #666; font-size: 0.64rem; font-style: italic; }
 </style>
 </head>
 <body>
@@ -999,12 +1103,13 @@
 
     <div class="tools-tabs">
       <button class="tool-tab active" data-tool="registers">Registers</button>
+      <button class="tool-tab" data-tool="ramedit">RAM Editor</button>
       <button class="tool-tab" data-tool="interrupts">Interrupts</button>
-      <button class="tool-tab" data-tool="trace">Execution Trace</button>
+      <button class="tool-tab" data-tool="trace">Trace</button>
       <button class="tool-tab" data-tool="stack">Stack</button>
-      <button class="tool-tab" data-tool="disasm">Disassembler</button>
-      <button class="tool-tab" data-tool="memmap">Memory Map</button>
-      <button class="tool-tab" data-tool="banking">MBC Banking</button>
+      <button class="tool-tab" data-tool="disasm">Disasm</button>
+      <button class="tool-tab" data-tool="memmap">Mem Map</button>
+      <button class="tool-tab" data-tool="banking">MBC Banks</button>
     </div>
 
     <div class="tool-panel" id="panel-registers">
@@ -1182,6 +1287,16 @@
       </div>
       <div class="banking-log" id="bankingLog">No banking writes observed yet.</div>
     </div>
+
+    <div class="tool-panel hidden" id="panel-ramedit">
+      <p class="tool-desc">
+        Reads and writes bytes directly in emulated memory. Every access goes through the same path the CPU uses.
+      </p>
+      <div class="ramedit-regions" id="ramEditRegions"><!-- built in JS --></div>
+      <div class="ramedit-info" id="ramEditInfo"></div>
+      <div class="ramedit-nav" id="ramEditNav"><!-- built in JS --></div>
+      <div class="ramedit-body" id="ramEditBody"><!-- built in JS: hex dump or I/O register list --></div>
+    </div>
   </div>
 
   <!-- Main content: screen + control panel + visualization tools, then saved states below -->
@@ -1286,9 +1401,9 @@
       <button class="tool-tab" data-tool="scanline">Scanline Timeline</button>
       <button class="tool-tab" data-tool="oscilloscope">Oscilloscope</button>
       <button class="tool-tab" data-tool="palettes">Palettes</button>
-      <button class="tool-tab" data-tool="tiles">Tiles</button>
-      <button class="tool-tab" data-tool="tilemap">Tile Map</button>
+      <button class="tool-tab" data-tool="tiles">Sprite Sheet</button>
       <button class="tool-tab" data-tool="oam">Sprites (OAM)</button>
+      <button class="tool-tab" data-tool="tilemap">Tile Map</button>
     </div>
 
     <div class="tool-panel hidden" id="panel-scanline">
@@ -1335,9 +1450,8 @@
 
     <div class="tool-panel hidden" id="panel-tiles">
       <p class="tool-desc">
-        Raw contents of tile data (0x8000–0x97FF), decoded as 384 individual 8×8 tiles in
-        the order they sit in VRAM — shown in grayscale, with no palette or tile map applied,
-        so you can see exactly what graphics data has been loaded regardless of how it's used.
+        Raw contents of tile data in VRAM (0x8000–0x97FF), decoded as 384 individual 8×8 tiles in
+        the order they sit in VRAM.
       </p>
       <canvas id="tileViewerCanvas" width="128" height="192"></canvas>
     </div>
@@ -1346,7 +1460,7 @@
       <p class="tool-desc">
         <label><input type="radio" name="tmSelect" value="9800" checked> Map 0x9800</label>
         <label><input type="radio" name="tmSelect" value="9C00"> Map 0x9C00</label>
-        The full 32×32 tile (256×256 pixel) map, rendered with the current BG palette. The
+        In VRAM. The full 32×32 tile (256×256 pixel) map, rendered with the current BG palette. The
         yellow box is the current 160×144 viewport as defined by SCX/SCY, wrapping at the map edges.
       </p>
       <div class="tilemap-scroll">

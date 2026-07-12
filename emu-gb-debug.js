@@ -298,6 +298,354 @@ function drawBanking() {
 buildMemMapStrip();
 buildBankingPanel();
 
+/* ============================ RAM Editor ================================================
+   Read/write panel for the regions that are real RAM (VRAM, cart RAM, WRAM/Echo, OAM, HRAM),
+   plus IE, plus a dedicated bit-level view for the I/O registers - ROM stays read-only. Every
+   read here goes through mmu.peek8 (same address decoding as the CPU's read8, just without
+   flagging the access to the Memory Map visualizer) and every write goes through the real
+   mmu.write8 - never touching mmu.vram/wram/oam/etc. arrays directly - so banking, Echo RAM
+   mirroring, and I/O side effects (DIV reset, DMA trigger, APU register masks, ...) all behave
+   exactly as they would for a write coming from the CPU.
+   ========================================================================================= */
+
+const ramEditRegionsEl = document.getElementById('ramEditRegions');
+const ramEditInfoEl = document.getElementById('ramEditInfo');
+const ramEditNavEl = document.getElementById('ramEditNav');
+const ramEditBodyEl = document.getElementById('ramEditBody');
+
+// Per-region edit policy. ROM is always read-only (real hardware can't write it either).
+// VRAM/WRAM+Echo/OAM/HRAM are plain RAM, edited as a hex dump. Cart RAM is real RAM too, but
+// only actually backed by storage while the cartridge's mapper has it enabled. I/O and IE get
+// the dedicated per-bit editor instead of raw hex, since many of their bits are write-only,
+// read-only, or trigger a side effect the moment they're written.
+const RAMEDIT_META = {
+  ROM0: { editable: false, mode: 'hex', note: 'Read-only: on real hardware ROM can\'t be written either.' },
+  ROMX: { editable: false, mode: 'hex', note: 'Read-only: on real hardware ROM can\'t be written either.' },
+  VRAM: { editable: true, mode: 'hex' },
+  ERAM: { editable: true, mode: 'hex', note: 'Cartridge RAM. If the game hasn\'t enabled it (RAMG), reads return 0xFF and writes are ignored - same as real hardware.' },
+  WRAM: { editable: true, mode: 'hex' },
+  ECHO: { editable: true, mode: 'hex', note: 'Mirror of 0xC000-0xDDFF: writing here actually writes to WRAM, exactly like the MMU itself does.' },
+  OAM: { editable: true, mode: 'hex' },
+  IO: { editable: true, mode: 'io', note: 'Many bits here are read-only, write-only, or trigger a side effect (resetting a counter, firing a DMA...) when written - that\'s why each register is edited bit by bit instead of as raw hex.' },
+  HRAM: { editable: true, mode: 'hex' },
+  IE: { editable: true, mode: 'io' },
+};
+const RAMEDIT_ORDER = ['ROM0', 'ROMX', 'VRAM', 'ERAM', 'WRAM', 'ECHO', 'OAM', 'IO', 'HRAM', 'IE'];
+const RAMEDIT_BASE = { ROM0: 0x0000, ROMX: 0x4000, VRAM: 0x8000, ERAM: 0xA000, WRAM: 0xC000, ECHO: 0xE000, OAM: 0xFE00, IO: 0xFF00, HRAM: 0xFF80, IE: 0xFFFF };
+const RAMEDIT_LEN = { ROM0: 0x4000, ROMX: 0x4000, VRAM: 0x2000, ERAM: 0x2000, WRAM: 0x2000, ECHO: 0x1E00, OAM: 0xA0, IO: 0x80, HRAM: 0x7F, IE: 0x1 };
+const RAMEDIT_PAGE = 256; // bytes per page (16 rows x 16 bytes) for regions bigger than this
+
+// Friendly names/descriptions for the well-known DMG I/O registers, with optional bit labels
+// (MSB first, matching the checkbox order the row is built in) for the ones worth spelling
+// out. Registers not listed here still get a row, just with a plain hex byte editor instead
+// of bit toggles, since we don't have documented per-bit semantics to expose for them.
+const IO_REG_INFO = {
+  0xFF00: { name: 'P1/JOYP', desc: 'Joypad. Bits 5-4 select which button line is being read; bits 3-0 are inputs (0 = pressed) that real hardware doesn\'t let software force.' },
+  0xFF01: { name: 'SB', desc: 'Serial data buffer.' },
+  0xFF02: { name: 'SC', desc: 'Serial transfer control.' },
+  0xFF04: { name: 'DIV', desc: 'Divider. Any write resets it to 0x00, regardless of the value written.' },
+  0xFF05: { name: 'TIMA', desc: 'Timer counter.' },
+  0xFF06: { name: 'TMA', desc: 'Timer reload value.' },
+  0xFF07: { name: 'TAC', desc: 'Timer control.', bitLabels: ['-', '-', '-', '-', '-', 'Enable', 'Clk1', 'Clk0'] },
+  0xFF0F: { name: 'IF', desc: 'Pending interrupts.', bitLabels: ['-', '-', '-', 'Joypad', 'Serial', 'Timer', 'STAT', 'VBlank'] },
+  0xFF10: { name: 'NR10', desc: 'Channel 1: frequency sweep.' },
+  0xFF11: { name: 'NR11', desc: 'Channel 1: duty/length.' },
+  0xFF12: { name: 'NR12', desc: 'Channel 1: volume/envelope.' },
+  0xFF13: { name: 'NR13', desc: 'Channel 1: frequency (low bits) - write-only on real hardware.' },
+  0xFF14: { name: 'NR14', desc: 'Channel 1: frequency (high bits) + trigger.' },
+  0xFF16: { name: 'NR21', desc: 'Channel 2: duty/length.' },
+  0xFF17: { name: 'NR22', desc: 'Channel 2: volume/envelope.' },
+  0xFF18: { name: 'NR23', desc: 'Channel 2: frequency (low bits) - write-only on real hardware.' },
+  0xFF19: { name: 'NR24', desc: 'Channel 2: frequency (high bits) + trigger.' },
+  0xFF1A: { name: 'NR30', desc: 'Channel 3: DAC on/off.' },
+  0xFF1B: { name: 'NR31', desc: 'Channel 3: length - write-only on real hardware.' },
+  0xFF1C: { name: 'NR32', desc: 'Channel 3: output level.' },
+  0xFF1D: { name: 'NR33', desc: 'Channel 3: frequency (low bits) - write-only on real hardware.' },
+  0xFF1E: { name: 'NR34', desc: 'Channel 3: frequency (high bits) + trigger.' },
+  0xFF20: { name: 'NR41', desc: 'Channel 4: length - write-only on real hardware.' },
+  0xFF21: { name: 'NR42', desc: 'Channel 4: volume/envelope.' },
+  0xFF22: { name: 'NR43', desc: 'Channel 4: noise frequency.' },
+  0xFF23: { name: 'NR44', desc: 'Channel 4: control + trigger.' },
+  0xFF24: { name: 'NR50', desc: 'Master volume / VIN input.' },
+  0xFF25: { name: 'NR51', desc: 'Left/right panning per channel.' },
+  0xFF26: { name: 'NR52', desc: 'Master sound on/off. Bits 3-0 (per-channel status) are read-only.', bitLabels: ['Power', '-', '-', '-', 'Ch4', 'Ch3', 'Ch2', 'Ch1'] },
+  0xFF40: { name: 'LCDC', desc: 'LCD control.', bitLabels: ['LCD On', 'WinMap', 'WinOn', 'BG/WinData', 'BGMap', 'ObjSize', 'ObjOn', 'BG/WinOn'] },
+  0xFF41: { name: 'STAT', desc: 'LCD status. Bits 2-0 are hardware-controlled (current mode / LYC=LY flag) and get overwritten on the fly.', bitLabels: ['-', 'LYC int', 'M2 int', 'M1 int', 'M0 int', 'LYC=LY', 'Mode1', 'Mode0'] },
+  0xFF42: { name: 'SCY', desc: 'Background scroll Y.' },
+  0xFF43: { name: 'SCX', desc: 'Background scroll X.' },
+  0xFF44: { name: 'LY', desc: 'Current scanline. Any write resets it to 0.' },
+  0xFF45: { name: 'LYC', desc: 'Comparison line for the STAT interrupt.' },
+  0xFF46: { name: 'DMA', desc: 'Writing here triggers a 160-byte DMA copy to OAM - it\'s not storage in itself, so the displayed value doesn\'t "stick".' },
+  0xFF47: { name: 'BGP', desc: 'Background/window palette.' },
+  0xFF48: { name: 'OBP0', desc: 'Sprite palette 0.' },
+  0xFF49: { name: 'OBP1', desc: 'Sprite palette 1.' },
+  0xFF4A: { name: 'WY', desc: 'Window Y position.' },
+  0xFF4B: { name: 'WX', desc: 'Window X position (+7).' },
+};
+for (let a = 0xFF30; a <= 0xFF3F; a++) IO_REG_INFO[a] = { name: 'WAVE', desc: 'Channel 3 waveform RAM (two 4-bit samples per byte).' };
+const IE_BIT_LABELS = ['-', '-', '-', 'Joypad', 'Serial', 'Timer', 'STAT', 'VBlank'];
+
+let ramEditKey = 'VRAM';
+let ramEditOffset = 0;
+
+function ramEditRegionMeta(key) {
+  const m = RAMEDIT_META[key];
+  const mm = MEM_REGIONS.find(r => r.key === key) || {};
+  return { key, base: RAMEDIT_BASE[key], length: RAMEDIT_LEN[key], editable: m.editable, mode: m.mode, note: m.note, label: mm.label || key, color: mm.color || '#888', range: mm.range || '' };
+}
+
+function buildRamEditRegionTabs() {
+  ramEditRegionsEl.innerHTML = '';
+  RAMEDIT_ORDER.forEach(key => {
+    const meta = ramEditRegionMeta(key);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ramedit-region-btn' + (meta.editable ? '' : ' readonly') + (key === ramEditKey ? ' active' : '');
+    btn.style.setProperty('--region-color', meta.color);
+    btn.innerHTML = `<span class="ramedit-region-name">${meta.label}</span><span class="ramedit-region-range">${meta.range}</span>`;
+    btn.addEventListener('click', () => {
+      if (ramEditKey === key) return;
+      ramEditKey = key;
+      ramEditOffset = 0;
+      buildRamEditRegionTabs();
+      buildRamEditBody();
+    });
+    ramEditRegionsEl.appendChild(btn);
+  });
+}
+
+function buildRamEditNav(meta) {
+  ramEditNavEl.innerHTML = '';
+  if (meta.length <= RAMEDIT_PAGE) return; // whole region already fits on one page
+  const pageLen = Math.min(RAMEDIT_PAGE, meta.length - ramEditOffset);
+  const row = document.createElement('div');
+  row.className = 'ramedit-nav-row';
+
+  const prev = document.createElement('button');
+  prev.className = 'ui-btn small ghost';
+  prev.textContent = '◀ Prev';
+  prev.disabled = ramEditOffset === 0;
+  prev.addEventListener('click', () => { ramEditOffset = Math.max(0, ramEditOffset - RAMEDIT_PAGE); buildRamEditBody(); });
+
+  const next = document.createElement('button');
+  next.className = 'ui-btn small ghost';
+  next.textContent = 'Next ▶';
+  next.disabled = ramEditOffset + RAMEDIT_PAGE >= meta.length;
+  next.addEventListener('click', () => { ramEditOffset = Math.min(meta.length - RAMEDIT_PAGE, ramEditOffset + RAMEDIT_PAGE); buildRamEditBody(); });
+
+  const label = document.createElement('span');
+  label.className = 'ramedit-nav-label';
+  label.textContent = `${hex16(meta.base + ramEditOffset)}–${hex16(meta.base + ramEditOffset + pageLen - 1)}`;
+
+  const jump = document.createElement('input');
+  jump.className = 'ramedit-jump';
+  jump.placeholder = 'go to 0x....';
+  jump.spellcheck = false;
+  jump.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const v = parseInt(jump.value.replace(/^0x/i, ''), 16);
+    if (Number.isNaN(v)) return;
+    const rel = Math.max(0, Math.min(meta.length - 1, v - meta.base));
+    ramEditOffset = Math.max(0, Math.min(meta.length - RAMEDIT_PAGE, Math.floor(rel / 16) * 16));
+    buildRamEditBody();
+  });
+
+  row.appendChild(prev); row.appendChild(label); row.appendChild(next); row.appendChild(jump);
+  ramEditNavEl.appendChild(row);
+}
+
+// Applies a hex-cell edit through the real MMU write path (never mmu.vram/wram/... directly).
+function commitRamEditCell(input) {
+  if (input.value === '') return; // leave it blank; the next live refresh repaints the real value
+  const addr = parseInt(input.dataset.addr, 10);
+  const val = parseInt(input.value, 16) & 0xFF;
+  emulator.mmu.write8(addr, val);
+}
+
+function makeRamEditHexInput(addr) {
+  const input = document.createElement('input');
+  input.className = 'ramedit-cell';
+  input.maxLength = 2;
+  input.spellcheck = false;
+  input.dataset.addr = addr;
+  input.addEventListener('input', () => { input.value = input.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 2).toUpperCase(); });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
+  input.addEventListener('blur', () => commitRamEditCell(input));
+  return input;
+}
+
+function buildRamEditHexTable(meta) {
+  ramEditBodyEl.innerHTML = '';
+  const pageLen = Math.min(RAMEDIT_PAGE, meta.length - ramEditOffset);
+  const table = document.createElement('table');
+  table.className = 'ramedit-hex-table';
+  table.innerHTML = '<thead><tr><th>Addr</th>' + Array.from({ length: 16 }, (_, i) => `<th>${i.toString(16).toUpperCase()}</th>`).join('') + '<th>ASCII</th></tr></thead>';
+  const tbody = document.createElement('tbody');
+
+  for (let row = 0; row < pageLen; row += 16) {
+    const tr = document.createElement('tr');
+    const rowAddr = meta.base + ramEditOffset + row;
+    const tdAddr = document.createElement('td');
+    tdAddr.className = 'ramedit-addr';
+    tdAddr.textContent = hex16(rowAddr);
+    tr.appendChild(tdAddr);
+
+    const asciiAddrs = [];
+    for (let col = 0; col < 16; col++) {
+      const addr = rowAddr + col;
+      const td = document.createElement('td');
+      if (addr >= meta.base + meta.length) { td.innerHTML = '&nbsp;'; tr.appendChild(td); continue; }
+      if (meta.editable) {
+        td.appendChild(makeRamEditHexInput(addr));
+      } else {
+        const span = document.createElement('span');
+        span.className = 'ramedit-cell-ro';
+        span.dataset.addr = addr;
+        td.appendChild(span);
+      }
+      tr.appendChild(td);
+      asciiAddrs.push(addr);
+    }
+    const tdAscii = document.createElement('td');
+    tdAscii.className = 'ramedit-ascii';
+    tdAscii.dataset.addrs = asciiAddrs.join(',');
+    tr.appendChild(tdAscii);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  ramEditBodyEl.appendChild(table);
+}
+
+function buildRamEditIoBitRow(row, addr, labels) {
+  const bits = document.createElement('div');
+  bits.className = 'ramedit-io-bits';
+  for (let bit = 7; bit >= 0; bit--) {
+    const item = document.createElement('label');
+    item.className = 'ramedit-bit';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.dataset.bit = bit;
+    cb.addEventListener('change', () => {
+      const mmu = emulator.mmu;
+      const cur = mmu.peek8(addr);
+      const next = cb.checked ? (cur | (1 << bit)) : (cur & ~(1 << bit));
+      mmu.write8(addr, next & 0xFF); // always through the real write path (handles IO side effects/masks)
+    });
+    const lab = document.createElement('span');
+    lab.textContent = labels ? labels[7 - bit] : ('b' + bit);
+    item.appendChild(cb);
+    item.appendChild(lab);
+    bits.appendChild(item);
+  }
+  row.appendChild(bits);
+}
+
+function buildRamEditIoTable(meta) {
+  ramEditBodyEl.innerHTML = '';
+  const list = document.createElement('div');
+  list.className = 'ramedit-io-list';
+
+  for (let addr = meta.base; addr < meta.base + meta.length; addr++) {
+    const info = IO_REG_INFO[addr];
+    const isIE = addr === 0xFFFF;
+    const row = document.createElement('div');
+    row.className = 'ramedit-io-row';
+    row.dataset.addr = addr;
+
+    const head = document.createElement('div');
+    head.className = 'ramedit-io-head';
+    head.innerHTML = `<span class="ramedit-io-addr">${hex16(addr)}</span>` +
+      `<span class="ramedit-io-name">${isIE ? 'IE' : (info ? info.name : '—')}</span>` +
+      `<span class="ramedit-io-hex">${hex8(0)}</span>`;
+    row.appendChild(head);
+
+    const descText = isIE ? 'Interrupt Enable - enables which sources can interrupt the CPU while IME is on.' : (info && info.desc);
+    if (descText) {
+      const desc = document.createElement('div');
+      desc.className = 'ramedit-io-desc';
+      desc.textContent = descText;
+      row.appendChild(desc);
+    }
+
+    if (isIE) {
+      buildRamEditIoBitRow(row, addr, IE_BIT_LABELS);
+    } else if (info) {
+      buildRamEditIoBitRow(row, addr, info.bitLabels || null);
+    } else {
+      // No documented bit semantics in this emulator for this address: fall back to a plain
+      // single-byte hex editor rather than guessing at bit meanings.
+      const hexRow = document.createElement('div');
+      hexRow.className = 'ramedit-io-hexrow';
+      hexRow.appendChild(makeRamEditHexInput(addr));
+      const note = document.createElement('span');
+      note.className = 'ramedit-io-unknown-note';
+      note.textContent = 'no known name in this emulator — edited as a raw byte';
+      hexRow.appendChild(note);
+      row.appendChild(hexRow);
+    }
+    list.appendChild(row);
+  }
+  ramEditBodyEl.appendChild(list);
+}
+
+function buildRamEditBody() {
+  const meta = ramEditRegionMeta(ramEditKey);
+  ramEditInfoEl.innerHTML = `<span class="ramedit-info-range">${meta.range}</span>` +
+    (meta.editable ? '' : '<span class="ramedit-readonly-badge">read-only</span>') +
+    (meta.note ? `<p class="ramedit-note">${meta.note}</p>` : '') +
+    ((meta.key === 'ROMX' || meta.key === 'ERAM') ? `<p class="ramedit-dynamic-note" id="ramEditDynamicNote"></p>` : '');
+  buildRamEditNav(meta);
+  if (meta.mode === 'io') buildRamEditIoTable(meta);
+  else buildRamEditHexTable(meta);
+  drawRamEditor(); // paint real values immediately, don't wait for the next tick
+}
+
+// Live refresh: repaints every visible cell/register from mmu.peek8 so a value the game
+// itself changes shows up, not just what the student typed - same idea as the always-live
+// VRAM/OAM panels. Never repaints whichever input currently has focus, so it doesn't fight
+// the student mid-edit.
+function drawRamEditor() {
+  const mmu = emulator.mmu;
+  const meta = ramEditRegionMeta(ramEditKey);
+
+  const dyn = document.getElementById('ramEditDynamicNote');
+  if (dyn) {
+    if (meta.key === 'ROMX') dyn.textContent = `Bank currently mapped at 0x4000–0x7FFF: ${mmu.currentROMBank}`;
+    else if (meta.key === 'ERAM') dyn.textContent = mmu.ramEnabled ? `RAM enabled — current bank: ${mmu.currentRAMBank}` : 'RAM disabled (RAMG) — reads return 0xFF, writes are ignored.';
+  }
+
+  if (meta.mode === 'io') {
+    ramEditBodyEl.querySelectorAll('.ramedit-io-row').forEach(row => {
+      const addr = parseInt(row.dataset.addr, 10);
+      const val = mmu.peek8(addr);
+      const hexEl = row.querySelector('.ramedit-io-hex');
+      if (hexEl) hexEl.textContent = hex8(val);
+      row.querySelectorAll('.ramedit-bit input').forEach(cb => {
+        if (document.activeElement === cb) return;
+        cb.checked = !!(val & (1 << parseInt(cb.dataset.bit, 10)));
+      });
+      const hexInput = row.querySelector('.ramedit-cell');
+      if (hexInput && document.activeElement !== hexInput) hexInput.value = hex8(val).slice(2);
+    });
+    return;
+  }
+
+  ramEditBodyEl.querySelectorAll('.ramedit-cell').forEach(input => {
+    if (document.activeElement === input) return;
+    input.value = hex8(mmu.peek8(parseInt(input.dataset.addr, 10))).slice(2);
+  });
+  ramEditBodyEl.querySelectorAll('.ramedit-cell-ro').forEach(span => {
+    span.textContent = hex8(mmu.peek8(parseInt(span.dataset.addr, 10))).slice(2);
+  });
+  ramEditBodyEl.querySelectorAll('.ramedit-ascii').forEach(td => {
+    const addrs = (td.dataset.addrs || '').split(',').filter(Boolean).map(Number);
+    td.textContent = addrs.map(a => { const v = mmu.peek8(a); return (v >= 32 && v < 127) ? String.fromCharCode(v) : '.'; }).join('');
+  });
+}
+
+buildRamEditRegionTabs();
+buildRamEditBody();
+
 /* ---- tab switching (scoped per sidebar, so each tracks its own active tab) ---- */
 const debugToolsContainer = document.getElementById('debugTools');
 const visualToolsContainer = document.getElementById('visualTools');
@@ -1462,6 +1810,7 @@ function refreshDebugTools() {
   else if (activeDebug === 'memmap') drawMemMap();
   else if (activeDebug === 'banking') drawBanking();
   else if (activeDebug === 'interrupts') drawInterrupts();
+  else if (activeDebug === 'ramedit') drawRamEditor();
 
   const activeVisual = visualToolsContainer.querySelector('.tool-tab.active').dataset.tool;
   if (activeVisual === 'tiles') drawTileViewer();

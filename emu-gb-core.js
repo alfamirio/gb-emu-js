@@ -270,6 +270,17 @@ class MMU {
   read8(addr) {
     addr &= 0xFFFF;
     this.noteAccess(addr, 'read');
+    return this.peek8(addr);
+  }
+
+  // Same address decoding/mapping as read8 (ROM banking, echo RAM, RTC-mapped registers,
+  // I/O side-reads, everything) but WITHOUT recording the access via noteAccess(). Reading
+  // a byte just to paint it on a debug panel isn't something the CPU/game actually did, so
+  // routing that through read8 would falsely attribute it to CPU activity and spam the
+  // Memory Map visualizer's "last access" flash. Used by the RAM Editor's live refresh and
+  // available to any other inspector that needs a read8-equivalent without that side effect.
+  peek8(addr) {
+    addr &= 0xFFFF;
     const MEM = EMU_CORE_CONFIG.MEMORY;
     if (addr < MEM.ROM0_END) return this.rom[addr] ?? 0xFF;                              // ROM bank 0
     if (addr < MEM.ROMX_END) return this.rom[this.currentROMBank * MEM.ROM_BANK_SIZE + (addr - MEM.ROM0_END)] ?? 0xFF; // switchable ROM bank

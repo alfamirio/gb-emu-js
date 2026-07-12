@@ -179,9 +179,27 @@
   .sound-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
   .sound-row input[type="range"] { flex: 1; accent-color: var(--accent); }
   .speed-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 0.82rem; color: #bbb; }
-  .speed-row input[type="range"] { flex: 1; accent-color: var(--accent); }
   .speed-label { white-space: nowrap; }
-  .speed-value { width: 3.2em; text-align: right; font-family: 'Consolas', monospace; color: #ddd; }
+  .speed-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+  .speed-badge {
+    background: #34343f;
+    border: 1px solid #444;
+    color: #bbb;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-family: 'Consolas', monospace;
+    cursor: pointer;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  .speed-badge:hover { border-color: var(--accent); color: #eee; }
+  .speed-badge.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .speed-badge.active:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
   button.ui-btn {
     background: var(--accent);
     border: none;
@@ -945,9 +963,14 @@
         </div>
 
         <div class="speed-row">
-          <span class="speed-label">Speed</span>
-          <input type="range" id="speedSlider" min="1" max="10" step="1" value="10">
-          <span class="speed-value" id="speedValue">100%</span>
+          <div class="speed-badges" id="speedBadges">
+            <button type="button" class="speed-badge" data-speed="0.25">x0.25</button>
+            <button type="button" class="speed-badge" data-speed="0.5">x0.5</button>
+            <button type="button" class="speed-badge active" data-speed="1">1x</button>
+            <button type="button" class="speed-badge" data-speed="2">2x</button>
+            <button type="button" class="speed-badge" data-speed="3">3x</button>
+            <button type="button" class="speed-badge" data-speed="4">4x</button>
+          </div>
         </div>
 
         <div class="btn-row">
@@ -2468,6 +2491,20 @@ class APU {
     this.writePos = 0; this.readPos = 0; this.available = 0;
     this.lastL = 0; this.lastR = 0; // last sample played, used to fade out gracefully on underrun
 
+    // Running sum accumulators used to *average* (rather than just instantaneously snapshot)
+    // each channel's DAC output over every raw cycle since the last output sample was emitted.
+    // This matters once the speed slider is away from 1x: at e.g. 4x, ~380 raw GB cycles pass
+    // per output sample instead of ~95, and a single instantaneous snapshot only "sees" the
+    // state at that one instant while silently ignoring the other ~285 cycles of activity in
+    // between. Because the sped-up channels also genuinely oscillate faster in real time (their
+    // freqTimer is driven by raw, unscaled cycles), naive point-sampling badly *undersamples*
+    // that faster waveform - a classic aliasing bug - and the resulting pitch comes out wrong
+    // (sometimes wildly so) instead of merely "a bit rough". Integrating (summing amplitude*cycles)
+    // over the whole interval and dividing by the elapsed cycles on emission acts as a simple
+    // box-filter low-pass, which tames that aliasing at 2x-4x while leaving 1x/slow-motion
+    // (where the interval between samples is already small) effectively unchanged.
+    this.accL = 0; this.accR = 0; this.accCycles = 0;
+
     // Per-channel raw DAC output history, purely for the oscilloscope UI - separate from the
     // mixed ringL/ringR buffer above so each channel's own waveform (duty cycle, envelope,
     // wave-table shape, noise) can be inspected independently of panning/mixing.
@@ -2814,6 +2851,11 @@ class APU {
     this.stepWave(cycles);
     this.stepNoise(cycles);
 
+    // Fold this chunk's instantaneous DAC output into the running-sum accumulators (weighted
+    // by how many raw cycles it covers) rather than only keeping the very latest instant. See
+    // the accumulator fields' comment in the constructor for why this matters once speed != 1x.
+    this.accumulateMix(cycles);
+
     // The emulator's frame clock (~59.73fps via requestAnimationFrame) and the audio
     // hardware's clock aren't perfectly locked together, so even with the right sample rate
     // above, tiny timing differences accumulate over minutes of play. Nudge the effective
@@ -2833,11 +2875,19 @@ class APU {
     const targetCyclesPerSample = this.cyclesPerSample * correction * this.emulator.speed;
 
     this.sampleCounter += cycles;
-    while (this.sampleCounter >= targetCyclesPerSample) { this.sampleCounter -= targetCyclesPerSample; this.generateSample(); }
+    while (this.sampleCounter >= targetCyclesPerSample) { this.sampleCounter -= targetCyclesPerSample; this.emitSample(); }
   }
 
-  generateSample() {
-    if (!this.enabled) { this.pushSample(0, 0); this.pushScopeSample(0, 0, 0, 0); return; }
+  // Computes each channel's instantaneous DAC output (-1..1) plus the mixed/panned/volumed
+  // left+right instant, and adds left*cycles / right*cycles into the running-sum accumulators.
+  // Also remembers the latest instantaneous per-channel values for the oscilloscope (which wants
+  // to see the raw waveform, not an averaged one).
+  accumulateMix(cycles) {
+    if (!this.enabled) {
+      this._lastA1 = this._lastA2 = this._lastA3 = this._lastA4 = 0;
+      this.accCycles += cycles;
+      return; // silence contributes 0 either way, nothing to add to accL/accR
+    }
 
     const amp1 = (this.ch1.enabled && !this.chMuted[0]) ? APU_DUTY_TABLE[this.ch1.duty][this.ch1.dutyStep] * this.ch1.volume : 0;
     const amp2 = (this.ch2.enabled && !this.chMuted[1]) ? APU_DUTY_TABLE[this.ch2.duty][this.ch2.dutyStep] * this.ch2.volume : 0;
@@ -2848,7 +2898,7 @@ class APU {
     // Each channel's 4-bit DAC maps 0-15 to roughly -1..1
     const dac = v => (v / 7.5) - 1;
     const a1 = dac(amp1), a2 = dac(amp2), a3 = dac(amp3), a4 = dac(amp4);
-    this.pushScopeSample(a1, a2, a3, a4);
+    this._lastA1 = a1; this._lastA2 = a2; this._lastA3 = a3; this._lastA4 = a4;
 
     let left = 0, right = 0;
     if (this.panning & 0x01) right += a1;
@@ -2862,7 +2912,25 @@ class APU {
 
     left = (left / 4) * ((this.leftVol + 1) / 8);
     right = (right / 4) * ((this.rightVol + 1) / 8);
+
+    this.accL += left * cycles;
+    this.accR += right * cycles;
+    this.accCycles += cycles;
+  }
+
+  // Emits one output sample: the *average* mixed level over every cycle since the last emitted
+  // sample (rather than just whatever the state instantaneously happened to be), then resets the
+  // accumulators for the next interval. Averaging acts as a simple anti-aliasing low-pass, which
+  // matters most at speed > 1x where each output sample now spans many more raw cycles than the
+  // audio hardware's natural ~95-cycles-per-sample - without it, that gap between samples let the
+  // faster-oscillating (speed-scaled) waveform slip through un-sampled, aliasing into garbled or
+  // outright wrong-sounding pitches instead of a clean sped-up tone.
+  emitSample() {
+    const left = this.accCycles > 0 ? this.accL / this.accCycles : 0;
+    const right = this.accCycles > 0 ? this.accR / this.accCycles : 0;
     this.pushSample(left, right);
+    this.pushScopeSample(this._lastA1 || 0, this._lastA2 || 0, this._lastA3 || 0, this._lastA4 || 0);
+    this.accL = 0; this.accR = 0; this.accCycles = 0;
   }
 
   // Records this instant's raw per-channel DAC output for the oscilloscope UI. Kept as a
@@ -3543,17 +3611,24 @@ volumeSlider.addEventListener('input', () => {
   saveSoundConfig();
 });
 
-/* ---- speed control: slider steps 1-10 map to 10%-100% emulation speed ----
+/* ---- speed control: preset badges (x0.25 - 4x) set the emulation speed multiplier ----
    Persisted in the shared UI config so the chosen speed is restored on the next visit. */
-const speedSlider = document.getElementById('speedSlider');
-const speedValue = document.getElementById('speedValue');
-if (typeof savedUIConfig.speed === 'number') speedSlider.value = savedUIConfig.speed;
-emulator.speed = speedSlider.value / 10;
-speedValue.textContent = (speedSlider.value * 10) + '%';
-speedSlider.addEventListener('input', () => {
-  emulator.speed = speedSlider.value / 10;
-  speedValue.textContent = (speedSlider.value * 10) + '%';
-  saveUIConfig({ speed: Number(speedSlider.value) });
+const speedBadges = [...document.querySelectorAll('.speed-badge')];
+
+function setSpeed(value, persist) {
+  emulator.speed = value;
+  speedBadges.forEach(b => b.classList.toggle('active', Number(b.dataset.speed) === value));
+  if (persist) saveUIConfig({ speed: value });
+}
+
+let initialSpeed = 1;
+if (typeof savedUIConfig.speed === 'number' && speedBadges.some(b => Number(b.dataset.speed) === savedUIConfig.speed)) {
+  initialSpeed = savedUIConfig.speed;
+}
+setSpeed(initialSpeed, false);
+
+speedBadges.forEach(badge => {
+  badge.addEventListener('click', () => setSpeed(Number(badge.dataset.speed), true));
 });
 
 /* ---- keyboard input ---- */

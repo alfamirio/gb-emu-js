@@ -186,7 +186,7 @@
 
   /* ---- side panel ---- */
   .control-panel {
-    width: 400px;
+    width: 340px;
     background: #23232c;
     border-radius: 10px;
     padding: 18px;
@@ -400,14 +400,14 @@
   .tool-sidebar h2 { font-size: 1rem; margin: 0 0 10px; color: #ddd; }
 
   .debug-tools-sidebar {
-    width: 440px;
+    width: 460px;
     max-width: 100%;
     display: flex;
     flex-direction: column;
   }
 
   .visual-tools-sidebar {
-    width: 420px;
+    width: 460px;
     max-width: 100%;
   }
 
@@ -1230,10 +1230,10 @@
     </div>
     <div class="mode-toggle panel-vis-toggle" title="Show/hide the Frame Activity panel">
       <label class="switch">
-        <input type="checkbox" id="frameActivityVisToggle" checked>
+        <input type="checkbox" id="frameActivityVisToggle">
         <span class="toggle-track"><span class="toggle-thumb"></span></span>
       </label>
-      <span class="mode-label active" id="frameActivityVisLabel">Frame Act</span>
+      <span class="mode-label" id="frameActivityVisLabel">Frame Act</span>
     </div>
   </div>
 
@@ -1435,7 +1435,7 @@
         bar the CPU's last memory read or write landed in flashes white.
       </p>
       <div class="memmap-strip" id="memmapStrip"><!-- built in JS --></div>
-      <div class="memmap-readout" id="memmapReadout">No memory access yet — load a ROM and press Start or Step.</div>
+      <div class="memmap-readout" id="memmapReadout">No memory access yet — load a ROM or press Step.</div>
     </div>
 
     <div class="tool-panel hidden" id="panel-banking">
@@ -1488,7 +1488,6 @@
         <div class="checksum-badges" id="checksumBadges"></div>
 
         <div class="btn-row">
-          <button class="ui-btn" id="btnStart" disabled>▶ Start</button>
           <button class="ui-btn" id="btnPause" disabled>⏸ Pause</button>
           <button class="ui-btn" id="btnReset" disabled>↻ Reset</button>
           <button class="ui-btn" id="btnRewind" disabled>⏪ Rewind</button>

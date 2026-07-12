@@ -31,7 +31,6 @@ const romInfo = document.getElementById('romInfo');
 const checksumBadges = document.getElementById('checksumBadges');
 
 /* ---- playback controls refs (start/pause/reset/rewind) ---- */
-const btnStart = document.getElementById('btnStart');
 const btnPause = document.getElementById('btnPause');
 const btnReset = document.getElementById('btnReset');
 const btnRewind = document.getElementById('btnRewind');
@@ -334,7 +333,7 @@ async function loadROMBytes(bytes) {
   buildBankingPanel();
   selectedFrameStatsIndex = null; // follow the latest frame again for this newly-loaded ROM
   selectedAnatomyLine = null;     // clear any pinned scanline from the previous ROM
-  btnStart.disabled = false; btnPause.disabled = false; btnReset.disabled = false;
+  btnPause.disabled = false; btnReset.disabled = false;
   btnStep.disabled = false; btnStepLine.disabled = false; btnStepFrame.disabled = false;
   btnStep1s.disabled = false;
   updateRewindButton();
@@ -437,7 +436,6 @@ fileInput.addEventListener('change', (e) => { if (e.target.files[0]) handleROMFi
 ['dragleave', 'drop'].forEach(evt => window.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.remove('drag-over'); }));
 window.addEventListener('drop', (e) => { if (e.dataTransfer.files[0]) handleROMFile(e.dataTransfer.files[0]); });
 
-btnStart.addEventListener('click', () => { emulator.start(); btnPause.textContent = '⏸ Pause'; bpStatus.textContent = 'Running.'; });
 btnPause.addEventListener('click', () => {
   if (emulator.running) {
     emulator.pause();

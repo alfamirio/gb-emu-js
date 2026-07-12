@@ -1037,8 +1037,8 @@
       <div class="panel" id="control-panel">
         <h2>Load ROM</h2>
         <label class="file-drop" id="dropZone">
-          <input type="file" id="fileInput" accept=".gb,.gbc,.bin">
-          Click to choose a ROM file<br>or drag &amp; drop it here
+          <input type="file" id="fileInput" accept=".gb,.gbc,.bin,.zip">
+          Click to choose a ROM file<br>or drag &amp; drop it here (.gb/.gbc/.bin, or zipped)
         </label>
         <div class="rom-info" id="romInfo">No ROM loaded.</div>
         <div class="checksum-badges" id="checksumBadges"></div>
@@ -3689,29 +3689,115 @@ function renderChecksumBadges(checksums) {
   });
 }
 
+// Finishes loading a ROM once its raw bytes are in hand - shared by both the plain
+// .gb/.gbc/.bin path and the zip-extraction path below, so neither has to duplicate the
+// "wire it into the emulator and UI" bookkeeping.
+async function loadROMBytes(bytes) {
+  lastROMBytes = bytes;
+  emulator.loadROM(bytes);
+  const checksums = await computeChecksums(bytes);
+  romInfo.innerHTML = `<b>${getROMTitle(bytes)}</b><br>Mapper: ${getMBCName(bytes)}<br>Size: ${(bytes.length / 1024).toFixed(0)} KB` +
+    `<br>Checksum: 0x${checksums.crc32}`;
+  renderChecksumBadges(checksums);
+  lastRenderedAccessSeq = -1;
+  lastRenderedBankSwitchT = -1;
+  buildBankingPanel();
+  selectedFrameStatsIndex = null; // follow the latest frame again for this newly-loaded ROM
+  selectedAnatomyLine = null;     // clear any pinned scanline from the previous ROM
+  btnStart.disabled = false; btnPause.disabled = false; btnReset.disabled = false;
+  btnStep.disabled = false; btnStepLine.disabled = false; btnStepFrame.disabled = false;
+  btnStep1s.disabled = false;
+  updateRewindButton();
+  bpStatus.textContent = 'Ready.';
+  updateStateButtons();
+  emulator.start();
+}
+
+/* ---- zipped ROM support ----
+   Minimal, dependency-free ZIP reader: walks the central directory to find .gb/.gbc/.bin
+   entries, then extracts the chosen one straight from its local file header. Stored (method
+   0) entries are used as-is; deflated (method 8) entries go through the browser's built-in
+   DecompressionStream, so no third-party unzip library is needed. Encrypted or zip64/multi-
+   disk archives (rare for ROM zips) aren't supported. */
+const ROM_IN_ZIP_RE = /\.(gb|gbc|bin)$/i;
+
+function readZipEntries(bytes) {
+  if (bytes.length < 22) throw new Error('File is too small to be a ZIP archive.');
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const EOCD_SIG = 0x06054b50;
+  const minEOCD = 22, maxCommentLen = 65535;
+  const searchStart = Math.max(0, bytes.length - minEOCD - maxCommentLen);
+  let eocdOffset = -1;
+  for (let i = bytes.length - minEOCD; i >= searchStart; i--) {
+    if (dv.getUint32(i, true) === EOCD_SIG) { eocdOffset = i; break; }
+  }
+  if (eocdOffset === -1) throw new Error('Not a valid ZIP file (end-of-central-directory record not found).');
+
+  const cdCount = dv.getUint16(eocdOffset + 10, true);
+  let ptr = dv.getUint32(eocdOffset + 16, true);
+  const CD_SIG = 0x02014b50;
+  const entries = [];
+  for (let i = 0; i < cdCount; i++) {
+    if (dv.getUint32(ptr, true) !== CD_SIG) break;
+    const method = dv.getUint16(ptr + 10, true);
+    const compSize = dv.getUint32(ptr + 20, true);
+    const nameLen = dv.getUint16(ptr + 28, true);
+    const extraLen = dv.getUint16(ptr + 30, true);
+    const commentLen = dv.getUint16(ptr + 32, true);
+    const localHeaderOffset = dv.getUint32(ptr + 42, true);
+    const name = new TextDecoder().decode(bytes.subarray(ptr + 46, ptr + 46 + nameLen));
+    entries.push({ name, method, compSize, localHeaderOffset });
+    ptr += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
+}
+
+async function extractZipEntry(bytes, entry) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const LFH_SIG = 0x04034b50;
+  if (dv.getUint32(entry.localHeaderOffset, true) !== LFH_SIG) throw new Error('Corrupt ZIP local file header.');
+  const nameLen = dv.getUint16(entry.localHeaderOffset + 26, true);
+  const extraLen = dv.getUint16(entry.localHeaderOffset + 28, true);
+  const dataStart = entry.localHeaderOffset + 30 + nameLen + extraLen;
+  const compressed = bytes.subarray(dataStart, dataStart + entry.compSize);
+
+  if (entry.method === 0) return new Uint8Array(compressed); // stored - no compression
+  if (entry.method === 8) {
+    if (!window.DecompressionStream) throw new Error("This browser doesn't support in-browser ZIP decompression.");
+    const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+  throw new Error(`Unsupported ZIP compression method (${entry.method}) - only stored or deflated entries are supported.`);
+}
+
+async function handleZipFile(file) {
+  romInfo.textContent = 'Reading zip file…';
+  checksumBadges.innerHTML = '';
+  try {
+    const zipBytes = new Uint8Array(await file.arrayBuffer());
+    const romEntries = readZipEntries(zipBytes)
+      .filter(e => ROM_IN_ZIP_RE.test(e.name) && !e.name.endsWith('/'))
+      .sort((a, b) => a.name.localeCompare(b.name)); // deterministic pick when a zip holds several ROMs
+    if (romEntries.length === 0) {
+      romInfo.textContent = 'No .gb/.gbc/.bin ROM found inside that zip.';
+      return;
+    }
+    const chosen = romEntries[0];
+    romInfo.textContent = `Extracting "${chosen.name}" from zip…`;
+    const romBytes = await extractZipEntry(zipBytes, chosen);
+    await loadROMBytes(romBytes);
+    if (romEntries.length > 1) {
+      romInfo.innerHTML += `<br><span style="color:#e8c46b">Zip had ${romEntries.length} ROMs — loaded "${chosen.name}".</span>`;
+    }
+  } catch (err) {
+    romInfo.textContent = `Could not load ROM from zip: ${err.message}`;
+  }
+}
+
 function handleROMFile(file) {
+  if (/\.zip$/i.test(file.name)) { handleZipFile(file); return; }
   const reader = new FileReader();
-  reader.onload = async (e) => {
-    const bytes = new Uint8Array(e.target.result);
-    lastROMBytes = bytes;
-    emulator.loadROM(bytes);
-    const checksums = await computeChecksums(bytes);
-    romInfo.innerHTML = `<b>${getROMTitle(bytes)}</b><br>Mapper: ${getMBCName(bytes)}<br>Size: ${(bytes.length / 1024).toFixed(0)} KB` +
-      `<br>Checksum: 0x${checksums.crc32}`;
-    renderChecksumBadges(checksums);
-    lastRenderedAccessSeq = -1;
-    lastRenderedBankSwitchT = -1;
-    buildBankingPanel();
-    selectedFrameStatsIndex = null; // follow the latest frame again for this newly-loaded ROM
-    selectedAnatomyLine = null;     // clear any pinned scanline from the previous ROM
-    btnStart.disabled = false; btnPause.disabled = false; btnReset.disabled = false;
-    btnStep.disabled = false; btnStepLine.disabled = false; btnStepFrame.disabled = false;
-    btnStep1s.disabled = false;
-    updateRewindButton();
-    bpStatus.textContent = 'Ready.';
-    updateStateButtons();
-    emulator.start();
-  };
+  reader.onload = (e) => { loadROMBytes(new Uint8Array(e.target.result)); };
   reader.readAsArrayBuffer(file);
 }
 

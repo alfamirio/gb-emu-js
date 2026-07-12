@@ -21,7 +21,7 @@ A from-scratch, single-file DMG (original Game Boy) emulator written in plain Ja
 ## Scope limitations
 
 To maximize source code readability for students, the following features are intentionally omitted:
-* Game Boy Color (GBC) enhancements.
+* Game Boy Color (GBC).
 * Sub-instruction cycle-exact PPU, timer, or APU edge cases.
 
 Scope note: this implements the full DMG CPU instruction set, background/window/sprite rendering, timers, joypad input, sound (all 4 APU channels via Web Audio), and ROM-only / MBC1 / basic MBC3 cartridges — enough to run many real games. It intentionally leaves out GB Color features and cycle-exact PPU/timer/APU edge cases to keep the source readable as a learning reference.
@@ -272,7 +272,7 @@ You can use rgbds and [rgbds-live](https://github.com/gbdev/rgbds-live) to compi
 ## Development and usage
 
 1. Open the source `.html` file in any modern web browser.
-2. Drag and drop any compatible legal `.gb` or `.gbc` ROM into the interface.
+2. Drag and drop any compatible legal `.gb` ROM into the interface.
 3. Use the integrated CPU/PPU debug panel to trace register flags and live status details, and the memory-map / MBC banking visualizers to watch cartridge bank switching happen in real time as the game runs.
 
 ## Disclaimer

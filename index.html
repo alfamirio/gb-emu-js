@@ -891,7 +891,9 @@
           <button class="ui-btn" id="btnStart" disabled>▶ Start</button>
           <button class="ui-btn" id="btnPause" disabled>⏸ Pause</button>
           <button class="ui-btn" id="btnReset" disabled>↻ Reset</button>
+          <button class="ui-btn" id="btnRewind" disabled>⏪ Rewind</button>
         </div>
+        <div class="state-info" id="rewindInfo"></div>
 
         <div class="sound-row">
           <button class="ui-btn" id="btnMute">🔊 Mute</button>
@@ -2864,6 +2866,14 @@ class Emulator {
     this._bpSkipFirstMatch = false; // avoids instantly re-triggering a PC breakpoint we're already sitting on
     this.onBreakpointHit = null;   // optional callback(reason), wired up by the UI
 
+    /* ---- rewind: in-memory-only ring buffer of full state snapshots, taken once per emulated
+       second, holding up to REWIND_MAX_SECONDS of history. Deliberately kept as plain JS
+       objects in a normal array - never touches localStorage or the save-state slots, so it
+       vanishes on page reload and can't collide with anything the user explicitly saved. ---- */
+    this.REWIND_MAX_SECONDS = 15;
+    this.rewindBuffer = [];      // oldest first, most recent last; each entry is a getSaveState() snapshot
+    this.rewindFrameAcc = 0;     // counts frames since the last snapshot was taken (60 = ~1s)
+
     /* ---- frame activity: emulated-hardware content per frame (instructions, interrupts,
        sprites, DMA, banking, APU triggers) - purely observational, for the Frame Activity
        panel. Not JS/host timing - just counts of things the emulated hardware itself did. ---- */
@@ -2920,6 +2930,8 @@ class Emulator {
     this.frameStatsHistory = [];
     this.frameCounter = 0;
     this.frameStats = this.newFrameStats();
+    this.rewindBuffer = [];
+    this.rewindFrameAcc = 0;
 
     let title = '';
     for (let i = 0x134; i < 0x144; i++) {
@@ -3013,6 +3025,33 @@ class Emulator {
     this.frameStatsHistory.push(this.frameStats);
     if (this.frameStatsHistory.length > this.FRAME_STATS_HISTORY) this.frameStatsHistory.shift();
     this.frameCounter++;
+
+    this.rewindFrameAcc++;
+    if (this.rewindFrameAcc >= 60) { // ~1 emulated second at 59.73fps, same granularity as stepOneSecond()
+      this.rewindFrameAcc = 0;
+      this.pushRewindSnapshot();
+    }
+  }
+
+  // Records a snapshot for the rewind buffer, capped to REWIND_MAX_SECONDS entries (oldest
+  // dropped first). In-memory only - never written to localStorage or the save-state slots.
+  pushRewindSnapshot() {
+    this.rewindBuffer.push(this.getSaveState());
+    if (this.rewindBuffer.length > this.REWIND_MAX_SECONDS) this.rewindBuffer.shift();
+  }
+
+  // Steps backward one second at a time: pops the most recent rewind snapshot and restores
+  // it, pausing the emulator. Each call goes one second further back; returns false once the
+  // buffer (up to REWIND_MAX_SECONDS deep) is exhausted.
+  rewind() {
+    if (this.rewindBuffer.length === 0) return false;
+    if (this.running) this.pause();
+    const state = this.rewindBuffer.pop();
+    this.loadSaveState(state);
+    this.rewindFrameAcc = 0; // the restored moment shouldn't count as partway into a new second
+    this.draw();
+    this.updateDebug();
+    return true;
   }
 
   // Pauses the emulator and records why, so a breakpoint hit looks the same in the UI as
@@ -3257,6 +3296,8 @@ const romInfo = document.getElementById('romInfo');
 const btnStart = document.getElementById('btnStart');
 const btnPause = document.getElementById('btnPause');
 const btnReset = document.getElementById('btnReset');
+const btnRewind = document.getElementById('btnRewind');
+const rewindInfo = document.getElementById('rewindInfo');
 const btnStep = document.getElementById('btnStep');
 const btnStepLine = document.getElementById('btnStepLine');
 const btnStepFrame = document.getElementById('btnStepFrame');
@@ -3319,6 +3360,7 @@ function handleROMFile(file) {
     btnStart.disabled = false; btnPause.disabled = false; btnReset.disabled = false;
     btnStep.disabled = false; btnStepLine.disabled = false; btnStepFrame.disabled = false;
     btnStep1s.disabled = false;
+    updateRewindButton();
     bpStatus.textContent = 'Ready.';
     updateStateButtons();
     emulator.start();
@@ -3354,7 +3396,28 @@ btnReset.addEventListener('click', () => {
     emulator.start();
     btnPause.textContent = '⏸ Pause';
     bpStatus.textContent = 'Reset.';
+    updateRewindButton(); // Reset starts a fresh run, so any rewind history from before is gone too
   }
+});
+
+/* ---- rewind: in-memory-only, up to 15s deep in 1s steps (see Emulator.rewind()) ---- */
+function updateRewindButton() {
+  const secs = emulator.rewindBuffer.length;
+  btnRewind.disabled = secs === 0;
+  rewindInfo.textContent = secs > 0
+    ? `${secs}s of rewind history available (up to ${emulator.REWIND_MAX_SECONDS}s).`
+    : (lastROMBytes ? 'No rewind history yet — play for a second first.' : '');
+}
+setInterval(updateRewindButton, 250); // buffer grows in the background while playing, not just on clicks
+
+btnRewind.addEventListener('click', () => {
+  const ok = emulator.rewind();
+  if (ok) {
+    btnPause.textContent = '▶ Resume';
+    bpStatus.textContent = `Rewound 1s — PC=${hex16(emulator.cpu.PC)}`;
+    refreshDebugTools();
+  }
+  updateRewindButton();
 });
 
 /* ---- step / breakpoint debugger ---- */

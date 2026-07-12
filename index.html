@@ -706,6 +706,14 @@
     </label>
     <span class="mode-label" id="scanlineMarkLabelOn">Line</span>
   </div>
+  <div class="mode-toggle layer-tint-toggle">
+    <span class="mode-label" id="layerTintLabelOff">Off</span>
+    <label class="switch">
+      <input type="checkbox" id="layerTintToggle">
+      <span class="toggle-track"><span class="toggle-thumb"></span></span>
+    </label>
+    <span class="mode-label" id="layerTintLabelOn">Layers</span>
+  </div>
   <div class="model-toggle">
     <span class="model-label" id="modelLabelGB">GB</span>
     <label class="switch">
@@ -1900,6 +1908,11 @@ class PPU {
   static PALETTE_GBP = [[255, 255, 255], [169, 169, 169], [84, 84, 84], [0, 0, 0]];
   static SHADES = PPU.PALETTE_GBP;
 
+  // Layer-tint debug view: each rendering layer gets a distinct color wash so it's
+  // obvious at a glance which layer drew which pixel (background layer / window "tiles" / sprites).
+  static LAYER_TINTS = { bg: [255, 90, 90], window: [90, 220, 255], sprite: [140, 255, 110] };
+  static LAYER_TINT_MIX = 0.4; // 0 = no tint, 1 = solid tint color
+
   constructor(emulator) {
     this.emulator = emulator;
     this.mmu = emulator.mmu;
@@ -2029,7 +2042,7 @@ class PPU {
       const bit = 7 - px;
       const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
       bgPriority[x] = colorNum;
-      const [r, g, b] = this.applyPalette(colorNum, this.bgp);
+      const [r, g, b] = this.tintForLayer(...this.applyPalette(colorNum, this.bgp), 'bg');
       this.setPixel(x, y, r, g, b);
     }
   }
@@ -2057,7 +2070,7 @@ class PPU {
       const bit = 7 - px;
       const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
       bgPriority[x] = colorNum;
-      const [r, g, b] = this.applyPalette(colorNum, this.bgp);
+      const [r, g, b] = this.tintForLayer(...this.applyPalette(colorNum, this.bgp), 'window');
       this.setPixel(x, y, r, g, b);
       drewAny = true;
     }
@@ -2108,13 +2121,22 @@ class PPU {
         const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
         if (colorNum === 0) continue; // color 0 is always transparent for sprites
         if (behindBG && bgPriority[sx] !== 0) continue;
-        const [r, g, b] = this.applyPalette(colorNum, palette);
+        const [r, g, b] = this.tintForLayer(...this.applyPalette(colorNum, palette), 'sprite');
         this.setPixel(sx, y, r, g, b);
       }
     }
   }
 
   applyPalette(colorNum, palette) { return PPU.SHADES[(palette >> (colorNum * 2)) & 0x03]; }
+
+  // Blends a rendered pixel toward its layer's debug tint color when layer-tint mode is on;
+  // returns the color unchanged otherwise. `layer` is one of 'bg' | 'window' | 'sprite'.
+  tintForLayer(r, g, b, layer) {
+    if (!this.emulator.layerTint) return [r, g, b];
+    const [tr, tg, tb] = PPU.LAYER_TINTS[layer];
+    const m = PPU.LAYER_TINT_MIX;
+    return [r * (1 - m) + tr * m, g * (1 - m) + tg * m, b * (1 - m) + tb * m];
+  }
   toSigned8(v) { return (v & 0x80) ? v - 256 : v; }
   setPixel(x, y, r, g, b) { const i = (y * 160 + x) * 4; this.framebuffer[i] = r; this.framebuffer[i + 1] = g; this.framebuffer[i + 2] = b; this.framebuffer[i + 3] = 255; }
 }
@@ -2715,6 +2737,7 @@ class Emulator {
     this.frameReady = false;
     this._rafId = null;
     this.markCurrentLine = false;
+    this.layerTint = false;
 
     this.speed = 1;          // 0.1-1.0 multiplier applied to how fast emulated frames advance
     this._lastTime = null;   // real-time timestamp of the previous loop() tick
@@ -3633,6 +3656,26 @@ function applyScanlineMark() {
 if (typeof savedUIConfig.markCurrentLine === 'boolean') scanlineMarkToggle.checked = savedUIConfig.markCurrentLine;
 
 scanlineMarkToggle.addEventListener('change', applyScanlineMark);
+
+/* ---- navbar toggle: wash each PPU layer (background / window "tiles" / sprites) with its
+   own tint color, so overlapping layers are easy to tell apart on the GB screen ---- */
+const layerTintToggle = document.getElementById('layerTintToggle');
+const layerTintLabelOff = document.getElementById('layerTintLabelOff');
+const layerTintLabelOn = document.getElementById('layerTintLabelOn');
+
+function applyLayerTint() {
+  const on = layerTintToggle.checked;
+  emulator.layerTint = on;
+  layerTintLabelOn.classList.toggle('active', on);
+  layerTintLabelOff.classList.toggle('active', !on);
+  saveUIConfig({ layerTint: on });
+  // Repaint immediately so toggling is visible even while paused/no frame is running.
+  if (emulator.mmu.rom && emulator.mmu.rom.length) emulator.draw();
+}
+
+if (typeof savedUIConfig.layerTint === 'boolean') layerTintToggle.checked = savedUIConfig.layerTint;
+
+layerTintToggle.addEventListener('change', applyLayerTint);
 
 /* ---- 1. VRAM tile viewer: every tile in 0x8000-0x97FF, raw, no palette ---- */
 function drawTileViewer() {
@@ -4617,6 +4660,7 @@ updateStateButtons();
 applyMode();
 applyScreenModel();
 applyScanlineMark();
+applyLayerTint();
 drawFrameActivity();
 drawFrameAnatomy();
 drawLineAnatomy();

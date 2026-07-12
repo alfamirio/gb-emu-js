@@ -269,7 +269,7 @@ class MMU {
 
   read8(addr) {
     addr &= 0xFFFF;
-    this.noteAccess(addr, 'read');
+    if (this.emulator.trackAccess) this.noteAccess(addr, 'read');
     return this.peek8(addr);
   }
 
@@ -307,7 +307,7 @@ class MMU {
 
   write8(addr, val) {
     addr &= 0xFFFF; val &= 0xFF;
-    this.noteAccess(addr, 'write');
+    if (this.emulator.trackAccess) this.noteAccess(addr, 'write');
     const MEM = EMU_CORE_CONFIG.MEMORY;
     if (addr < MEM.ROMX_END) { this.handleBanking(addr, val); return; }
     if (addr < MEM.VRAM_END) { this.vram[addr - MEM.ROMX_END] = val; return; }
@@ -1134,6 +1134,12 @@ class PPU {
   static LAYER_TINTS = EMU_CORE_CONFIG.LAYER_TINTS;
   static LAYER_TINT_MIX = EMU_CORE_CONFIG.LAYER_TINT_MIX;
 
+  // Reused across every getSpriteCandidatesForLine() call instead of allocating: a fixed
+  // array plus one fixed slot object per hardware sprites-per-line slot. Safe because the
+  // results are only ever read synchronously (rendered or drawn to a debug panel) before
+  // the next scanline's call overwrites them - nothing retains a reference across calls.
+  static _compareSpritePriority(a, b) { return (b.spriteX - a.spriteX) || (b.oamIndex - a.oamIndex); }
+
   constructor(emulator) {
     this.emulator = emulator;
     this.mmu = emulator.mmu;
@@ -1141,6 +1147,10 @@ class PPU {
     this.mode = 2;
     this.windowLineCounter = 0;
     this.framebuffer = new Uint8ClampedArray(EMU_CORE_CONFIG.SCREEN.WIDTH * EMU_CORE_CONFIG.SCREEN.HEIGHT * 4);
+
+    this._spriteCandidates = []; // stable identity; .length reset (not reallocated) each call
+    this._spriteSlotPool = Array.from({ length: EMU_CORE_CONFIG.SPRITES.MAX_PER_LINE },
+      () => ({ spriteY: 0, spriteX: 0, tileIndex: 0, attrs: 0, oamIndex: 0 }));
   }
 
   /* ---- save state ---- */
@@ -1269,7 +1279,12 @@ class PPU {
   // Tile-data addressing (LCDC.4) is shared between the BG and window layers.
   bgWindowTileDataConfig() {
     const signedIndex = !(this.lcdc & 0x10);
-    return { tileDataBase: signedIndex ? 0x9000 : 0x8000, signedIndex };
+    // LCDC.4 (and therefore this config) essentially never changes mid-frame, but this is
+    // called once per pixel from the hot render path - reuse the cached object instead of
+    // allocating a fresh one every time unless the addressing mode actually flipped.
+    if (this._tdConfig && this._tdConfig.signedIndex === signedIndex) return this._tdConfig;
+    this._tdConfig = { tileDataBase: signedIndex ? 0x9000 : 0x8000, signedIndex };
+    return this._tdConfig;
   }
 
   // Color index of the background pixel that would be shown at screen (x, y) right now,
@@ -1297,18 +1312,23 @@ class PPU {
   // viewer can safely call it.
   getSpriteCandidatesForLine(y, spriteHeight) {
     const SPR = EMU_CORE_CONFIG.SPRITES;
-    const candidates = [];
+    const candidates = this._spriteCandidates;
+    const pool = this._spriteSlotPool;
+    candidates.length = 0; // reuses existing backing storage, doesn't reallocate
     for (let i = 0; i < SPR.MAX_TOTAL && candidates.length < SPR.MAX_PER_LINE; i++) { // hardware limit: 10 sprites/line
       const base = i * 4;
       const spriteY = this.mmu.oam[base] - 16;
       if (y >= spriteY && y < spriteY + spriteHeight) {
-        candidates.push({
-          spriteY, spriteX: this.mmu.oam[base + 1] - 8,
-          tileIndex: this.mmu.oam[base + 2], attrs: this.mmu.oam[base + 3], oamIndex: i
-        });
+        const slot = pool[candidates.length];
+        slot.spriteY = spriteY;
+        slot.spriteX = this.mmu.oam[base + 1] - 8;
+        slot.tileIndex = this.mmu.oam[base + 2];
+        slot.attrs = this.mmu.oam[base + 3];
+        slot.oamIndex = i;
+        candidates.push(slot); // pushes an existing pooled object reference, no allocation
       }
     }
-    candidates.sort((a, b) => (b.spriteX - a.spriteX) || (b.oamIndex - a.oamIndex));
+    candidates.sort(PPU._compareSpritePriority); // static comparator, not a per-call closure
     return candidates;
   }
 
@@ -1339,11 +1359,17 @@ class PPU {
   }
 
   renderBackgroundLine(y, bgPriority) {
+    const tint = this.emulator.layerTint;
     for (let x = 0; x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
       const colorNum = this.getBackgroundColorIndex(x, y);
       bgPriority[x] = colorNum;
-      const [r, g, b] = this.tintForLayer(...this.applyPalette(colorNum, this.bgp), 'bg');
-      this.setPixel(x, y, r, g, b);
+      const shade = this.applyPalette(colorNum, this.bgp); // reference into PPU.SHADES, no alloc
+      if (tint) {
+        const [r, g, b] = this.tintForLayer(shade[0], shade[1], shade[2], 'bg');
+        this.setPixel(x, y, r, g, b);
+      } else {
+        this.setPixel(x, y, shade[0], shade[1], shade[2]);
+      }
     }
   }
 
@@ -1353,12 +1379,18 @@ class PPU {
     if (wx > EMU_CORE_CONFIG.SCREEN.WIDTH - 1) return;
     const winY = this.windowLineCounter;
     let drewAny = false;
+    const tint = this.emulator.layerTint;
 
     for (let x = Math.max(wx, 0); x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
       const colorNum = this.getWindowColorIndex(x - wx, winY);
       bgPriority[x] = colorNum;
-      const [r, g, b] = this.tintForLayer(...this.applyPalette(colorNum, this.bgp), 'window');
-      this.setPixel(x, y, r, g, b);
+      const shade = this.applyPalette(colorNum, this.bgp); // reference into PPU.SHADES, no alloc
+      if (tint) {
+        const [r, g, b] = this.tintForLayer(shade[0], shade[1], shade[2], 'window');
+        this.setPixel(x, y, r, g, b);
+      } else {
+        this.setPixel(x, y, shade[0], shade[1], shade[2]);
+      }
       drewAny = true;
     }
     if (drewAny) this.windowLineCounter++;
@@ -1374,6 +1406,8 @@ class PPU {
     fs.spritesTotal += candidates.length;
     if (candidates.length > fs.spritesMaxLine) fs.spritesMaxLine = candidates.length;
 
+    const tint = this.emulator.layerTint;
+
     for (const s of candidates) {
       if (s.spriteX <= -8 || s.spriteX >= EMU_CORE_CONFIG.SCREEN.WIDTH) continue;
       const behindBG = !!(s.attrs & 0x80);
@@ -1386,8 +1420,13 @@ class PPU {
         const colorNum = PPU.spriteRowColorIndex(lo, hi, xFlip, px);
         if (colorNum === 0) continue; // color 0 is always transparent for sprites
         if (behindBG && bgPriority[sx] !== 0) continue;
-        const [r, g, b] = this.tintForLayer(...this.applyPalette(colorNum, palette), 'sprite');
-        this.setPixel(sx, y, r, g, b);
+        const shade = this.applyPalette(colorNum, palette); // reference into PPU.SHADES, no alloc
+        if (tint) {
+          const [r, g, b] = this.tintForLayer(shade[0], shade[1], shade[2], 'sprite');
+          this.setPixel(sx, y, r, g, b);
+        } else {
+          this.setPixel(sx, y, shade[0], shade[1], shade[2]);
+        }
       }
     }
   }
@@ -2070,6 +2109,13 @@ class Emulator {
     this._rafId = null;
     this.markCurrentLine = false;
     this.layerTint = false;
+
+    // Gates MMU.noteAccess() bookkeeping (Memory Map / Banking visualizer instrumentation).
+    // That bookkeeping runs on every single memory read/write the CPU makes, so it's only
+    // worth paying for while a debug panel that actually shows it is visible - the UI layer
+    // (emu-gb-debug.js's applyMode()) flips this to match the play/debug mode toggle.
+    // Defaults to true since debug mode is the default UI state (see applyMode()).
+    this.trackAccess = true;
 
     this.speed = 1;          // 0.1-1.0 multiplier applied to how fast emulated frames advance
     this._lastTime = null;   // real-time timestamp of the previous loop() tick

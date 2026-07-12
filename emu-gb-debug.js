@@ -734,6 +734,7 @@ const modeLabelDebug = document.getElementById('modeLabelDebug');
 function applyMode() {
   const debugging = modeToggle.checked;
   document.body.classList.toggle('playing-mode', !debugging);
+  emulator.trackAccess = debugging; // skip MMU noteAccess bookkeeping entirely while just playing
   modeLabelDebug.classList.toggle('active', debugging);
   modeLabelPlay.classList.toggle('active', !debugging);
   saveUIConfig({ debugMode: debugging });

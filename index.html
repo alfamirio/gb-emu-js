@@ -210,6 +210,27 @@
     cursor: pointer;
   }
   button.ui-btn:hover { background: var(--accent-dark); }
+
+  .checksum-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .checksum-badge {
+    background: #34343f;
+    border: 1px solid #444;
+    color: #bbb;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-family: 'Consolas', monospace;
+    cursor: pointer;
+    transition: background .15s, border-color .15s, color .15s;
+    user-select: none;
+  }
+  .checksum-badge:hover { border-color: var(--accent); color: #eee; }
+  .checksum-badge.copied {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
   button.ui-btn:disabled { background: #444; cursor: not-allowed; }
   button.ui-btn.danger { background: #b93a3a; }
   button.ui-btn.danger:hover { background: #922c2c; }
@@ -948,6 +969,7 @@
           Click to choose a ROM file<br>or drag &amp; drop it here
         </label>
         <div class="rom-info" id="romInfo">No ROM loaded.</div>
+        <div class="checksum-badges" id="checksumBadges"></div>
 
         <div class="btn-row">
           <button class="ui-btn" id="btnStart" disabled>▶ Start</button>
@@ -3409,6 +3431,7 @@ const emulator = new Emulator(canvas);
 const fileInput = document.getElementById('fileInput');
 const dropZone = document.getElementById('dropZone');
 const romInfo = document.getElementById('romInfo');
+const checksumBadges = document.getElementById('checksumBadges');
 const btnStart = document.getElementById('btnStart');
 const btnPause = document.getElementById('btnPause');
 const btnReset = document.getElementById('btnReset');
@@ -3461,13 +3484,129 @@ function getMBCName(bytes) {
   return names[t] || ('Type 0x' + t.toString(16) + ' (treated as MBC1)');
 }
 
+// File-integrity checksums for the loaded ROM image, computed over the raw file bytes -
+// the same values a ROM database (No-Intro, GoodTools, etc.) or a "verify my dump" tool
+// would key off of. Distinct from the GB/GBC cartridge header's own internal checksum
+// bytes; these are standard general-purpose hashes.
+
+// CRC32 (ISO-HDLC / zlib polynomial 0xEDB88320), table-based.
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+function crc32(bytes) {
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+// MD5 - compact standalone implementation (Web Crypto does not expose MD5).
+function md5(bytes) {
+  const s = [7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,
+             5, 9,14,20,5, 9,14,20,5, 9,14,20,5, 9,14,20,
+             4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,
+             6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21];
+  const K = new Int32Array(64);
+  for (let i = 0; i < 64; i++) K[i] = (Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296)) | 0;
+
+  let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+  const msgLen = bytes.length;
+  const bitLen = msgLen * 8;
+  const padLen = ((msgLen % 64) < 56) ? (56 - (msgLen % 64)) : (120 - (msgLen % 64));
+  const total = msgLen + padLen + 8;
+  const buf = new Uint8Array(total);
+  buf.set(bytes, 0);
+  buf[msgLen] = 0x80;
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(total - 8, bitLen >>> 0, true);
+  dv.setUint32(total - 4, Math.floor(bitLen / 0x100000000), true);
+
+  for (let chunkStart = 0; chunkStart < total; chunkStart += 64) {
+    const M = new Uint32Array(16);
+    for (let i = 0; i < 16; i++) M[i] = dv.getUint32(chunkStart + i * 4, true);
+    let A = a0, B = b0, C = c0, D = d0;
+    for (let i = 0; i < 64; i++) {
+      let F, g;
+      if (i < 16) { F = (B & C) | (~B & D); g = i; }
+      else if (i < 32) { F = (D & B) | (~D & C); g = (5 * i + 1) % 16; }
+      else if (i < 48) { F = B ^ C ^ D; g = (3 * i + 5) % 16; }
+      else { F = C ^ (B | ~D); g = (7 * i) % 16; }
+      F = (F + A + K[i] + M[g]) | 0;
+      A = D; D = C; C = B;
+      B = (B + ((F << s[i]) | (F >>> (32 - s[i])))) | 0;
+    }
+    a0 = (a0 + A) | 0; b0 = (b0 + B) | 0; c0 = (c0 + C) | 0; d0 = (d0 + D) | 0;
+  }
+  const toHexLE = (n) => {
+    n = n >>> 0;
+    let hex = '';
+    for (let i = 0; i < 4; i++) hex += ((n >>> (i * 8)) & 0xFF).toString(16).padStart(2, '0');
+    return hex;
+  };
+  return toHexLE(a0) + toHexLE(b0) + toHexLE(c0) + toHexLE(d0);
+}
+
+function bufToHex(buf) {
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Computes all four checksums for the loaded ROM. SHA-1/SHA-256 go through the browser's
+// native Web Crypto implementation; CRC32 and MD5 aren't exposed there, so they're computed
+// with the small implementations above.
+async function computeChecksums(bytes) {
+  const [sha1Buf, sha256Buf] = await Promise.all([
+    crypto.subtle.digest('SHA-1', bytes),
+    crypto.subtle.digest('SHA-256', bytes),
+  ]);
+  return {
+    crc32: crc32(bytes).toString(16).toUpperCase().padStart(8, '0'),
+    md5: md5(bytes).toUpperCase(),
+    sha1: bufToHex(sha1Buf).toUpperCase(),
+    sha256: bufToHex(sha256Buf).toUpperCase(),
+  };
+}
+
+// Renders the CRC32 / MD5 / SHA-1 / SHA-256 badges. Clicking a badge copies its full value
+// to the clipboard (with brief "Copied!" feedback); hovering shows the full value as a
+// native tooltip via the title attribute, since the badge itself only shows the algorithm name.
+function renderChecksumBadges(checksums) {
+  const entries = [
+    ['CRC32', checksums.crc32],
+    ['MD5', checksums.md5],
+    ['SHA-1', checksums.sha1],
+    ['SHA-256', checksums.sha256],
+  ];
+  checksumBadges.innerHTML = entries.map(([label, value]) =>
+    `<span class="checksum-badge" data-value="${value}" title="${value}">${label}</span>`
+  ).join('');
+  checksumBadges.querySelectorAll('.checksum-badge').forEach((el) => {
+    el.addEventListener('click', () => {
+      const value = el.dataset.value;
+      navigator.clipboard.writeText(value).then(() => {
+        const original = el.textContent;
+        el.textContent = 'Copied!';
+        el.classList.add('copied');
+        setTimeout(() => { el.textContent = original; el.classList.remove('copied'); }, 1000);
+      }).catch(() => { /* clipboard unavailable - silently ignore */ });
+    });
+  });
+}
+
 function handleROMFile(file) {
   const reader = new FileReader();
-  reader.onload = (e) => {
+  reader.onload = async (e) => {
     const bytes = new Uint8Array(e.target.result);
     lastROMBytes = bytes;
     emulator.loadROM(bytes);
-    romInfo.innerHTML = `<b>${getROMTitle(bytes)}</b><br>Mapper: ${getMBCName(bytes)}<br>Size: ${(bytes.length / 1024).toFixed(0)} KB`;
+    const checksums = await computeChecksums(bytes);
+    romInfo.innerHTML = `<b>${getROMTitle(bytes)}</b><br>Mapper: ${getMBCName(bytes)}<br>Size: ${(bytes.length / 1024).toFixed(0)} KB` +
+      `<br>Checksum: 0x${checksums.crc32}`;
+    renderChecksumBadges(checksums);
     lastRenderedAccessSeq = -1;
     lastRenderedBankSwitchT = -1;
     buildBankingPanel();

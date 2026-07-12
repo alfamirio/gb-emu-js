@@ -560,6 +560,16 @@
   }
   .disasm-line { padding: 1px 5px; border-radius: 3px; white-space: nowrap; color: #9fd6ff; }
   .disasm-line.current { background: var(--accent); color: #fff; font-weight: bold; }
+  .stack-sp-readout {
+    font-family: 'Consolas', monospace;
+    font-size: 0.78rem;
+    color: #ddd;
+    background: #1b1b22;
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+  }
+  .stack-line-below { color: #6d6d78; }
   .trace-line {
     display: flex;
     flex-wrap: wrap;
@@ -784,6 +794,7 @@
       <button class="tool-tab active" data-tool="trace">Execution Trace</button>
       <button class="tool-tab" data-tool="disasm">Disassembler</button>
       <button class="tool-tab" data-tool="registers">Registers</button>
+      <button class="tool-tab" data-tool="stack">Stack</button>
       <button class="tool-tab" data-tool="memmap">Memory Map</button>
       <button class="tool-tab" data-tool="banking">MBC Banking</button>
     </div>
@@ -814,6 +825,20 @@
     <div class="tool-panel hidden" id="panel-registers">
       <p class="tool-desc">Raw CPU registers, flags, and key PPU/timer I/O values, updated live as the emulator runs.</p>
       <div id="debugOut">—</div>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-stack">
+      <p class="tool-desc">
+        A window of memory around the stack pointer (SP), read out as the 16-bit words the CPU
+        actually pushes and pops — PUSH BC/DE/HL/AF, CALL, RST, and interrupts all write a
+        register pair or return address as two bytes, and POP/RET read one back the same way.
+        The Game Boy's stack grows downward: each PUSH decrements SP first, so lower addresses
+        are "deeper". The highlighted row is the current top of stack — what the next POP or RET
+        would read; rows above it (lower addresses) are still free/unused stack space, rows below
+        it (higher addresses) hold values pushed earlier that haven't been popped yet.
+      </p>
+      <div class="stack-sp-readout" id="stackSpReadout">—</div>
+      <div class="disasm-list" id="stackList"><div class="disasm-empty">Load a ROM to see the stack.</div></div>
     </div>
 
     <div class="tool-panel hidden" id="panel-memmap">
@@ -3449,6 +3474,8 @@ const tileMapImageData = tileMapCtx.createImageData(256, 256); // 32x32 tiles of
 const oamTableBody = document.getElementById('oamTableBody');
 const paletteGrid = document.getElementById('paletteGrid');
 const disasmList = document.getElementById('disasmList');
+const stackList = document.getElementById('stackList');
+const stackSpReadout = document.getElementById('stackSpReadout');
 const traceList = document.getElementById('traceList');
 const btnExportTrace = document.getElementById('btnExportTrace');
 const btnTraceFollow = document.getElementById('btnTraceFollow');
@@ -3642,7 +3669,7 @@ buildBankingPanel();
 const debugToolsContainer = document.getElementById('debugTools');
 const visualToolsContainer = document.getElementById('visualTools');
 const cpuDebugControls = document.getElementById('cpuDebugControls');
-const TOOLS_NEEDING_CPU_CONTROLS = ['trace', 'disasm'];
+const TOOLS_NEEDING_CPU_CONTROLS = ['trace', 'disasm', 'stack'];
 
 function updateCpuControlsVisibility(tool) {
   cpuDebugControls.classList.toggle('hidden', !TOOLS_NEEDING_CPU_CONTROLS.includes(tool));
@@ -4495,6 +4522,36 @@ function drawDisassembly() {
   }
 }
 
+/* ---- Stack panel: a window of 16-bit words around SP ----
+   Rows are aligned to SP itself (not to an even/odd address) since that's what PUSH/POP
+   actually step by two from. WORDS_ABOVE covers still-unused stack space just below SP
+   in address terms (deeper future pushes); WORDS_BELOW covers words already on the stack
+   that a POP/RET further up the call chain would eventually read. */
+function drawStack() {
+  if (!lastROMBytes) { stackList.innerHTML = '<div class="disasm-empty">Load a ROM to see the stack.</div>'; stackSpReadout.textContent = '—'; return; }
+  const mmu = emulator.mmu, sp = emulator.cpu.SP;
+  const WORDS_ABOVE = 6, WORDS_BELOW = 22;
+
+  stackSpReadout.textContent = `SP = ${hex16(sp)}  (top of stack — next POP/RET reads from here)`;
+
+  const rows = [];
+  for (let i = -WORDS_ABOVE; i <= WORDS_BELOW; i++) {
+    const addr = (sp + i * 2) & 0xFFFF;
+    const lo = mmu.read8(addr);
+    const hi = mmu.read8((addr + 1) & 0xFFFF);
+    const word = lo | (hi << 8);
+    rows.push({ addr, word, current: i === 0, below: i > 0 });
+  }
+
+  stackList.innerHTML = rows.map(r =>
+    `<div class="disasm-line${r.current ? ' current' : ''}${r.below && !r.current ? ' stack-line-below' : ''}">` +
+    `${hex16(r.addr)}&nbsp;&nbsp;${hex16(r.word)}${r.current ? '&nbsp;&nbsp;← SP' : ''}</div>`
+  ).join('');
+
+  const cur = stackList.querySelector('.disasm-line.current');
+  if (cur) cur.scrollIntoView({ block: 'center' });
+}
+
 /* ---- 6. Execution trace: scrollback of the last instructions actually executed ---- */
 
 // Sizes #traceList to match the height of the neighboring main-content column (screen +
@@ -4646,6 +4703,7 @@ function refreshDebugTools() {
   const activeDebug = debugToolsContainer.querySelector('.tool-tab.active').dataset.tool;
   if (activeDebug === 'disasm') drawDisassembly();
   else if (activeDebug === 'trace') drawTrace();
+  else if (activeDebug === 'stack') drawStack();
   else if (activeDebug === 'memmap') drawMemMap();
   else if (activeDebug === 'banking') drawBanking();
 

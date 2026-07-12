@@ -39,6 +39,15 @@
     top: 0;
     z-index: 200;
   }
+
+  .nav-divider {
+    width: 1px;
+    align-self: stretch;
+    background: #3a3a45;
+    flex-shrink: 0;
+    margin: 0 2px;
+  }
+
   .navbar .nav-title { font-size: 1.15rem; font-weight: 600; letter-spacing: 1px; color: #eee; flex-shrink: 0; }
   /* Keep the navbar's height stable when switching modes: instead of removing the debug
      controls from the flex layout (which would let the bar shrink to the height of the
@@ -73,6 +82,16 @@
   body.playing-mode .visual-tools-sidebar,
   body.playing-mode .frame-activity-panel { visibility: hidden; }
 
+  /* Manual per-panel visibility toggles (navbar). Unlike the play/debug switch above, these
+     use display:none - the person is choosing to reclaim the screen space, not just pausing
+     debug output, so the other columns should reflow to fill the gap. */
+  .panel-vis-toggles { display: flex; align-items: center; gap: 14px; }
+  .panel-vis-toggle .mode-label { color: #888; }
+  .panel-vis-toggle .mode-label.active { color: #eee; }
+  body.hide-debug-tools .debug-tools-sidebar,
+  body.hide-visual-tools .visual-tools-sidebar,
+  body.hide-frame-activity .frame-activity-panel { display: none; }
+
   .page-content {
     display: flex;
     flex-direction: column;
@@ -99,7 +118,7 @@
     border-radius: 10px;
     padding: 22px 22px 30px;
     box-shadow: 0 10px 30px rgba(0,0,0,.5), inset 0 3px 8px rgba(0,0,0,.6);
-    width: 600px;
+    width: 540px;
     max-width: 90vw;
   }
   .screen-label {
@@ -145,14 +164,14 @@
   }
 
   /* ---- side panel ---- */
-  .panel {
+  .control-panel {
     width: 400px;
     background: #23232c;
     border-radius: 10px;
     padding: 18px;
     box-shadow: 0 6px 18px rgba(0,0,0,.4);
   }
-  .panel h2 { font-size: 1rem; margin: 0 0 10px; color: #ddd; }
+  .control-panel h2 { font-size: 1rem; margin: 0 0 10px; color: #ddd; }
   .file-drop {
     /* The label wraps its text onto two lines via <br>. As an inline element (the
        default for <label>), a border on content that spans multiple lines gets drawn
@@ -360,15 +379,22 @@
   .tool-sidebar h2 { font-size: 1rem; margin: 0 0 10px; color: #ddd; }
 
   .debug-tools-sidebar {
-    width: 400px;
+    width: 440px;
     max-width: 100%;
     display: flex;
     flex-direction: column;
   }
 
   .visual-tools-sidebar {
-    width: 400px;
+    width: 420px;
     max-width: 100%;
+  }
+
+  /* When one sidebar is hidden via its navbar toggle, let the other reclaim the freed
+     space instead of leaving a gap - standard 440px width only applies when both are shown. */
+  body.hide-visual-tools .debug-tools-sidebar,
+  body.hide-debug-tools .visual-tools-sidebar {
+    width: 800px;
   }
 
   .tools-tabs { display: flex; flex-direction: row; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
@@ -1067,6 +1093,9 @@
     </label>
     <span class="mode-label" id="layerTintLabelOn">Layers</span>
   </div>
+
+  <span class="nav-divider"></span>
+
   <div class="mode-toggle dot-matrix-toggle">
     <span class="mode-label" id="dotMatrixLabelOff">Off</span>
     <label class="switch">
@@ -1083,6 +1112,35 @@
     </label>
     <span class="model-label active" id="modelLabelGBP">GBP</span>
   </div>
+
+ <span class="nav-divider"></span>
+
+  <div class="panel-vis-toggles">
+    <div class="mode-toggle panel-vis-toggle" title="Show/hide the Debug Tools panel">
+      <label class="switch">
+        <input type="checkbox" id="debugToolsVisToggle" checked>
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+      </label>
+      <span class="mode-label active" id="debugToolsVisLabel">Debug Tools</span>
+    </div>
+    <div class="mode-toggle panel-vis-toggle" title="Show/hide the Visual Tools panel">
+      <label class="switch">
+        <input type="checkbox" id="visualToolsVisToggle" checked>
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+      </label>
+      <span class="mode-label active" id="visualToolsVisLabel">Visual Tools</span>
+    </div>
+    <div class="mode-toggle panel-vis-toggle" title="Show/hide the Frame Activity panel">
+      <label class="switch">
+        <input type="checkbox" id="frameActivityVisToggle" checked>
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+      </label>
+      <span class="mode-label active" id="frameActivityVisLabel">Frame Act</span>
+    </div>
+  </div>
+
+  <span class="nav-divider"></span>
+
   <div class="mode-toggle">
     <span class="mode-label" id="modeLabelPlay">Play</span>
     <label class="switch">
@@ -1312,7 +1370,7 @@
       </div>
 
       <!-- Control panel -->
-      <div class="panel" id="control-panel">
+      <div class="control-panel" id="control-panel">
         <h2>Load ROM</h2>
         <label class="file-drop" id="dropZone">
           <input type="file" id="fileInput" accept=".gb,.gbc,.bin,.zip">
@@ -1487,7 +1545,7 @@
       <p class="tool-desc">
         The three sources the PPU composites on screen, rendered separately at full
         resolution. Background always fills the frame; Window shows only where WX/WY
-        place it; Sprites shows every on-screen OAM entry. A layer off via LCDC is dimmed.
+        place it; Sprites shows every on-screen OAM entry.
       </p>
       <div class="layers-grid">
         <div class="layer-block">
@@ -1573,8 +1631,7 @@
           Bar height = instructions executed that frame (relative to the tallest bar in view, not
           an absolute count). Since every frame spends the same 70,224 T-cycles regardless, a
           <em>shorter</em> bar doesn't mean less happened — it usually means the CPU ran
-          longer instructions that frame (up to 24T each), or spent more of the frame HALTed,
-          waiting for the next interrupt.
+          longer instructions that frame (up to 24T each), or spent more of the frame HALTed.
         </p>
         <canvas id="frameActivityCanvas" width="900" height="90"></canvas>
         <div class="scanline-legend">
@@ -1635,9 +1692,7 @@
       (V-Blank &gt; STAT &gt; Timer &gt; Serial &gt; Joypad) if more than one is pending at once.<br>
       <b>Instructions:</b> GB instructions take 1-6 M-cycles (4-24T) each, so the ~17,556
       M-cycles available in a frame fit roughly 3,000-6,000 instructions depending on which
-      ones run and how much of the frame the CPU spends HALTed waiting for the next interrupt —
-      which is the main reason the left-hand bar chart's heights vary frame to frame even though
-      every frame is the same length in T-cycles.
+      ones run and how much of the frame the CPU spends HALTed waiting for the next interrupt.
     </p>
   </div>
 
@@ -1658,6 +1713,9 @@ applyScreenModel();
 applyScanlineMark();
 applyLayerTint();
 applyDotMatrix();
+applyDebugToolsVisibility();
+applyVisualToolsVisibility();
+applyFrameActivityVisibility();
 drawFrameActivity();
 drawFrameAnatomy();
 drawLineAnatomy();

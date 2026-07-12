@@ -789,6 +789,41 @@ if (typeof savedUIConfig.dotMatrix === 'boolean') dotMatrixToggle.checked = save
 
 dotMatrixToggle.addEventListener('change', applyDotMatrix);
 
+/* ---- navbar toggles: independently show/hide the Debugging Tools sidebar, the
+   Visualization Tools sidebar, and the Frame Activity panel. Each one is a simple
+   checked=visible/unchecked=hidden switch (unlike the play/debug toggle above, these use
+   display:none in CSS, so hiding a panel actually reclaims its layout space). Persisted
+   in the shared UI config so hidden panels stay hidden on the next visit. */
+function makePanelVisToggle(toggleId, labelId, bodyClass, configKey, onShow) {
+  const toggle = document.getElementById(toggleId);
+  const label = document.getElementById(labelId);
+
+  function apply() {
+    const visible = toggle.checked;
+    document.body.classList.toggle(bodyClass, !visible);
+    label.classList.toggle('active', visible);
+    saveUIConfig({ [configKey]: visible });
+    if (visible && typeof onShow === 'function') onShow();
+  }
+
+  if (typeof savedUIConfig[configKey] === 'boolean') toggle.checked = savedUIConfig[configKey];
+  toggle.addEventListener('change', apply);
+  return apply;
+}
+
+const applyDebugToolsVisibility = makePanelVisToggle(
+  'debugToolsVisToggle', 'debugToolsVisLabel', 'hide-debug-tools', 'showDebugTools',
+  () => refreshDebugTools()
+);
+const applyVisualToolsVisibility = makePanelVisToggle(
+  'visualToolsVisToggle', 'visualToolsVisLabel', 'hide-visual-tools', 'showVisualTools',
+  () => refreshDebugTools()
+);
+const applyFrameActivityVisibility = makePanelVisToggle(
+  'frameActivityVisToggle', 'frameActivityVisLabel', 'hide-frame-activity', 'showFrameActivity',
+  () => { drawFrameActivity(); drawFrameAnatomy(); drawLineAnatomy(); }
+);
+
 /* ---- 1. VRAM tile viewer: every tile in 0x8000-0x97FF, raw, no palette ---- */
 function drawTileViewer() {
   const vram = emulator.mmu.vram;

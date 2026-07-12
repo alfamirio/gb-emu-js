@@ -437,6 +437,22 @@
     display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
   }
   .scope-sub { font-size: 0.68rem; color: #888; font-weight: normal; white-space: nowrap; }
+  .scope-title { display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .scope-mute-btn {
+    flex-shrink: 0;
+    background: none;
+    border: 1px solid #444;
+    border-radius: 5px;
+    color: #ccc;
+    font-size: 0.78rem;
+    line-height: 1;
+    padding: 3px 6px;
+    cursor: pointer;
+    transition: border-color .15s, opacity .15s, background .15s;
+  }
+  .scope-mute-btn:hover { border-color: var(--accent); }
+  .scope-mute-btn.muted { opacity: 0.55; border-color: #b93a3a; background: rgba(185, 58, 58, .15); }
+  .scope-block.muted canvas { opacity: 0.35; }
   .scope-block canvas { display: block; width: 100%; height: 80px; background: #000; border-radius: 4px; }
   .swatch-row { display: flex; gap: 6px; }
   .swatch { width: 40px; text-align: center; }
@@ -974,19 +990,27 @@
       </p>
       <div class="scope-grid">
         <div class="scope-block">
-          <h3>CH1 <span class="scope-sub">Square + Sweep</span></h3>
+          <h3><span class="scope-title">CH1 <span class="scope-sub">Square + Sweep</span></span>
+            <button class="scope-mute-btn" id="scopeMute1" data-ch="0" title="Mute CH1">🔊</button>
+          </h3>
           <canvas id="scopeCh1" width="280" height="80"></canvas>
         </div>
         <div class="scope-block">
-          <h3>CH2 <span class="scope-sub">Square</span></h3>
+          <h3><span class="scope-title">CH2 <span class="scope-sub">Square</span></span>
+            <button class="scope-mute-btn" id="scopeMute2" data-ch="1" title="Mute CH2">🔊</button>
+          </h3>
           <canvas id="scopeCh2" width="280" height="80"></canvas>
         </div>
         <div class="scope-block">
-          <h3>CH3 <span class="scope-sub">Wave</span></h3>
+          <h3><span class="scope-title">CH3 <span class="scope-sub">Wave</span></span>
+            <button class="scope-mute-btn" id="scopeMute3" data-ch="2" title="Mute CH3">🔊</button>
+          </h3>
           <canvas id="scopeCh3" width="280" height="80"></canvas>
         </div>
         <div class="scope-block">
-          <h3>CH4 <span class="scope-sub">Noise</span></h3>
+          <h3><span class="scope-title">CH4 <span class="scope-sub">Noise</span></span>
+            <button class="scope-mute-btn" id="scopeMute4" data-ch="3" title="Mute CH4">🔊</button>
+          </h3>
           <canvas id="scopeCh4" width="280" height="80"></canvas>
         </div>
       </div>
@@ -2327,6 +2351,10 @@ class APU {
     this.scriptNode = null;
     this.masterGain = null;
     this.muted = false;
+    // Per-channel mute, driven by the oscilloscope UI - silences that channel's contribution
+    // to both the mixed audio output and its own scope trace (which flatlines, same as a
+    // channel that's simply off). Indexed 0-3 for CH1-CH4.
+    this.chMuted = [false, false, false, false];
     this.volume = 0.5;
   }
 
@@ -2680,11 +2708,11 @@ class APU {
   generateSample() {
     if (!this.enabled) { this.pushSample(0, 0); this.pushScopeSample(0, 0, 0, 0); return; }
 
-    const amp1 = this.ch1.enabled ? APU_DUTY_TABLE[this.ch1.duty][this.ch1.dutyStep] * this.ch1.volume : 0;
-    const amp2 = this.ch2.enabled ? APU_DUTY_TABLE[this.ch2.duty][this.ch2.dutyStep] * this.ch2.volume : 0;
+    const amp1 = (this.ch1.enabled && !this.chMuted[0]) ? APU_DUTY_TABLE[this.ch1.duty][this.ch1.dutyStep] * this.ch1.volume : 0;
+    const amp2 = (this.ch2.enabled && !this.chMuted[1]) ? APU_DUTY_TABLE[this.ch2.duty][this.ch2.dutyStep] * this.ch2.volume : 0;
     let amp3 = 0;
-    if (this.ch3.enabled && this.ch3.volumeShift > 0) amp3 = this.getWaveSample() >> (this.ch3.volumeShift - 1);
-    const amp4 = this.ch4.enabled ? ((~this.ch4.lfsr) & 1) * this.ch4.volume : 0;
+    if (this.ch3.enabled && !this.chMuted[2] && this.ch3.volumeShift > 0) amp3 = this.getWaveSample() >> (this.ch3.volumeShift - 1);
+    const amp4 = (this.ch4.enabled && !this.chMuted[3]) ? ((~this.ch4.lfsr) & 1) * this.ch4.volume : 0;
 
     // Each channel's 4-bit DAC maps 0-15 to roughly -1..1
     const dac = v => (v / 7.5) - 1;
@@ -3290,7 +3318,7 @@ btnStep1s.addEventListener('click', () => {
 const SOUND_STORAGE_KEY = 'jsgb-config:sound';
 
 function saveSoundConfig() {
-  try { localStorage.setItem(SOUND_STORAGE_KEY, JSON.stringify({ muted: isMuted, volume: Number(volumeSlider.value) })); }
+  try { localStorage.setItem(SOUND_STORAGE_KEY, JSON.stringify({ muted: isMuted, volume: Number(volumeSlider.value), channelMuted: emulator.apu.chMuted })); }
   catch (e) { /* storage unavailable/full - ignore, setting just won't persist */ }
 }
 
@@ -3839,6 +3867,31 @@ const scopeCanvases = {
   3: document.getElementById('scopeCh3'),
   4: document.getElementById('scopeCh4'),
 };
+
+// Per-channel mute buttons: toggles emulator.apu.chMuted[i], which silences that channel in
+// both the mixed audio output and its own scope trace. Restored from - and persisted to -
+// the same sound-settings storage as the master mute/volume controls.
+const scopeMuteButtons = document.querySelectorAll('.scope-mute-btn');
+scopeMuteButtons.forEach(btn => {
+  const ch = Number(btn.dataset.ch);
+  if (savedSoundConfig && Array.isArray(savedSoundConfig.channelMuted) && savedSoundConfig.channelMuted[ch]) {
+    emulator.apu.chMuted[ch] = true;
+  }
+  updateScopeMuteButton(btn, ch);
+  btn.addEventListener('click', () => {
+    emulator.apu.chMuted[ch] = !emulator.apu.chMuted[ch];
+    updateScopeMuteButton(btn, ch);
+    saveSoundConfig();
+  });
+});
+
+function updateScopeMuteButton(btn, ch) {
+  const muted = emulator.apu.chMuted[ch];
+  btn.textContent = muted ? '🔇' : '🔊';
+  btn.title = (muted ? 'Unmute CH' : 'Mute CH') + (ch + 1);
+  btn.classList.toggle('muted', muted);
+  btn.closest('.scope-block').classList.toggle('muted', muted);
+}
 
 function drawScopeChannel(canvas, buffer, writePos, color) {
   const ctx = canvas.getContext('2d');

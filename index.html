@@ -1054,8 +1054,8 @@
 
         <div class="sound-row">
           <button class="ui-btn" id="btnMute">🔊 Mute</button>
-          <input type="range" id="volumeSlider" min="0" max="100" step="5" value="50">
-          <span class="volume-label" id="volumeLabel">50%</span>
+          <input type="range" id="volumeSlider">
+          <span class="volume-label" id="volumeLabel"></span>
         </div>
 
         <div class="speed-row">
@@ -3733,9 +3733,37 @@ const bpStatus = document.getElementById('bpStatus');
 
 let lastROMBytes = null;
 
-/* ---- unified UI config: model (GB/GBP), play/debug mode, "mark current line", and emulation
-   speed all live together in one localStorage entry so they're restored together on next visit
-   (sound mute/volume keep their own separate entry below, since they're wired up independently). */
+/* ---- app-level UI/feature configuration ----
+   Constants for the UI and feature layer only - NOT emulator-core values (CPU cycle
+   counts, PPU timing, hardware register bit widths, etc. stay as their real hardware
+   numbers, defined right where they're used in the CPU/PPU/APU/MMU classes). Grouping
+   these UI-layer numbers here means tweaking e.g. the volume step or how many save slots
+   are kept doesn't mean hunting through the file for a raw number typed inline. */
+const APP_CONFIG = {
+  MAX_SAVE_SLOTS: 5,                  // save-state slots kept per ROM (oldest dropped first)
+  VOLUME_MIN: 0,
+  VOLUME_MAX: 100,
+  VOLUME_STEP: 5,                     // volume slider/percentage only moves in steps this size
+  VOLUME_DEFAULT: 50,
+  TURBO_SPEED: 2,                     // emulation speed multiplier the T hotkey toggles to
+  SCREENSHOT_WEBP_QUALITY: 0.80,      // canvas.toBlob() quality for the screenshot feature
+  RECORDING_TIMER_LABEL_INTERVAL_MS: 500, // how often the video/audio recording timer label updates
+  VIDEO_CAPTURE_FPS: 30,              // frame rate requested from canvas.captureStream() for clips
+  // Codec preference order for gameplay clips: tried in order, first one the browser's
+  // MediaRecorder actually supports wins. vp9 preferred over vp8 for better quality/size.
+  VIDEO_MIME_CANDIDATES: ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'],
+  // Codec preference order for standalone audio export: Ogg/Opus preferred (a "real"
+  // standalone .opus file) over WebM/Opus (still Opus audio, just a different container).
+  AUDIO_MIME_CANDIDATES: ['audio/ogg;codecs=opus', 'audio/webm;codecs=opus'],
+  VIDEO_BITRATE_KBPS: 200,           // target bitrate for gameplay clip recording (video track)
+  CLIP_AUDIO_BITRATE_KBPS: 32,       // target bitrate for the audio track inside a gameplay clip
+  AUDIO_EXPORT_BITRATE_KBPS: 32,     // target bitrate for the standalone audio-only export
+};
+
+/* ---- unified UI config: model (GB/GBP), play/debug mode, and "mark current line" all live
+   together in one localStorage entry so they're restored together on next visit (sound
+   mute/volume keep their own separate entry below, since they're wired up independently;
+   emulation speed is deliberately NOT persisted here - it always starts back at 1x). */
 const UI_CONFIG_STORAGE_KEY = 'jsgb-config:ui';
 
 function loadUIConfig() {
@@ -4189,11 +4217,23 @@ const btnMute = document.getElementById('btnMute');
 const volumeSlider = document.getElementById('volumeSlider');
 const volumeLabel = document.getElementById('volumeLabel');
 
+volumeSlider.min = APP_CONFIG.VOLUME_MIN;
+volumeSlider.max = APP_CONFIG.VOLUME_MAX;
+volumeSlider.step = APP_CONFIG.VOLUME_STEP;
+volumeSlider.value = APP_CONFIG.VOLUME_DEFAULT;
+
+// Snaps a percentage onto the configured step (e.g. a value saved before VOLUME_STEP
+// existed, or from editing config by hand) so the slider and label are never out of sync
+// with what dragging/arrow-keys can actually produce.
+function snapToVolumeStep(pct) {
+  return Math.round(pct / APP_CONFIG.VOLUME_STEP) * APP_CONFIG.VOLUME_STEP;
+}
+
 const savedSoundConfig = loadSoundConfig();
-if (savedSoundConfig && typeof savedSoundConfig.volume === 'number') volumeSlider.value = Math.round(savedSoundConfig.volume / 5) * 5;
+if (savedSoundConfig && typeof savedSoundConfig.volume === 'number') volumeSlider.value = snapToVolumeStep(savedSoundConfig.volume);
 let isMuted = !!(savedSoundConfig && savedSoundConfig.muted);
 
-emulator.apu.setVolume(volumeSlider.value / 100);
+emulator.apu.setVolume(volumeSlider.value / APP_CONFIG.VOLUME_MAX);
 emulator.apu.setMuted(isMuted);
 btnMute.textContent = isMuted ? '🔇 Unmute' : '🔊 Mute';
 volumeLabel.textContent = volumeSlider.value + '%';
@@ -4205,7 +4245,7 @@ btnMute.addEventListener('click', () => {
   saveSoundConfig();
 });
 volumeSlider.addEventListener('input', () => {
-  emulator.apu.setVolume(volumeSlider.value / 100);
+  emulator.apu.setVolume(volumeSlider.value / APP_CONFIG.VOLUME_MAX);
   volumeLabel.textContent = volumeSlider.value + '%';
   saveSoundConfig();
 });
@@ -4236,7 +4276,7 @@ window.addEventListener('keydown', (e) => {
   const tag = e.target.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA') return;
   e.preventDefault();
-  setSpeed(emulator.speed === 2 ? 1 : 2);
+  setSpeed(emulator.speed === APP_CONFIG.TURBO_SPEED ? 1 : APP_CONFIG.TURBO_SPEED);
 });
 
 /* ---- keyboard input ---- */
@@ -5647,7 +5687,7 @@ setInterval(() => { if (!emulator.running) refreshDebugTools(); }, 150);
      - Export/Import .json -> moves a single snapshot in or out as a downloadable file
    ========================================================================================= */
 
-const MAX_SLOTS = 5;
+const MAX_SLOTS = APP_CONFIG.MAX_SAVE_SLOTS;
 
 const btnSaveState = document.getElementById('btnSaveState');
 const btnLoadState = document.getElementById('btnLoadState');
@@ -5960,7 +6000,7 @@ btnScreenshot.addEventListener('click', () => {
     if (!blob) { alert('Could not capture screenshot (WEBP encoding is not supported in this browser).'); return; }
     downloadBlob(blob, `${safeRomName()}_${Date.now()}.webp`);
     captureInfo.textContent = 'Screenshot saved ✓';
-  }, 'image/webp', 0.92);
+  }, 'image/webp', APP_CONFIG.SCREENSHOT_WEBP_QUALITY);
 });
 
 /* ---- gameplay clip recording ----
@@ -5975,8 +6015,7 @@ let clipTimerId = null;
 let clipStartedAt = 0;
 
 function pickClipMimeType() {
-  const candidates = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
-  return candidates.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+  return APP_CONFIG.VIDEO_MIME_CANDIDATES.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
 }
 
 function updateClipTimer() {
@@ -5993,7 +6032,7 @@ function startClipRecording() {
 
   emulator.apu.initAudio(); // no-op if already set up; safe here since a click is a user gesture
 
-  const videoStream = canvas.captureStream(60);
+  const videoStream = canvas.captureStream(APP_CONFIG.VIDEO_CAPTURE_FPS);
   const tracks = [...videoStream.getVideoTracks()];
   if (emulator.apu.audioCtx && emulator.apu.masterGain) {
     clipAudioDest = emulator.apu.audioCtx.createMediaStreamDestination();
@@ -6002,7 +6041,11 @@ function startClipRecording() {
   }
 
   clipChunks = [];
-  clipRecorder = new MediaRecorder(new MediaStream(tracks), { mimeType });
+  clipRecorder = new MediaRecorder(new MediaStream(tracks), {
+    mimeType,
+    videoBitsPerSecond: APP_CONFIG.VIDEO_BITRATE_KBPS * 1000,
+    audioBitsPerSecond: APP_CONFIG.CLIP_AUDIO_BITRATE_KBPS * 1000,
+  });
   clipRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) clipChunks.push(e.data); };
   clipRecorder.onstop = () => {
     if (clipAudioDest) { emulator.apu.masterGain.disconnect(clipAudioDest); clipAudioDest = null; }
@@ -6021,7 +6064,7 @@ function startClipRecording() {
   clipRecorder.start();
   clipStartedAt = Date.now();
   updateClipTimer();
-  clipTimerId = setInterval(updateClipTimer, 500);
+  clipTimerId = setInterval(updateClipTimer, APP_CONFIG.RECORDING_TIMER_LABEL_INTERVAL_MS);
   btnRecordClip.textContent = '⏹ Video';
   btnRecordClip.classList.add('recording');
 }
@@ -6054,8 +6097,7 @@ let audioTimerId = null;
 let audioStartedAt = 0;
 
 function pickAudioMimeType() {
-  const candidates = ['audio/ogg;codecs=opus', 'audio/webm;codecs=opus'];
-  return candidates.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+  return APP_CONFIG.AUDIO_MIME_CANDIDATES.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
 }
 
 function audioFileExtension(mimeType) {
@@ -6081,7 +6123,10 @@ function startAudioRecording() {
   emulator.apu.masterGain.connect(audioDest); // fans out alongside the existing speaker connection
 
   audioChunks = [];
-  audioRecorder = new MediaRecorder(audioDest.stream, { mimeType });
+  audioRecorder = new MediaRecorder(audioDest.stream, {
+    mimeType,
+    audioBitsPerSecond: APP_CONFIG.AUDIO_EXPORT_BITRATE_KBPS * 1000,
+  });
   audioRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
   audioRecorder.onstop = () => {
     emulator.apu.masterGain.disconnect(audioDest);
@@ -6100,7 +6145,7 @@ function startAudioRecording() {
   audioRecorder.start();
   audioStartedAt = Date.now();
   updateAudioTimer();
-  audioTimerId = setInterval(updateAudioTimer, 500);
+  audioTimerId = setInterval(updateAudioTimer, APP_CONFIG.RECORDING_TIMER_LABEL_INTERVAL_MS);
   btnRecordAudio.textContent = '⏹ Audio';
   btnRecordAudio.classList.add('recording');
 }

@@ -99,7 +99,22 @@ Notes: MBC1 and MBC5 together dominate the library (adoption flipped to MBC5 onc
 
 ## Further reading
 
-**[Pan Docs](https://gbdev.io/pandocs/)** is the definitive community-maintained Game Boy hardware reference this emulator is based on. You can use rgbds and [rgbds-live](https://github.com/gbdev/rgbds-live) to compile your own games.
+**[Pan Docs](https://gbdev.io/pandocs/)** is the definitive community-maintained Game Boy hardware reference this emulator is based on. You can use rgbds and [rgbds-live](https://github.com/gbdev/rgbds-live) to compile your own games. A small snake demo game is included in this repository, compiled from asm and c code also included.
+
+You can find GB homebrew games at [itch.io](https://itch.io/games/free/tag-gameboy).
+
+Examples:
+- [birb](https://lazydevs.itch.io/birb). H platf.
+- [cherry rescue](https://grafxkid.itch.io/cherry-rescue). H platf.
+- [dmg deals damage](https://drludos.itch.io/dmg-deals-damage). Battle.
+- [wrecking balloon](https://neighto.itch.io/wrecking-balloon). Battle.
+- [dangan gb](https://snorpung.itch.io/dangan-gb). Battle.
+- [dino advance](https://frzit.itch.io/google-dino-advance). Survive.
+- [black castle](https://user0x7f.itch.io/black-castle) and [black castle 2](https://user0x7f.itch.io/black-castle-2). Exploration.
+- [dogs muck island](https://soully.itch.io/dogs-muck-island). Exploration.
+- [hop n revoke](https://jaiware.itch.io/hop-n-revoke). Puzzle.
+- [sheep it up](https://drludos.itch.io/sheep-it-up). V platf.
+- [tobu tobu girl](https://tangramgames.itch.io/tobutobugirl). V platf.
 
 ## Keyboard controls
 

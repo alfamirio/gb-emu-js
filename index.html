@@ -1447,10 +1447,11 @@ class MMU {
   loadROM(bytes) {
     this.rom = bytes;
     const cartType = bytes[0x147];
-    if (cartType === 0x00) this.mbcType = 0;
-    else if (cartType >= 0x01 && cartType <= 0x03) this.mbcType = 1;
-    else if (cartType >= 0x0F && cartType <= 0x13) this.mbcType = 3;
-    else this.mbcType = 1; // reasonable fallback for less common mappers
+    this.cartTypeByte = cartType;
+    if (cartType === 0x00) { this.mbcType = 0; this.cartTypeSupported = true; }
+    else if (cartType >= 0x01 && cartType <= 0x03) { this.mbcType = 1; this.cartTypeSupported = true; }
+    else if (cartType >= 0x0F && cartType <= 0x13) { this.mbcType = 3; this.cartTypeSupported = true; }
+    else { this.mbcType = 1; this.cartTypeSupported = false; } // unrecognized mapper: fall back to MBC1 behavior, best-effort only
 
     this.currentROMBank = 1;
     this.currentRAMBank = 0;
@@ -3687,13 +3688,40 @@ function getROMTitle(bytes) {
   }
   return title.trim() || 'Unknown';
 }
+// Every officially-assigned cartridge type byte (header offset 0x147), so unsupported
+// mappers can still be identified by name in the UI instead of just showing a raw hex value.
+const CART_TYPE_NAMES = {
+  0x00: 'ROM ONLY', 0x01: 'MBC1', 0x02: 'MBC1+RAM', 0x03: 'MBC1+RAM+BATTERY',
+  0x05: 'MBC2', 0x06: 'MBC2+BATTERY',
+  0x08: 'ROM+RAM', 0x09: 'ROM+RAM+BATTERY',
+  0x0B: 'MMM01', 0x0C: 'MMM01+RAM', 0x0D: 'MMM01+RAM+BATTERY',
+  0x0F: 'MBC3+TIMER+BATTERY', 0x10: 'MBC3+TIMER+RAM+BATTERY', 0x11: 'MBC3',
+  0x12: 'MBC3+RAM', 0x13: 'MBC3+RAM+BATTERY',
+  0x19: 'MBC5', 0x1A: 'MBC5+RAM', 0x1B: 'MBC5+RAM+BATTERY',
+  0x1C: 'MBC5+RUMBLE', 0x1D: 'MBC5+RUMBLE+RAM', 0x1E: 'MBC5+RUMBLE+RAM+BATTERY',
+  0x20: 'MBC6', 0x22: 'MBC7+SENSOR+RUMBLE+RAM+BATTERY',
+  0xFC: 'POCKET CAMERA', 0xFD: 'BANDAI TAMA5', 0xFE: 'HuC3', 0xFF: 'HuC1+RAM+BATTERY',
+};
+// The mapper families this emulator actually implements bank-switching logic for.
+// (0x0F-0x13 includes the MBC3 RTC support added above.)
+function isCartTypeSupported(t) {
+  return t === 0x00 || (t >= 0x01 && t <= 0x03) || (t >= 0x0F && t <= 0x13);
+}
 function getMBCName(bytes) {
   const t = bytes[0x147];
-  const names = { 0x00: 'ROM ONLY', 0x01: 'MBC1', 0x02: 'MBC1+RAM', 0x03: 'MBC1+RAM+BATTERY',
-                  0x0F: 'MBC3+TIMER+BATTERY', 0x10: 'MBC3+TIMER+RAM+BATTERY', 0x11: 'MBC3',
-                  0x12: 'MBC3+RAM', 0x13: 'MBC3+RAM+BATTERY' };
-  return names[t] || ('Type 0x' + t.toString(16) + ' (treated as MBC1)');
+  return CART_TYPE_NAMES[t] || ('Unknown type 0x' + t.toString(16));
 }
+// Returns a short warning string when the cartridge uses a mapper this emulator doesn't
+// actually implement (it silently falls back to MBC1-style banking, which will misbehave
+// for anything with different bank-select widths, extra RAM chip behavior, rumble, an
+// accelerometer, a camera sensor, etc.) Returns null for mappers that are fully supported.
+function getMBCCompatibilityWarning(bytes) {
+  const t = bytes[0x147];
+  if (isCartTypeSupported(t)) return null;
+  const name = CART_TYPE_NAMES[t] || ('unknown type 0x' + t.toString(16));
+  return `This ROM uses ${name}, which isn't implemented. Falling back to MBC1-style banking - expect glitches, save data that doesn't stick, or a game that doesn't boot.`;
+}
+
 
 // File-integrity checksums for the loaded ROM image, computed over the raw file bytes -
 // the same values a ROM database (No-Intro, GoodTools, etc.) or a "verify my dump" tool
@@ -3815,8 +3843,10 @@ async function loadROMBytes(bytes) {
   lastROMBytes = bytes;
   emulator.loadROM(bytes);
   const checksums = await computeChecksums(bytes);
+  const mbcWarning = getMBCCompatibilityWarning(bytes);
   romInfo.innerHTML = `<b>${getROMTitle(bytes)}</b><br>Mapper: ${getMBCName(bytes)}<br>Size: ${(bytes.length / 1024).toFixed(0)} KB` +
-    `<br>Checksum: 0x${checksums.crc32}`;
+    `<br>Checksum: 0x${checksums.crc32}` +
+    (mbcWarning ? `<br><span style="color:#e8794b">⚠ ${mbcWarning}</span>` : '');
   renderChecksumBadges(checksums);
   lastRenderedAccessSeq = -1;
   lastRenderedBankSwitchT = -1;
@@ -4215,7 +4245,8 @@ function buildBankingPanel() {
   bankingDesc.innerHTML = romBytes === 0
     ? 'Load a ROM to see its mapper and which ROM/RAM banks are currently switched in.'
     : `Mapper: <b>${getMBCName(mmu.rom)}</b> &middot; ${romBankTotal} ROM bank(s) of 16KB` +
-      (ramBankTotal ? ` &middot; up to ${ramBankTotal} RAM bank(s) of 8KB` : ' &middot; no external RAM');
+      (ramBankTotal ? ` &middot; up to ${ramBankTotal} RAM bank(s) of 8KB` : ' &middot; no external RAM') +
+      (!mmu.cartTypeSupported ? `<br><span style="color:#e8794b">⚠ Unsupported mapper - banking below is simulated as MBC1 and won't match real hardware.</span>` : '');
 
   bankingWindows.innerHTML = `
     <div class="bank-window" id="bwFixed">

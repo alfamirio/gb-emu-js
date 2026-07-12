@@ -253,6 +253,32 @@ Real hardware runs everything off one master clock (4.194304 MHz = 4,194,304 T-c
 
 > **💡 Try this:** Open Frame Activity, click through a few recent frames on the left, then click a scanline in "Anatomy of frame" to drill all the way into that single line's 456T breakdown in "Anatomy of line" below it. Compare a visible line against a V-Blank line to see the mode split disappear entirely — then check the CPU/PPU debug panel's `DIV`/`TIMA` values and the Oscilloscope at the same moment, to see that neither one so much as blinks at the line boundary you just picked.
 
+## MBC reference: every known Game Boy mapper
+
+This emulator only implements **ROM ONLY**, **MBC1**, and **MBC3** (see [Scope limitations](#scope-limitations)), but real cartridges used a much wider range of mapper chips. This table is a reference for the full landscape — useful context if you're extending this project's MMU or just curious how your favorite game saved its progress. Percentages are rough estimates from cartridge-database surveys, not an official figure, since no definitive count of the full library-by-mapper exists.
+
+| Mapper | Implemented here? | Max ROM | Max RAM | RTC | Rumble | ~% of library | Example games |
+|---|---|---|---|---|---|---|---|
+| **ROM ONLY** | ✅ | 32 KB | 8 KB (optional) | No | No | ~2-3% | *Tetris*, *Alleyway* |
+| **MBC1** | ✅ | 2 MB (125 usable banks — banks `0x20`/`0x40`/`0x60` are unreachable due to a hardware quirk) | 32 KB | No | No | ~35-40% | *Pokémon Red/Blue*, *Super Mario Land 2*, *Zelda: Link's Awakening*, *Kirby's Dream Land 2* |
+| **MBC2** | ❌ | 256 KB | 512×4 bits, built into the MBC2 chip itself (no external RAM) | No | No | ~2-3% | *Kirby's Pinball Land*, *Kid Icarus: Of Myths & Monsters*, *Final Fantasy Legend* |
+| **MBC3** | ✅ (basic) | 2 MB | 32 KB (64 KB on Japanese Pokémon Crystal / MBC30) | ✅ | No | ~15-20% | *Pokémon Gold/Silver/Crystal*, *Pokémon Red/Blue* (US) |
+| **MBC5** | ❌ | 8 MB | 128 KB | No | ✅ (optional) | ~35-40% | *Pokémon Yellow*, *Wario Land 3*, *Pokémon Pinball* |
+| **MBC6** | ❌ | ~4 Mb | Flash memory + battery RAM | No | No | <0.05% (1 game) | *Net de Get - Minigame @ 100* (JP) |
+| **MBC7** | ❌ | 2 MB | EEPROM + built-in accelerometer | No | No | <0.1% (2 games) | *Kirby's Tilt 'n' Tumble*, *Command Master* |
+| **MMM01** | ❌ | 8 MB total | 128 KB | No | No | <0.1% | *Momotarou Collection 2*, *Taito Variety Pack* (multicart "metamapper") |
+| **HuC-1** | ❌ | 2 MB | 32 KB | No | No | <0.3% (~7 games) | *Pokémon Card GB*, *Nectaris GB* (adds infrared LED I/O) |
+| **HuC-3** | ❌ | 2 MB | 32 KB | ✅ | No | <0.2% (~4 games) | *Robopon* series, *Pocket Family* |
+| **TAMA5** | ❌ | — | EEPROM | ✅ | No | <0.05% (1 game) | *Game de Hakken!! Tamagotchi* |
+| **Pocket Camera** | ❌ | — | Flash + camera sensor | No | No | 1 device | Game Boy Camera |
+| **MBC4** | ❌ | — | — | — | — | 0% | Never used in any released cartridge — the number was skipped entirely |
+
+A few notes worth calling out:
+* **MBC1 and MBC5 together make up the large majority of the library.** MBC1 dominated the original DMG era; adoption flipped almost overnight to MBC5 once the Game Boy Color launched in 1998, since MBC5 is the only Nintendo mapper guaranteed to work correctly in CGB double-speed mode.
+* **MBC3 is the only mapper here with a built-in real-time clock**, requiring an external 32.768 kHz quartz crystal and a battery to keep ticking while the console is off — this is how *Pokémon Gold/Silver/Crystal* tracked in-game day/night and berry growth even with the cartridge unplugged.
+* **MBC2's RAM lives inside the mapper chip itself** rather than a separate RAM chip, which is why it's capped at a tiny 512×4-bit (256-byte) save area regardless of ROM size.
+* Everything from **MBC6 down to Pocket Camera** was a one-or-two-game custom solution built for a specific piece of hardware the standard mappers couldn't support (Tamagotchi logic, an accelerometer, a physical camera sensor, IR communication) — not worth implementing unless you specifically want to run that one game.
+
 ## Further reading
 
 For the full, definitive hardware reference this emulator is based on, see **[Pan Docs](https://gbdev.io/pandocs/)** — the community-maintained, single most comprehensive Game Boy technical reference, covering the CPU instruction set, memory map, PPU/LCD behavior, MBC mappers, timers, and sound hardware in far more depth than this README.

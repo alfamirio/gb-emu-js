@@ -53,15 +53,51 @@ const REG_DERIVED = {
 /* ---- 1. VRAM tile viewer refs ---- */
 const tileViewerCanvas = document.getElementById('tileViewerCanvas');
 const tileViewerCtx = tileViewerCanvas.getContext('2d');
-const tileViewerImageData = tileViewerCtx.createImageData(128, 192); // 16x24 tiles of 8x8
+// Grid layout: 16 cols x 24 rows of tiles, with a 1px (native) gap between/around cells so
+// hovering can visually pick out one tile from the next. Each source pixel is drawn as a
+// TV_SCALE x TV_SCALE block (supersampled) rather than 1:1, so that fixed 1px gap ends up
+// thinner relative to the tile art - and thinner on screen, since the canvas's overall CSS
+// size doesn't change, just its internal pixel density. TV_W/TV_H are the canvas's real pixel
+// dimensions once cells + gaps are included.
+const TV_COLS = 16, TV_ROWS = 24, TV_SCALE = 2, TV_CELL = 8 * TV_SCALE, TV_GAP = 1;
+const TV_PITCH = TV_CELL + TV_GAP;
+const TV_W = TV_COLS * TV_PITCH + TV_GAP;  // 273
+const TV_H = TV_ROWS * TV_PITCH + TV_GAP;  // 409
+const tileViewerImageData = tileViewerCtx.createImageData(TV_W, TV_H);
+const tileViewerWrap = document.getElementById('tileViewerWrap');
+const tileViewerHover = document.getElementById('tileViewerHover');
+const tileViewerTooltip = document.getElementById('tileViewerTooltip');
+
 
 /* ---- 2a. Tile map viewer refs ---- */
 const tileMapCanvas = document.getElementById('tileMapCanvas');
 const tileMapCtx = tileMapCanvas.getContext('2d');
 const tileMapImageData = tileMapCtx.createImageData(256, 256); // 32x32 tiles of 8x8
 
+/* ---- 2b. Tile inspector refs: decodes any 16 bytes at a user-given address as one 8x8 tile.
+   Rendered by painting the true 8x8 pixels onto an offscreen canvas, then scaling that up onto
+   the visible (larger) canvas with smoothing off, so it stays crisp instead of blurry. */
+const tileInspectCanvas = document.getElementById('tileInspectCanvas');
+const tileInspectCtx = tileInspectCanvas.getContext('2d');
+tileInspectCtx.imageSmoothingEnabled = false;
+const tileInspectSrcCanvas = document.createElement('canvas');
+tileInspectSrcCanvas.width = 8; tileInspectSrcCanvas.height = 8;
+const tileInspectSrcCtx = tileInspectSrcCanvas.getContext('2d');
+const tileInspectImageData = tileInspectSrcCtx.createImageData(8, 8);
+const tileInspectAddrInput = document.getElementById('tileInspectAddr');
+const tileInspectBytesEl = document.getElementById('tileInspectBytes');
+const tileInspectPrevBtn = document.getElementById('tileInspectPrev');
+const tileInspectNextBtn = document.getElementById('tileInspectNext');
+const tileInspectGoBtn = document.getElementById('tileInspectGo');
+let tileInspectAddr = 0x8000; // default: start of tile data table 0
+
 /* ---- 3. OAM / sprite inspector refs ---- */
 const oamTableBody = document.getElementById('oamTableBody');
+const oamCompCanvas = document.getElementById('oamCompCanvas');
+const oamCompCtx = oamCompCanvas.getContext('2d');
+const oamCompWrap = document.getElementById('oamCompWrap');
+const oamCompHover = document.getElementById('oamCompHover');
+const oamCompTooltip = document.getElementById('oamCompTooltip');
 
 /* ---- 4. Palette panel refs ---- */
 const paletteGrid = document.getElementById('paletteGrid');
@@ -828,8 +864,16 @@ const applyFrameActivityVisibility = makePanelVisToggle(
 function drawTileViewer() {
   const vram = emulator.mmu.vram;
   const data = tileViewerImageData.data;
+
+  // Fill the whole canvas with the grid-line color first; tile pixels get painted over the
+  // top of it below, so only the 1px gaps between/around cells are left showing through.
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = 42; data[i + 1] = 42; data[i + 2] = 50; data[i + 3] = 255;
+  }
+
   for (let tile = 0; tile < 384; tile++) {
-    const originX = (tile % 16) * 8, originY = Math.floor(tile / 16) * 8;
+    const col = tile % TV_COLS, row = Math.floor(tile / TV_COLS);
+    const originX = TV_GAP + col * TV_PITCH, originY = TV_GAP + row * TV_PITCH;
     const base = tile * 16;
     for (let py = 0; py < 8; py++) {
       const lo = vram[base + py * 2], hi = vram[base + py * 2 + 1];
@@ -837,13 +881,57 @@ function drawTileViewer() {
         const bit = 7 - px;
         const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
         const shade = 255 - colorNum * 85; // 0->white .. 3->black, palette-agnostic
-        const idx = ((originY + py) * 128 + (originX + px)) * 4;
-        data[idx] = shade; data[idx + 1] = shade; data[idx + 2] = shade; data[idx + 3] = 255;
+        // Supersample: each source pixel becomes a TV_SCALE x TV_SCALE block.
+        for (let sy = 0; sy < TV_SCALE; sy++) {
+          for (let sx = 0; sx < TV_SCALE; sx++) {
+            const idx = ((originY + py * TV_SCALE + sy) * TV_W + (originX + px * TV_SCALE + sx)) * 4;
+            data[idx] = shade; data[idx + 1] = shade; data[idx + 2] = shade; data[idx + 3] = 255;
+          }
+        }
       }
     }
   }
   tileViewerCtx.putImageData(tileViewerImageData, 0, 0);
 }
+
+/* ---- 1b. Sprite Sheet hover: highlight the cell under the cursor and show its tile index +
+   VRAM address in a small floating tooltip. Uses percentage-based positioning for the highlight
+   box so it stays aligned with the canvas's displayed (CSS-scaled) size without recalculating
+   pixel offsets on resize. ---- */
+function tileViewerCellAt(clientX, clientY) {
+  const rect = tileViewerCanvas.getBoundingClientRect();
+  const relX = clientX - rect.left, relY = clientY - rect.top;
+  if (relX < 0 || relY < 0 || relX >= rect.width || relY >= rect.height) return null;
+  const col = Math.min(TV_COLS - 1, Math.max(0, Math.floor((relX / rect.width) * TV_W / TV_PITCH)));
+  const row = Math.min(TV_ROWS - 1, Math.max(0, Math.floor((relY / rect.height) * TV_H / TV_PITCH)));
+  return { col, row, tile: row * TV_COLS + col };
+}
+
+tileViewerCanvas.addEventListener('mousemove', (e) => {
+  const cell = tileViewerCellAt(e.clientX, e.clientY);
+  if (!cell) { tileViewerHover.style.display = 'none'; tileViewerTooltip.style.display = 'none'; return; }
+
+  const leftPct = ((TV_GAP + cell.col * TV_PITCH) / TV_W) * 100;
+  const topPct = ((TV_GAP + cell.row * TV_PITCH) / TV_H) * 100;
+  const wPct = (TV_CELL / TV_W) * 100;
+  const hPct = (TV_CELL / TV_H) * 100;
+  tileViewerHover.style.left = leftPct + '%';
+  tileViewerHover.style.top = topPct + '%';
+  tileViewerHover.style.width = wPct + '%';
+  tileViewerHover.style.height = hPct + '%';
+  tileViewerHover.style.display = 'block';
+
+  const addr = 0x8000 + cell.tile * 16;
+  tileViewerTooltip.textContent = `Tile #${cell.tile}  \u2013  ${hex16(addr)}`;
+  tileViewerTooltip.style.left = (e.clientX + 14) + 'px';
+  tileViewerTooltip.style.top = (e.clientY + 14) + 'px';
+  tileViewerTooltip.style.display = 'block';
+});
+
+tileViewerCanvas.addEventListener('mouseleave', () => {
+  tileViewerHover.style.display = 'none';
+  tileViewerTooltip.style.display = 'none';
+});
 
 /* ---- 2. Tile map viewer: full 32x32 map rendered with BG palette + viewport box ---- */
 function setMapPixel(data, x, y, r, g, b) {
@@ -893,6 +981,52 @@ function drawTileMap() {
   tileMapCtx.putImageData(tileMapImageData, 0, 0);
 }
 
+/* ---- 2c. Tile inspector: decode+render the 16 bytes at tileInspectAddr as a single 8x8 tile.
+   Uses mmu.peek8() (not read8()) so pointing this at live hardware registers or ROM never
+   triggers real side effects or shows up as CPU activity in the Memory Map visualizer. */
+function drawTileInspector() {
+  const mmu = emulator.mmu;
+  const data = tileInspectImageData.data;
+  for (let py = 0; py < 8; py++) {
+    const lo = mmu.peek8((tileInspectAddr + py * 2) & 0xFFFF);
+    const hi = mmu.peek8((tileInspectAddr + py * 2 + 1) & 0xFFFF);
+    for (let px = 0; px < 8; px++) {
+      const bit = 7 - px;
+      const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
+      const shade = 255 - colorNum * 85; // same palette-agnostic grayscale as the Sprite Sheet tab
+      const idx = (py * 8 + px) * 4;
+      data[idx] = shade; data[idx + 1] = shade; data[idx + 2] = shade; data[idx + 3] = 255;
+    }
+  }
+  tileInspectSrcCtx.putImageData(tileInspectImageData, 0, 0);
+  tileInspectCtx.clearRect(0, 0, 128, 128);
+  tileInspectCtx.drawImage(tileInspectSrcCanvas, 0, 0, 128, 128);
+
+  const bytes = [];
+  for (let i = 0; i < 16; i++) bytes.push(hex8(mmu.peek8((tileInspectAddr + i) & 0xFFFF)).slice(2));
+  tileInspectBytesEl.textContent = `${hex16(tileInspectAddr)}\u2013${hex16((tileInspectAddr + 15) & 0xFFFF)}:  ${bytes.join(' ')}`;
+}
+
+function setTileInspectAddr(addr) {
+  tileInspectAddr = addr & 0xFFFF;
+  tileInspectAddrInput.value = hex16(tileInspectAddr);
+  drawTileInspector();
+}
+
+tileInspectAddrInput.value = hex16(tileInspectAddr);
+
+function commitTileInspectAddr() {
+  const v = parseInt(tileInspectAddrInput.value.trim().replace(/^0x/i, ''), 16);
+  if (Number.isNaN(v)) { tileInspectAddrInput.value = hex16(tileInspectAddr); return; }
+  setTileInspectAddr(v);
+}
+
+tileInspectGoBtn.addEventListener('click', commitTileInspectAddr);
+tileInspectAddrInput.addEventListener('keydown', e => { if (e.key === 'Enter') commitTileInspectAddr(); });
+tileInspectPrevBtn.addEventListener('click', () => setTileInspectAddr(tileInspectAddr - 16));
+tileInspectNextBtn.addEventListener('click', () => setTileInspectAddr(tileInspectAddr + 16));
+
+
 /* ---- 2b. Layer viewer: background / window / sprites, each rendered independently at full
    160x144 frame resolution using the PPU's *current* registers - a static "what does this
    layer alone look like right now" snapshot, not tied to the current scanline like the real
@@ -939,6 +1073,35 @@ document.querySelectorAll('.layer-download-btn').forEach(btn => {
     }, 'image/webp');
   });
 });
+
+// Renders every on-screen sprite into an RGBA pixel buffer (data, sized W*H*4), using the
+// exact same per-scanline candidate selection and priority rules the real renderer uses
+// (PPU.getSpriteCandidatesForLine / getSpriteRowBits / spriteRowColorIndex) - the hardware's
+// 10-sprites-per-line cap and X-then-OAM-index priority included. Shared by the Layers >
+// Sprites panel and the OAM tab's composited view, so the two can never drift apart.
+function renderSpriteLayerPixels(data, W, H) {
+  const ppu = emulator.ppu;
+  const spriteHeight = (ppu.lcdc & 0x04) ? EMU_CORE_CONFIG.SPRITES.HEIGHT_TALL : EMU_CORE_CONFIG.SPRITES.HEIGHT_SMALL;
+  for (let y = 0; y < H; y++) {
+    const candidates = ppu.getSpriteCandidatesForLine(y, spriteHeight);
+
+    for (const s of candidates) {
+      if (s.spriteX <= -8 || s.spriteX >= W) continue;
+      const palette = (s.attrs & 0x10) ? ppu.obp1 : ppu.obp0;
+      const { lo, hi, xFlip } = ppu.getSpriteRowBits(s, y, spriteHeight);
+
+      for (let px = 0; px < 8; px++) {
+        const sx = s.spriteX + px;
+        if (sx < 0 || sx >= W) continue;
+        const colorNum = PPU.spriteRowColorIndex(lo, hi, xFlip, px);
+        if (colorNum === 0) continue; // color 0 is always transparent for sprites
+        const [r, g, b] = ppu.applyPalette(colorNum, palette);
+        const idx = (y * W + sx) * 4;
+        data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
+      }
+    }
+  }
+}
 
 function drawLayers() {
   const ppu = emulator.ppu;
@@ -998,33 +1161,88 @@ function drawLayers() {
   setLayerStatus(layerStatusSprites, layerCanvasSprites.closest('.layer-block'), sprOn, 'LCDC.1');
   fillLayerImage(layerImageDataSprites, 0, 0, 0, 0);
   if (sprOn) {
-    const spriteHeight = (ppu.lcdc & 0x04) ? EMU_CORE_CONFIG.SPRITES.HEIGHT_TALL : EMU_CORE_CONFIG.SPRITES.HEIGHT_SMALL;
-    const data = layerImageDataSprites.data;
-    for (let y = 0; y < H; y++) {
-      const candidates = ppu.getSpriteCandidatesForLine(y, spriteHeight);
-
-      for (const s of candidates) {
-        if (s.spriteX <= -8 || s.spriteX >= W) continue;
-        const palette = (s.attrs & 0x10) ? ppu.obp1 : ppu.obp0;
-        const { lo, hi, xFlip } = ppu.getSpriteRowBits(s, y, spriteHeight);
-
-        for (let px = 0; px < 8; px++) {
-          const sx = s.spriteX + px;
-          if (sx < 0 || sx >= W) continue;
-          const colorNum = PPU.spriteRowColorIndex(lo, hi, xFlip, px);
-          if (colorNum === 0) continue; // color 0 is always transparent for sprites
-          const [r, g, b] = ppu.applyPalette(colorNum, palette);
-          const idx = (y * W + sx) * 4;
-          data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
-        }
-      }
-    }
+    renderSpriteLayerPixels(layerImageDataSprites.data, W, H);
   }
   layerCtxSprites.putImageData(layerImageDataSprites, 0, 0);
 }
 
 /* ---- 3. OAM / sprite inspector: all 40 entries, decoded ---- */
 function makeTd(text) { const td = document.createElement('td'); td.textContent = text; return td; }
+
+// Shared by both the composited view and the hover hit-test: real screen-space X/Y for OAM
+// entry i, and the tile-data offset (accounting for 8x16 mode forcing the low tile bit to 0).
+function oamSpriteGeometry(i, spriteHeight) {
+  const mmu = emulator.mmu;
+  const base = i * 4;
+  const rawY = mmu.oam[base], rawX = mmu.oam[base + 1];
+  const spriteX = rawX - 8, spriteY = rawY - 16;
+  const tileIndex = mmu.oam[base + 2];
+  const attrs = mmu.oam[base + 3];
+  let idxTile = tileIndex;
+  if (spriteHeight === 16) idxTile &= 0xFE;
+  return { spriteX, spriteY, tileIndex, idxTile, attrs };
+}
+
+/* ---- 3a. Composited sprite view: same per-scanline candidate/priority rendering as the
+   Layers > Sprites panel (via the shared renderSpriteLayerPixels()), just always drawn
+   regardless of LCDC.1 - this tab is for inspecting the raw OAM data as configured, not "what's
+   currently visible", so a sprite-disable toggle shouldn't blank it out. No background/window
+   layer is drawn under it - this is sprites-only, so transparent pixels just show the canvas's
+   plain dark fill. ---- */
+function drawOAMComposition() {
+  const W = EMU_CORE_CONFIG.SCREEN.WIDTH, H = EMU_CORE_CONFIG.SCREEN.HEIGHT;
+  const imgData = oamCompCtx.createImageData(W, H);
+  const data = imgData.data;
+  for (let i = 0; i < data.length; i += 4) { data[i] = 32; data[i + 1] = 32; data[i + 2] = 40; data[i + 3] = 255; }
+  renderSpriteLayerPixels(data, W, H);
+  oamCompCtx.putImageData(imgData, 0, 0);
+}
+
+// Finds the highest-priority sprite (lowest OAM index) whose bounding box covers screen pixel
+// (px, py), matching the same priority order the composited view was painted in.
+function oamSpriteAt(px, py) {
+  const ppu = emulator.ppu;
+  const spriteHeight = (ppu.lcdc & 0x04) ? 16 : 8;
+  for (let i = 0; i < 40; i++) {
+    const { spriteX, spriteY } = oamSpriteGeometry(i, spriteHeight);
+    if (px >= spriteX && px < spriteX + 8 && py >= spriteY && py < spriteY + spriteHeight) {
+      return { index: i, spriteX, spriteY, spriteHeight };
+    }
+  }
+  return null;
+}
+
+oamCompCanvas.addEventListener('mousemove', (e) => {
+  const W = EMU_CORE_CONFIG.SCREEN.WIDTH, H = EMU_CORE_CONFIG.SCREEN.HEIGHT;
+  const rect = oamCompCanvas.getBoundingClientRect();
+  const relX = e.clientX - rect.left, relY = e.clientY - rect.top;
+  if (relX < 0 || relY < 0 || relX >= rect.width || relY >= rect.height) {
+    oamCompHover.style.display = 'none'; oamCompTooltip.style.display = 'none';
+    return;
+  }
+  const px = Math.floor((relX / rect.width) * W), py = Math.floor((relY / rect.height) * H);
+  const hit = oamSpriteAt(px, py);
+  if (!hit) { oamCompHover.style.display = 'none'; oamCompTooltip.style.display = 'none'; return; }
+
+  // Clamp the highlight box to the visible canvas area (a sprite's origin can be negative).
+  const boxX = Math.max(0, hit.spriteX), boxY = Math.max(0, hit.spriteY);
+  const boxRight = Math.min(W, hit.spriteX + 8), boxBottom = Math.min(H, hit.spriteY + hit.spriteHeight);
+  oamCompHover.style.left = (boxX / W * 100) + '%';
+  oamCompHover.style.top = (boxY / H * 100) + '%';
+  oamCompHover.style.width = ((boxRight - boxX) / W * 100) + '%';
+  oamCompHover.style.height = ((boxBottom - boxY) / H * 100) + '%';
+  oamCompHover.style.display = 'block';
+
+  oamCompTooltip.textContent = `Sprite #${hit.index}  \u2013  X:${hit.spriteX} Y:${hit.spriteY}  \u2013  ${hex16(0xFE00 + hit.index * 4)}`;
+  oamCompTooltip.style.left = (e.clientX + 14) + 'px';
+  oamCompTooltip.style.top = (e.clientY + 14) + 'px';
+  oamCompTooltip.style.display = 'block';
+});
+
+oamCompCanvas.addEventListener('mouseleave', () => {
+  oamCompHover.style.display = 'none';
+  oamCompTooltip.style.display = 'none';
+});
 
 function drawOAMTable() {
   const ppu = emulator.ppu;
@@ -1850,7 +2068,8 @@ function refreshDebugTools() {
   const activeVisual = visualToolsContainer.querySelector('.tool-tab.active').dataset.tool;
   if (activeVisual === 'tiles') drawTileViewer();
   else if (activeVisual === 'tilemap') drawTileMap();
-  else if (activeVisual === 'oam') drawOAMTable();
+  else if (activeVisual === 'tileinspect') drawTileInspector();
+  else if (activeVisual === 'oam') { drawOAMComposition(); drawOAMTable(); }
   else if (activeVisual === 'palettes') drawPalettes();
   else if (activeVisual === 'layers') drawLayers();
   else if (activeVisual === 'oscilloscope') drawOscilloscope();

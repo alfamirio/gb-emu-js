@@ -443,10 +443,40 @@
     image-rendering: crisp-edges;
     width: 100%;
     max-width: 384px;
-    aspect-ratio: 128 / 192;
+    aspect-ratio: 273 / 409;
     height: auto;
     background: #000;
     border-radius: 4px;
+    display: block;
+    cursor: crosshair;
+  }
+  .tileviewer-wrap {
+    position: relative;
+    width: 100%;
+    max-width: 384px;
+  }
+  .tileviewer-hover {
+    position: absolute;
+    border: 2px solid var(--accent);
+    border-radius: 1px;
+    pointer-events: none;
+    display: none;
+    box-sizing: border-box;
+  }
+  .canvas-hover-tooltip {
+    position: fixed;
+    display: none;
+    pointer-events: none;
+    z-index: 999;
+    background: #1b1b22;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.72rem;
+    color: #eee;
+    white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(0,0,0,.5);
   }
   .tilemap-scroll {
     max-width: 100%;
@@ -463,6 +493,53 @@
     display: block;
   }
   .oam-scroll { max-height: 360px; overflow-y: auto; border-radius: 4px; }
+
+  .oam-comp-wrap {
+    position: relative;
+    width: 100%;
+    max-width: 480px;
+    margin-bottom: 14px;
+  }
+  #oamCompCanvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 160 / 144;
+    background: #202028;
+    border-radius: 4px;
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    cursor: crosshair;
+  }
+  .oam-comp-hover {
+    position: absolute;
+    border: 2px solid var(--accent);
+    border-radius: 1px;
+    pointer-events: none;
+    display: none;
+    box-sizing: border-box;
+  }
+
+  .tileinspect-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .tileinspect-addr { width: 90px; text-align: center; }
+  #tileInspectCanvas {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    width: 128px;
+    height: 128px;
+    background: #000;
+    border: 1px solid #333;
+    border-radius: 4px;
+    display: block;
+  }
+  .tileinspect-bytes {
+    margin-top: 10px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.72rem;
+    color: #999;
+    word-break: break-all;
+  }
   table.oam-table { border-collapse: collapse; width: 100%; font-family: 'Consolas', monospace; font-size: 0.72rem; }
   table.oam-table th {
     text-align: left;
@@ -1493,6 +1570,7 @@
       <button class="tool-tab" data-tool="tiles">Sprite Sheet</button>
       <button class="tool-tab" data-tool="oam">Sprites (OAM)</button>
       <button class="tool-tab" data-tool="tilemap">Tile Map</button>
+      <button class="tool-tab" data-tool="tileinspect">Inspector</button>
     </div>
 
     <div class="tool-panel hidden" id="panel-scanline">
@@ -1540,10 +1618,15 @@
     <div class="tool-panel hidden" id="panel-tiles">
       <p class="tool-desc">
         Raw contents of tile data in VRAM (0x8000–0x97FF), decoded as 384 individual 8×8 tiles in
-        the order they sit in VRAM.
+        the order they sit in VRAM, one grid cell each. Hover a tile to see its index and address.
       </p>
-      <canvas id="tileViewerCanvas" width="128" height="192"></canvas>
+      <div class="tileviewer-wrap" id="tileViewerWrap">
+        <canvas id="tileViewerCanvas" width="273" height="409"></canvas>
+        <div class="tileviewer-hover" id="tileViewerHover"></div>
+      </div>
     </div>
+
+    <div class="canvas-hover-tooltip" id="tileViewerTooltip"></div>
 
     <div class="tool-panel hidden" id="panel-tilemap">
       <p class="tool-desc">
@@ -1557,8 +1640,35 @@
       </div>
     </div>
 
+    <div class="tool-panel hidden" id="panel-tileinspect">
+      <p class="tool-desc">
+        Type any 16-bit address and decode the 16 bytes there as a single 8&times;8 2bpp tile -
+        raw/grayscale, palette-agnostic, same decoding as the Sprite Sheet tab. Not limited to
+        VRAM: point it at ROM or WRAM to preview graphics data before it's ever copied to VRAM.
+      </p>
+      <div class="tileinspect-row">
+        <button type="button" class="ui-btn small ghost" id="tileInspectPrev" title="Previous tile (address - 16)">◀ Prev</button>
+        <input type="text" id="tileInspectAddr" class="ramedit-jump tileinspect-addr" placeholder="0x8000" spellcheck="false">
+        <button type="button" class="ui-btn small" id="tileInspectGo">Go</button>
+        <button type="button" class="ui-btn small ghost" id="tileInspectNext" title="Next tile (address + 16)">Next ▶</button>
+      </div>
+      <canvas id="tileInspectCanvas" width="128" height="128"></canvas>
+      <div class="tileinspect-bytes" id="tileInspectBytes"></div>
+    </div>
+
     <div class="tool-panel hidden" id="panel-oam">
-      <p class="tool-desc">All 40 OAM sprite entries, with a decoded preview, position, tile index, and attribute flags. Off-screen entries are dimmed.</p>
+      <p class="tool-desc">
+        All on-screen sprites composited together at their real coordinates, using the same
+        per-scanline rendering (10-sprites-per-line cap, X-then-OAM-index priority) as the
+        Layers &gt; Sprites panel, plus the same 40 OAM entries as a table with a decoded
+        preview, position, tile index, and attribute flags. Off-screen entries are dimmed in the
+        table. Hover the composited view to read off a sprite's position.
+      </p>
+      <div class="oam-comp-wrap" id="oamCompWrap">
+        <canvas id="oamCompCanvas" width="160" height="144"></canvas>
+        <div class="oam-comp-hover" id="oamCompHover"></div>
+      </div>
+      <div class="canvas-hover-tooltip" id="oamCompTooltip"></div>
       <div class="oam-scroll">
         <table class="oam-table">
           <thead><tr><th></th><th>#</th><th>X</th><th>Y</th><th>Tile</th><th>Pal</th><th>Flags</th></tr></thead>

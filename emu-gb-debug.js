@@ -137,18 +137,32 @@ const bankingLog = document.getElementById('bankingLog');
 
 // Static region layout for the 0x0000-0xFFFF strip. `weight` drives proportional width via
 // flex-grow; `minPx` is a floor so tiny regions (OAM/IO/HRAM/IE) don't disappear entirely.
+// `purpose` is a one-line explanation of what the block is for/used by, surfaced as a hover
+// tooltip on both the Mem Map strip below and the RAM Editor's region tabs (see
+// buildRamEditRegionTabs(), which reads it back out via ramEditRegionMeta()).
 const MEM_REGIONS = [
-  { key: 'ROM0',   label: 'ROM Bank 0',    range: '0x0000–0x3FFF', color: '#5a9bd8', weight: 0x4000, minPx: 46 },
-  { key: 'ROMX',   label: 'ROM Bank N',    range: '0x4000–0x7FFF', color: '#8fc0ec', weight: 0x4000, minPx: 46 },
-  { key: 'VRAM',   label: 'VRAM',          range: '0x8000–0x9FFF', color: '#e0a63d', weight: 0x2000, minPx: 34 },
-  { key: 'ERAM',   label: 'Cart RAM',      range: '0xA000–0xBFFF', color: '#d9534f', weight: 0x2000, minPx: 34 },
-  { key: 'WRAM',   label: 'WRAM',          range: '0xC000–0xDFFF', color: '#5cb85c', weight: 0x2000, minPx: 34 },
-  { key: 'ECHO',   label: 'Echo RAM',      range: '0xE000–0xFDFF', color: '#3f7a3f', weight: 0x1E00, minPx: 22, aliasOf: 'WRAM' },
-  { key: 'OAM',    label: 'OAM',           range: '0xFE00–0xFE9F', color: '#b366cc', weight: 0x00A0, minPx: 20 },
-  { key: 'UNUSED', label: 'Unused',        range: '0xFEA0–0xFEFF', color: '#3a3a42', weight: 0x0060, minPx: 16 },
-  { key: 'IO',     label: 'I/O Regs',      range: '0xFF00–0xFF7F', color: '#e05fb0', weight: 0x0080, minPx: 20 },
-  { key: 'HRAM',   label: 'HRAM',          range: '0xFF80–0xFFFE', color: '#f0d84a', weight: 0x007F, minPx: 20 },
-  { key: 'IE',     label: 'IE',            range: '0xFFFF',        color: '#f5f5f5', weight: 0x0001, minPx: 16 },
+  { key: 'ROM0',   label: 'ROM Bank 0',    range: '0x0000–0x3FFF', color: '#5a9bd8', weight: 0x4000, minPx: 46,
+    purpose: 'Fixed 16KB ROM bank - always mapped, never bank-switched. Holds the entry point, interrupt vectors, and whatever code/data the cartridge keeps permanently resident.' },
+  { key: 'ROMX',   label: 'ROM Bank N',    range: '0x4000–0x7FFF', color: '#8fc0ec', weight: 0x4000, minPx: 46,
+    purpose: 'Switchable 16KB ROM bank. The cartridge\'s mapper (MBC) swaps which bank is visible here so games bigger than 32KB can access the rest of their code/data.' },
+  { key: 'VRAM',   label: 'VRAM',          range: '0x8000–0x9FFF', color: '#e0a63d', weight: 0x2000, minPx: 34,
+    purpose: 'Video RAM: tile pixel data plus the background/window tile maps. This is what the PPU reads every scanline to draw the screen.' },
+  { key: 'ERAM',   label: 'Cart RAM',      range: '0xA000–0xBFFF', color: '#d9534f', weight: 0x2000, minPx: 34,
+    purpose: 'Optional cartridge RAM (SRAM), used for save data or MBC3\'s RTC registers. Often battery-backed; only readable/writable once the mapper enables it.' },
+  { key: 'WRAM',   label: 'WRAM',          range: '0xC000–0xDFFF', color: '#5cb85c', weight: 0x2000, minPx: 34,
+    purpose: 'General-purpose work RAM - the game\'s variables, stack, and internal state. Not visible to the PPU or any other hardware block.' },
+  { key: 'ECHO',   label: 'Echo RAM',      range: '0xE000–0xFDFF', color: '#3f7a3f', weight: 0x1E00, minPx: 22, aliasOf: 'WRAM',
+    purpose: 'Unofficial mirror of WRAM 0xC000-0xDDFF - reads/writes here actually hit WRAM. Real games are supposed to avoid it; it exists here for hardware-accurate behavior.' },
+  { key: 'OAM',    label: 'OAM',           range: '0xFE00–0xFE9F', color: '#b366cc', weight: 0x00A0, minPx: 20,
+    purpose: 'Object Attribute Memory - up to 40 sprite entries (X/Y position, tile index, flip/priority/palette flags) that the PPU composites onto each scanline.' },
+  { key: 'UNUSED', label: 'Unused',        range: '0xFEA0–0xFEFF', color: '#3a3a42', weight: 0x0060, minPx: 16,
+    purpose: 'Unmapped on DMG hardware. Real Game Boys return inconsistent (often 0x00) values here depending on model/revision; no game is meant to rely on it.' },
+  { key: 'IO',     label: 'I/O Regs',      range: '0xFF00–0xFF7F', color: '#e05fb0', weight: 0x0080, minPx: 20,
+    purpose: 'Memory-mapped hardware registers: joypad input, serial, timers, sound channels, and LCD/PPU control - the interface between code and the rest of the hardware.' },
+  { key: 'HRAM',   label: 'HRAM',          range: '0xFF80–0xFFFE', color: '#f0d84a', weight: 0x007F, minPx: 20,
+    purpose: 'High RAM - 127 bytes, fastest to access. Commonly used as scratch space for code that needs to keep running while OAM DMA has the rest of memory bus locked out.' },
+  { key: 'IE',     label: 'IE',            range: '0xFFFF',        color: '#f5f5f5', weight: 0x0001, minPx: 16,
+    purpose: 'Interrupt Enable register - one bit per interrupt source (VBlank/STAT/Timer/Serial/Joypad) masking whether it can fire at all.' },
 ];
 let memRegionEls = {}; // key -> { el, key } (ECHO shares the 'WRAM' flash key via aliasOf)
 
@@ -160,7 +174,7 @@ function buildMemMapStrip() {
     el.className = 'mem-region';
     el.style.flex = `${r.weight} 0 ${r.minPx}px`;
     el.style.background = r.color;
-    el.title = `${r.label}  (${r.range})`;
+    el.title = `${r.label} (${r.range})\n${r.purpose}`;
     el.innerHTML = `<span class="mem-label">${r.label}</span><span class="mem-range">${r.range}</span>` +
       (r.key === 'ROMX' ? '<span class="mem-bank" id="mmRomBankTag">Bank 1</span>' : '');
     memmapStrip.appendChild(el);
@@ -427,7 +441,7 @@ let ramEditOffset = 0;
 function ramEditRegionMeta(key) {
   const m = RAMEDIT_META[key];
   const mm = MEM_REGIONS.find(r => r.key === key) || {};
-  return { key, base: RAMEDIT_BASE[key], length: RAMEDIT_LEN[key], editable: m.editable, mode: m.mode, note: m.note, label: mm.label || key, color: mm.color || '#888', range: mm.range || '' };
+  return { key, base: RAMEDIT_BASE[key], length: RAMEDIT_LEN[key], editable: m.editable, mode: m.mode, note: m.note, label: mm.label || key, color: mm.color || '#888', range: mm.range || '', purpose: mm.purpose || '' };
 }
 
 function buildRamEditRegionTabs() {
@@ -438,6 +452,7 @@ function buildRamEditRegionTabs() {
     btn.type = 'button';
     btn.className = 'ramedit-region-btn' + (meta.editable ? '' : ' readonly') + (key === ramEditKey ? ' active' : '');
     btn.style.setProperty('--region-color', meta.color);
+    btn.title = `${meta.label} (${meta.range})\n${meta.purpose}`;
     btn.innerHTML = `<span class="ramedit-region-name">${meta.label}</span><span class="ramedit-region-range">${meta.range}</span>`;
     btn.addEventListener('click', () => {
       if (ramEditKey === key) return;

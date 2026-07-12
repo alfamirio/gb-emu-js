@@ -1915,22 +1915,40 @@ class CPU {
   step() {
     if (this.eiDelay > 0) { this.eiDelay--; if (this.eiDelay === 0) this.IME = true; }
     this.cycles = 0;
+
+    // Interrupt dispatch must be checked *here* - immediately after the eiDelay
+    // transition above, before this step's opcode is fetched - not only at the end of
+    // the step.
+    if (this.tryDispatchInterrupt()) return this.cycles;
+
     if (this.halted) {
       this.tick(4);
     } else {
       const opcode = this.fetch8();
       this.execute(opcode);
     }
-    this.handleInterrupts();
+    this.wakeFromHaltIfPending();
     return this.cycles;
   }
 
-  handleInterrupts() {
+  // Level-sensitive HALT wake: runs regardless of IME, since HALT exits on any
+  // pending (IF & IE), whether or not interrupts are actually enabled to service it.
+  wakeFromHaltIfPending() {
+    const IF = this.mmu.io[0x0F] & 0x1F;
+    const IE = this.mmu.ie & 0x1F;
+    if ((IF & IE) && this.halted) this.halted = false;
+  }
+
+  // Attempts to dispatch one pending, enabled interrupt. Returns true if it did (in
+  // which case this step consumed its cycles pushing PC and jumping to the vector,
+  // and no opcode fetch happens this step - matching real hardware, where interrupt
+  // dispatch takes the place of the next instruction fetch).
+  tryDispatchInterrupt() {
     const IF = this.mmu.io[0x0F] & 0x1F;
     const IE = this.mmu.ie & 0x1F;
     const pending = IF & IE;
     if (pending && this.halted) this.halted = false; // HALT always wakes on a pending interrupt
-    if (!this.IME || !pending) return;
+    if (!this.IME || !pending) return false;
     const vectors = [0x40, 0x48, 0x50, 0x58, 0x60]; // VBlank, LCD STAT, Timer, Serial, Joypad
     for (let i = 0; i < 5; i++) {
       if (pending & (1 << i)) {
@@ -1940,9 +1958,10 @@ class CPU {
         this.push16(this.PC);
         this.PC = vectors[i];
         this.tick(20);
-        break;
+        return true;
       }
     }
+    return false;
   }
 
   // Instructions are decoded the same way the real hardware does: most of the opcode space
@@ -3303,7 +3322,7 @@ class Emulator {
     }
   }
 
-  // Called by CPU.handleInterrupts() the instant it actually dispatches an interrupt
+  // Called by CPU.tryDispatchInterrupt() the instant it actually dispatches an interrupt
   // (pushes PC and jumps to the handler) - not just when the IF bit gets set. Feeds the
   // "Recently serviced" list in the Interrupts debug panel.
   logInterruptServiced(bit, pcBefore) {

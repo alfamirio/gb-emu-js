@@ -1386,6 +1386,90 @@
    keeps the ~500 instruction/CB-instruction combinations to a very small amount of code.
    ========================================================================================= */
 
+/* ============================== 0. Emulation core config =============================== */
+// Every hardware-defined constant the core relies on lives here: clock speed, frame/PPU
+// timing, memory-map layout and region sizes, timer periods, sprite limits, palettes, and
+// the register/IO state the real boot ROM leaves behind. The classes below (MMU/CPU/PPU/
+// Timer/APU/Emulator) read from this object instead of hardcoding these numbers inline, so
+// the "what a Game Boy is" values are separate from the "how we emulate it" code, and the
+// debug/visualizer UI can reuse the exact same numbers instead of keeping its own copies.
+const EMU_CORE_CONFIG = {
+  CLOCK_HZ: 4194304, // GB system clock speed, in T-cycles/second
+
+  FRAME: {
+    VISIBLE_LINES: 144,   // scanlines that actually draw to the screen
+    VBLANK_LINES: 10,     // scanlines 144-153: VBlank
+    CYCLES_PER_LINE: 456, // T-cycles per scanline (OAM search + pixel transfer + HBlank)
+    get TOTAL_LINES() { return this.VISIBLE_LINES + this.VBLANK_LINES; },        // 154
+    get CYCLES_PER_FRAME() { return this.CYCLES_PER_LINE * this.TOTAL_LINES; },  // 70224
+  },
+
+  // Fixed-length-per-mode PPU timing model (mode 1/VBlank uses FRAME.CYCLES_PER_LINE instead).
+  PPU_MODE_CYCLES: {
+    OAM_SEARCH: 80,      // mode 2
+    PIXEL_TRANSFER: 172, // mode 3
+    HBLANK: 204,         // mode 0
+  },
+
+  SCREEN: { WIDTH: 160, HEIGHT: 144 },
+
+  SPRITES: {
+    MAX_TOTAL: 40,      // entries in OAM
+    MAX_PER_LINE: 10,   // hardware limit: sprites actually drawn on one scanline
+    HEIGHT_SMALL: 8,
+    HEIGHT_TALL: 16,
+  },
+
+  TIMER: {
+    TIMA_PERIOD: [1024, 16, 64, 256], // T-cycles per TIMA increment, indexed by TAC[1:0]
+    DIV_PERIOD: 256,                  // T-cycles per DIV increment
+  },
+
+  OAM_DMA_BYTES: 0xA0,
+
+  // Two selectable four-shade palettes: the classic DMG green tint, and the neutral
+  // grayscale used by the Game Boy Pocket's screen.
+  PALETTE_GB:  [[155, 188, 15], [139, 172, 15], [48, 98, 48], [15, 56, 15]],
+  PALETTE_GBP: [[255, 255, 255], [169, 169, 169], [84, 84, 84], [0, 0, 0]],
+
+  // Layer-tint debug view: each rendering layer gets a distinct color wash.
+  LAYER_TINTS: { bg: [255, 90, 90], window: [90, 220, 255], sprite: [140, 255, 110] },
+  LAYER_TINT_MIX: 0.4, // 0 = no tint, 1 = solid tint color
+
+  // Memory map: first address *past* each region (i.e. region is [prevEnd, thisEnd)).
+  MEMORY: {
+    ROM0_END: 0x4000,    // 0x0000-0x3FFF: ROM bank 0
+    ROMX_END: 0x8000,    // 0x4000-0x7FFF: switchable ROM bank
+    VRAM_END: 0xA000,    // 0x8000-0x9FFF: VRAM
+    ERAM_END: 0xC000,    // 0xA000-0xBFFF: cart RAM / MBC2 RAM / MBC3 RTC
+    WRAM_END: 0xE000,    // 0xC000-0xDFFF: WRAM
+    ECHO_END: 0xFE00,    // 0xE000-0xFDFF: echo of WRAM
+    OAM_END: 0xFEA0,     // 0xFE00-0xFE9F: OAM (sprite attribute table)
+    UNUSABLE_END: 0xFF00,// 0xFEA0-0xFEFF: unusable
+    IO_END: 0xFF80,      // 0xFF00-0xFF7F: I/O registers
+    HRAM_END: 0xFFFF,    // 0xFF80-0xFFFE: HRAM
+    // 0xFFFF: IE register
+
+    ROM_BANK_SIZE: 0x4000, // size of one switchable ROM bank
+    RAM_BANK_SIZE: 0x2000, // size of one switchable cart-RAM bank
+
+    VRAM_SIZE: 0x2000,
+    WRAM_SIZE: 0x2000,
+    OAM_SIZE: 0xA0,
+    HRAM_SIZE: 0x7F,
+    IO_SIZE: 0x80,
+    CART_RAM_SIZE: 0x20000, // up to 16 banks of 8KB external RAM (MBC5's max)
+  },
+
+  // Register/IO values the real boot ROM leaves behind right before a game's code starts.
+  BOOT: {
+    A: 0x01, B: 0x00, C: 0x13, D: 0x00, E: 0xD8, H: 0x01, L: 0x4D,
+    SP: 0xFFFE, PC: 0x0100,
+    FLAG_Z: true, FLAG_N: false, FLAG_H: true, FLAG_C: true,
+    IO: { P1: 0xCF, IF: 0xE1, LCDC: 0x91, BGP: 0xFC, OBP0: 0xFF, OBP1: 0xFF },
+  },
+};
+
 /* ============================== 1. MMU (Memory Management Unit) ======================= */
 
 class MMU {
@@ -1400,7 +1484,7 @@ class MMU {
     this.ramEnabled = false;
     this.bankingMode = 0;                // MBC1: 0 = ROM banking mode, 1 = RAM banking mode
 
-    this.cartRAM = new Uint8Array(0x20000); // up to 16 banks of 8KB external RAM (MBC5's max)
+    this.cartRAM = new Uint8Array(EMU_CORE_CONFIG.MEMORY.CART_RAM_SIZE); // up to 16 banks of 8KB external RAM (MBC5's max)
 
     // ---- MBC3 Real Time Clock (RTC) state ----
     // `rtc` holds the "live" counters, which keep advancing (based on wall-clock time)
@@ -1414,11 +1498,12 @@ class MMU {
       lastRealMs: Date.now(),                   // wall-clock time the live registers are caught up to
     };
     this.rtcSelect = -1; // -1 = 0xA000-0xBFFF maps to cart RAM; 0x08-0x0C = that RTC register instead
-    this.vram    = new Uint8Array(0x2000); // 0x8000-0x9FFF
-    this.wram    = new Uint8Array(0x2000); // 0xC000-0xDFFF
-    this.oam     = new Uint8Array(0xA0);   // 0xFE00-0xFE9F (sprite attribute table)
-    this.hram    = new Uint8Array(0x7F);   // 0xFF80-0xFFFE
-    this.io      = new Uint8Array(0x80);   // 0xFF00-0xFF7F
+    const MEM = EMU_CORE_CONFIG.MEMORY;
+    this.vram    = new Uint8Array(MEM.VRAM_SIZE); // 0x8000-0x9FFF
+    this.wram    = new Uint8Array(MEM.WRAM_SIZE); // 0xC000-0xDFFF
+    this.oam     = new Uint8Array(MEM.OAM_SIZE);  // 0xFE00-0xFE9F (sprite attribute table)
+    this.hram    = new Uint8Array(MEM.HRAM_SIZE); // 0xFF80-0xFFFE
+    this.io      = new Uint8Array(MEM.IO_SIZE);   // 0xFF00-0xFF7F
     this.ie      = 0;                      // 0xFFFF interrupt enable register
 
     // ---- live instrumentation for the Memory Map / Banking visualizers (no effect on
@@ -1431,16 +1516,17 @@ class MMU {
 
   // Classifies an address into the same region buckets the Memory Map view draws.
   regionForAddr(addr) {
-    if (addr < 0x4000) return 'ROM0';
-    if (addr < 0x8000) return 'ROMX';
-    if (addr < 0xA000) return 'VRAM';
-    if (addr < 0xC000) return 'ERAM';
-    if (addr < 0xE000) return 'WRAM';
-    if (addr < 0xFE00) return 'WRAM'; // echo RAM mirrors WRAM
-    if (addr < 0xFEA0) return 'OAM';
-    if (addr < 0xFF00) return 'UNUSED';
-    if (addr < 0xFF80) return 'IO';
-    if (addr < 0xFFFF) return 'HRAM';
+    const MEM = EMU_CORE_CONFIG.MEMORY;
+    if (addr < MEM.ROM0_END) return 'ROM0';
+    if (addr < MEM.ROMX_END) return 'ROMX';
+    if (addr < MEM.VRAM_END) return 'VRAM';
+    if (addr < MEM.ERAM_END) return 'ERAM';
+    if (addr < MEM.WRAM_END) return 'WRAM';
+    if (addr < MEM.ECHO_END) return 'WRAM'; // echo RAM mirrors WRAM
+    if (addr < MEM.OAM_END) return 'OAM';
+    if (addr < MEM.UNUSABLE_END) return 'UNUSED';
+    if (addr < MEM.IO_END) return 'IO';
+    if (addr < MEM.HRAM_END) return 'HRAM';
     return 'IE';
   }
 
@@ -1485,13 +1571,14 @@ class MMU {
     this.lastBankSwitch = null;
 
     // Values the real boot ROM would have left behind by the time a game starts running.
+    const bootIO = EMU_CORE_CONFIG.BOOT.IO;
     this.io.fill(0);
-    this.io[0x00] = 0xCF; // P1 (joypad)
-    this.io[0x0F] = 0xE1; // IF
-    this.io[0x40] = 0x91; // LCDC
-    this.io[0x47] = 0xFC; // BGP
-    this.io[0x48] = 0xFF; // OBP0
-    this.io[0x49] = 0xFF; // OBP1
+    this.io[0x00] = bootIO.P1;   // P1 (joypad)
+    this.io[0x0F] = bootIO.IF;   // IF
+    this.io[0x40] = bootIO.LCDC; // LCDC
+    this.io[0x47] = bootIO.BGP;  // BGP
+    this.io[0x48] = bootIO.OBP0; // OBP0
+    this.io[0x49] = bootIO.OBP1; // OBP1
   }
 
   /* ---- save state ---- */
@@ -1533,10 +1620,11 @@ class MMU {
   read8(addr) {
     addr &= 0xFFFF;
     this.noteAccess(addr, 'read');
-    if (addr < 0x4000) return this.rom[addr] ?? 0xFF;                              // ROM bank 0
-    if (addr < 0x8000) return this.rom[this.currentROMBank * 0x4000 + (addr - 0x4000)] ?? 0xFF; // switchable ROM bank
-    if (addr < 0xA000) return this.vram[addr - 0x8000];                            // VRAM
-    if (addr < 0xC000) {                                                           // cart RAM / MBC2 built-in RAM / MBC3 RTC
+    const MEM = EMU_CORE_CONFIG.MEMORY;
+    if (addr < MEM.ROM0_END) return this.rom[addr] ?? 0xFF;                              // ROM bank 0
+    if (addr < MEM.ROMX_END) return this.rom[this.currentROMBank * MEM.ROM_BANK_SIZE + (addr - MEM.ROM0_END)] ?? 0xFF; // switchable ROM bank
+    if (addr < MEM.VRAM_END) return this.vram[addr - MEM.ROMX_END];                      // VRAM
+    if (addr < MEM.ERAM_END) {                                                           // cart RAM / MBC2 built-in RAM / MBC3 RTC
       if (this.mbcType === 3 && this.rtcSelect !== -1) return this.readRTCRegister();
       if (this.mbcType === 2) {
         if (!this.ramEnabled) return 0xFF;
@@ -1545,35 +1633,36 @@ class MMU {
         // only wires up 4 data lines here, so the upper nibble of every byte reads back as 1s.
         return 0xF0 | (this.cartRAM[addr & 0x1FF] & 0x0F);
       }
-      return this.ramEnabled ? this.cartRAM[this.currentRAMBank * 0x2000 + (addr - 0xA000)] : 0xFF;
+      return this.ramEnabled ? this.cartRAM[this.currentRAMBank * MEM.RAM_BANK_SIZE + (addr - MEM.VRAM_END)] : 0xFF;
     }
-    if (addr < 0xE000) return this.wram[addr - 0xC000];                            // WRAM
-    if (addr < 0xFE00) return this.wram[addr - 0xE000];                            // echo of WRAM
-    if (addr < 0xFEA0) return this.oam[addr - 0xFE00];                             // OAM
-    if (addr < 0xFF00) return 0xFF;                                                // unusable
-    if (addr < 0xFF80) return this.readIO(addr);                                   // I/O registers
-    if (addr < 0xFFFF) return this.hram[addr - 0xFF80];                            // HRAM
-    return this.ie;                                                                // IE register
+    if (addr < MEM.WRAM_END) return this.wram[addr - MEM.ERAM_END];                      // WRAM
+    if (addr < MEM.ECHO_END) return this.wram[addr - MEM.WRAM_END];                      // echo of WRAM
+    if (addr < MEM.OAM_END) return this.oam[addr - MEM.ECHO_END];                        // OAM
+    if (addr < MEM.UNUSABLE_END) return 0xFF;                                            // unusable
+    if (addr < MEM.IO_END) return this.readIO(addr);                                     // I/O registers
+    if (addr < MEM.HRAM_END) return this.hram[addr - MEM.IO_END];                        // HRAM
+    return this.ie;                                                                      // IE register
   }
 
   write8(addr, val) {
     addr &= 0xFFFF; val &= 0xFF;
     this.noteAccess(addr, 'write');
-    if (addr < 0x8000) { this.handleBanking(addr, val); return; }
-    if (addr < 0xA000) { this.vram[addr - 0x8000] = val; return; }
-    if (addr < 0xC000) {                                                           // cart RAM / MBC2 built-in RAM / MBC3 RTC
+    const MEM = EMU_CORE_CONFIG.MEMORY;
+    if (addr < MEM.ROMX_END) { this.handleBanking(addr, val); return; }
+    if (addr < MEM.VRAM_END) { this.vram[addr - MEM.ROMX_END] = val; return; }
+    if (addr < MEM.ERAM_END) {                                                           // cart RAM / MBC2 built-in RAM / MBC3 RTC
       if (!this.ramEnabled) return;
       if (this.mbcType === 3 && this.rtcSelect !== -1) { this.writeRTCRegister(val); return; }
       if (this.mbcType === 2) { this.cartRAM[addr & 0x1FF] = val & 0x0F; return; } // only the low nibble is real hardware
-      this.cartRAM[this.currentRAMBank * 0x2000 + (addr - 0xA000)] = val;
+      this.cartRAM[this.currentRAMBank * MEM.RAM_BANK_SIZE + (addr - MEM.VRAM_END)] = val;
       return;
     }
-    if (addr < 0xE000) { this.wram[addr - 0xC000] = val; return; }
-    if (addr < 0xFE00) { this.wram[addr - 0xE000] = val; return; }
-    if (addr < 0xFEA0) { this.oam[addr - 0xFE00] = val; return; }
-    if (addr < 0xFF00) return;
-    if (addr < 0xFF80) { this.writeIO(addr, val); return; }
-    if (addr < 0xFFFF) { this.hram[addr - 0xFF80] = val; return; }
+    if (addr < MEM.WRAM_END) { this.wram[addr - MEM.ERAM_END] = val; return; }
+    if (addr < MEM.ECHO_END) { this.wram[addr - MEM.WRAM_END] = val; return; }
+    if (addr < MEM.OAM_END) { this.oam[addr - MEM.ECHO_END] = val; return; }
+    if (addr < MEM.UNUSABLE_END) return;
+    if (addr < MEM.IO_END) { this.writeIO(addr, val); return; }
+    if (addr < MEM.HRAM_END) { this.hram[addr - MEM.IO_END] = val; return; }
     this.ie = val;
   }
 
@@ -1774,7 +1863,7 @@ class MMU {
   // which is a common, harmless simplification for most games.
   doDMA(val) {
     const src = val << 8;
-    for (let i = 0; i < 0xA0; i++) this.oam[i] = this.read8(src + i);
+    for (let i = 0; i < EMU_CORE_CONFIG.OAM_DMA_BYTES; i++) this.oam[i] = this.read8(src + i);
     const fs = this.emulator.frameStats;
     fs.dma++;
     fs.events.push({ line: this.emulator.ppu.ly, kind: 'dma' });
@@ -1791,11 +1880,12 @@ class CPU {
 
   reset() {
     // Register values the real boot ROM leaves behind right before a game's code starts.
-    this.A = 0x01; this.B = 0x00; this.C = 0x13; this.D = 0x00; this.E = 0xD8;
-    this.H = 0x01; this.L = 0x4D;
-    this.SP = 0xFFFE;
-    this.PC = 0x0100;
-    this.flagZ = true; this.flagN = false; this.flagH = true; this.flagC = true;
+    const boot = EMU_CORE_CONFIG.BOOT;
+    this.A = boot.A; this.B = boot.B; this.C = boot.C; this.D = boot.D; this.E = boot.E;
+    this.H = boot.H; this.L = boot.L;
+    this.SP = boot.SP;
+    this.PC = boot.PC;
+    this.flagZ = boot.FLAG_Z; this.flagN = boot.FLAG_N; this.flagH = boot.FLAG_H; this.flagC = boot.FLAG_C;
     this.IME = false;      // Interrupt Master Enable
     this.eiDelay = 0;      // EI takes effect after the *next* instruction, not immediately
     this.halted = false;
@@ -2374,14 +2464,14 @@ class PPU {
   // and the neutral grayscale used by the Game Boy Pocket's screen. SHADES points at
   // whichever is currently active (see setScreenModel() on Emulator) and is what
   // applyPalette() actually reads from.
-  static PALETTE_GB  = [[155, 188, 15], [139, 172, 15], [48, 98, 48], [15, 56, 15]];
-  static PALETTE_GBP = [[255, 255, 255], [169, 169, 169], [84, 84, 84], [0, 0, 0]];
+  static PALETTE_GB  = EMU_CORE_CONFIG.PALETTE_GB;
+  static PALETTE_GBP = EMU_CORE_CONFIG.PALETTE_GBP;
   static SHADES = PPU.PALETTE_GBP;
 
   // Layer-tint debug view: each rendering layer gets a distinct color wash so it's
   // obvious at a glance which layer drew which pixel (background layer / window "tiles" / sprites).
-  static LAYER_TINTS = { bg: [255, 90, 90], window: [90, 220, 255], sprite: [140, 255, 110] };
-  static LAYER_TINT_MIX = 0.4; // 0 = no tint, 1 = solid tint color
+  static LAYER_TINTS = EMU_CORE_CONFIG.LAYER_TINTS;
+  static LAYER_TINT_MIX = EMU_CORE_CONFIG.LAYER_TINT_MIX;
 
   constructor(emulator) {
     this.emulator = emulator;
@@ -2389,7 +2479,7 @@ class PPU {
     this.modeClock = 0;
     this.mode = 2;
     this.windowLineCounter = 0;
-    this.framebuffer = new Uint8ClampedArray(160 * 144 * 4);
+    this.framebuffer = new Uint8ClampedArray(EMU_CORE_CONFIG.SCREEN.WIDTH * EMU_CORE_CONFIG.SCREEN.HEIGHT * 4);
   }
 
   /* ---- save state ---- */
@@ -2422,27 +2512,28 @@ class PPU {
   step(cycles) {
     if (!(this.lcdc & 0x80)) { this.modeClock = 0; this.ly = 0; this.mode = 0; this.setStatMode(0); return; }
 
+    const MODE = EMU_CORE_CONFIG.PPU_MODE_CYCLES, FRAME = EMU_CORE_CONFIG.FRAME;
     this.modeClock += cycles;
     switch (this.mode) {
-      case 2: // OAM search (80 cycles)
-        if (this.modeClock >= 80) { this.modeClock -= 80; this.mode = 3; }
+      case 2: // OAM search
+        if (this.modeClock >= MODE.OAM_SEARCH) { this.modeClock -= MODE.OAM_SEARCH; this.mode = 3; }
         break;
 
-      case 3: // pixel transfer (172 cycles)
-        if (this.modeClock >= 172) {
-          this.modeClock -= 172;
+      case 3: // pixel transfer
+        if (this.modeClock >= MODE.PIXEL_TRANSFER) {
+          this.modeClock -= MODE.PIXEL_TRANSFER;
           this.mode = 0; this.setStatMode(0);
           this.renderScanline();
           this.checkStatInterrupt(0x08);
         }
         break;
 
-      case 0: // HBlank (204 cycles)
-        if (this.modeClock >= 204) {
-          this.modeClock -= 204;
+      case 0: // HBlank
+        if (this.modeClock >= MODE.HBLANK) {
+          this.modeClock -= MODE.HBLANK;
           this.ly++;
           this.checkLYC();
-          if (this.ly === 144) {
+          if (this.ly === FRAME.VISIBLE_LINES) {
             this.mode = 1; this.setStatMode(1);
             this.emulator.requestInterrupt(0); // VBlank interrupt
             this.checkStatInterrupt(0x10);
@@ -2454,11 +2545,11 @@ class PPU {
         }
         break;
 
-      case 1: // VBlank (10 lines x 456 cycles)
-        if (this.modeClock >= 456) {
-          this.modeClock -= 456;
+      case 1: // VBlank (10 lines x one line's worth of cycles)
+        if (this.modeClock >= FRAME.CYCLES_PER_LINE) {
+          this.modeClock -= FRAME.CYCLES_PER_LINE;
           this.ly++;
-          if (this.ly > 153) {
+          if (this.ly > FRAME.TOTAL_LINES - 1) {
             this.ly = 0; this.windowLineCounter = 0;
             this.mode = 2; this.setStatMode(2);
             this.checkStatInterrupt(0x20);
@@ -2480,14 +2571,14 @@ class PPU {
 
   renderScanline() {
     const y = this.ly;
-    if (y >= 144) return;
+    if (y >= EMU_CORE_CONFIG.SCREEN.HEIGHT) return;
     const bgPriority = new Uint8Array(160); // tracks BG/window color index per pixel, for sprite priority
 
     if (this.lcdc & 0x01) {
       this.renderBackgroundLine(y, bgPriority);
       if (this.lcdc & 0x20) this.renderWindowLine(y, bgPriority);
     } else {
-      for (let x = 0; x < 160; x++) this.setPixel(x, y, 255, 255, 255);
+      for (let x = 0; x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) this.setPixel(x, y, 255, 255, 255);
     }
     if (this.lcdc & 0x02) this.renderSpritesLine(y, bgPriority);
   }
@@ -2500,7 +2591,7 @@ class PPU {
     const bgY = (y + scy) & 0xFF;
     const tileRow = bgY >> 3;
 
-    for (let x = 0; x < 160; x++) {
+    for (let x = 0; x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
       const bgX = (x + scx) & 0xFF;
       const tileCol = bgX >> 3;
       const tileIndexRaw = this.mmu.vram[(tileMapBase + tileRow * 32 + tileCol) - 0x8000];
@@ -2520,7 +2611,7 @@ class PPU {
   renderWindowLine(y, bgPriority) {
     if (y < this.wy) return;
     const wx = this.wx - 7;
-    if (wx > 159) return;
+    if (wx > EMU_CORE_CONFIG.SCREEN.WIDTH - 1) return;
     const tileMapBase = (this.lcdc & 0x40) ? 0x9C00 : 0x9800;
     const signedIndex = !(this.lcdc & 0x10);
     const tileDataBase = signedIndex ? 0x9000 : 0x8000;
@@ -2528,7 +2619,7 @@ class PPU {
     const tileRow = winY >> 3;
     let drewAny = false;
 
-    for (let x = Math.max(wx, 0); x < 160; x++) {
+    for (let x = Math.max(wx, 0); x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
       const winX = x - wx;
       const tileCol = winX >> 3;
       const tileIndexRaw = this.mmu.vram[(tileMapBase + tileRow * 32 + tileCol) - 0x8000];
@@ -2548,9 +2639,10 @@ class PPU {
   }
 
   renderSpritesLine(y, bgPriority) {
-    const spriteHeight = (this.lcdc & 0x04) ? 16 : 8;
+    const SPR = EMU_CORE_CONFIG.SPRITES;
+    const spriteHeight = (this.lcdc & 0x04) ? SPR.HEIGHT_TALL : SPR.HEIGHT_SMALL;
     const candidates = [];
-    for (let i = 0; i < 40 && candidates.length < 10; i++) { // hardware limit: 10 sprites/line
+    for (let i = 0; i < SPR.MAX_TOTAL && candidates.length < SPR.MAX_PER_LINE; i++) { // hardware limit: 10 sprites/line
       const base = i * 4;
       const spriteY = this.mmu.oam[base] - 16;
       if (y >= spriteY && y < spriteY + spriteHeight) {
@@ -2570,7 +2662,7 @@ class PPU {
     candidates.sort((a, b) => (b.spriteX - a.spriteX) || (b.oamIndex - a.oamIndex));
 
     for (const s of candidates) {
-      if (s.spriteX <= -8 || s.spriteX >= 160) continue;
+      if (s.spriteX <= -8 || s.spriteX >= EMU_CORE_CONFIG.SCREEN.WIDTH) continue;
       const yFlip = !!(s.attrs & 0x40), xFlip = !!(s.attrs & 0x20), behindBG = !!(s.attrs & 0x80);
       const palette = (s.attrs & 0x10) ? this.obp1 : this.obp0;
       let tileIndex = s.tileIndex;
@@ -2586,7 +2678,7 @@ class PPU {
 
       for (let px = 0; px < 8; px++) {
         const sx = s.spriteX + px;
-        if (sx < 0 || sx >= 160) continue;
+        if (sx < 0 || sx >= EMU_CORE_CONFIG.SCREEN.WIDTH) continue;
         const bit = xFlip ? px : 7 - px;
         const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
         if (colorNum === 0) continue; // color 0 is always transparent for sprites
@@ -2608,13 +2700,13 @@ class PPU {
     return [r * (1 - m) + tr * m, g * (1 - m) + tg * m, b * (1 - m) + tb * m];
   }
   toSigned8(v) { return (v & 0x80) ? v - 256 : v; }
-  setPixel(x, y, r, g, b) { const i = (y * 160 + x) * 4; this.framebuffer[i] = r; this.framebuffer[i + 1] = g; this.framebuffer[i + 2] = b; this.framebuffer[i + 3] = 255; }
+  setPixel(x, y, r, g, b) { const i = (y * EMU_CORE_CONFIG.SCREEN.WIDTH + x) * 4; this.framebuffer[i] = r; this.framebuffer[i + 1] = g; this.framebuffer[i + 2] = b; this.framebuffer[i + 3] = 255; }
 }
 
 /* ==================================== 4. Timer ========================================== */
 
 class Timer {
-  static TIMA_PERIOD = [1024, 16, 64, 256]; // T-cycles per TIMA increment, indexed by TAC[1:0]
+  static TIMA_PERIOD = EMU_CORE_CONFIG.TIMER.TIMA_PERIOD; // T-cycles per TIMA increment, indexed by TAC[1:0]
 
   constructor(emulator) {
     this.emulator = emulator;
@@ -2642,8 +2734,9 @@ class Timer {
   set div(v) { this.divReg = 0; this.divCounter = 0; }
 
   step(cycles) {
+    const DIV_PERIOD = EMU_CORE_CONFIG.TIMER.DIV_PERIOD;
     this.divCounter += cycles;
-    while (this.divCounter >= 256) { this.divCounter -= 256; this.divReg = (this.divReg + 1) & 0xFF; }
+    while (this.divCounter >= DIV_PERIOD) { this.divCounter -= DIV_PERIOD; this.divReg = (this.divReg + 1) & 0xFF; }
 
     if (this.tac & 0x04) { // timer enabled
       this.timaCounter += cycles;
@@ -2773,7 +2866,7 @@ class APU {
     // the emulator to produce samples slower or faster than the audio hardware consumes them,
     // which slowly drains or fills the ring buffer and causes periodic clicking/crackling.
     this.sampleRate = 44100;
-    this.cyclesPerSample = 4194304 / this.sampleRate;
+    this.cyclesPerSample = EMU_CORE_CONFIG.CLOCK_HZ / this.sampleRate;
     this.sampleCounter = 0;
 
     // Ring buffer feeding the Web Audio callback (producer: emulator loop, consumer: audio thread)
@@ -2863,7 +2956,7 @@ class APU {
     // Use the real hardware/OS sample rate instead of assuming 44100 - a mismatch here is
     // the classic cause of periodic crackling (the ring buffer slowly drains or overflows).
     this.sampleRate = this.audioCtx.sampleRate;
-    this.cyclesPerSample = 4194304 / this.sampleRate;
+    this.cyclesPerSample = EMU_CORE_CONFIG.CLOCK_HZ / this.sampleRate;
 
     this.masterGain = this.audioCtx.createGain();
     this.masterGain.gain.value = this.muted ? 0 : this.volume;
@@ -3238,7 +3331,7 @@ class APU {
 /* ================================= 7. Emulator (glue) ==================================== */
 
 class Emulator {
-  static CYCLES_PER_FRAME = 70224; // 154 scanlines x 456 T-cycles
+  static CYCLES_PER_FRAME = EMU_CORE_CONFIG.FRAME.CYCLES_PER_FRAME; // 154 scanlines x 456 T-cycles
 
   constructor(canvas) {
     this.mmu = new MMU(this);
@@ -3250,7 +3343,7 @@ class Emulator {
 
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
-    this.imageData = this.ctx.createImageData(160, 144);
+    this.imageData = this.ctx.createImageData(EMU_CORE_CONFIG.SCREEN.WIDTH, EMU_CORE_CONFIG.SCREEN.HEIGHT);
 
     this.running = false;
     this.frameReady = false;

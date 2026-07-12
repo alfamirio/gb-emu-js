@@ -1385,7 +1385,7 @@ class MMU {
     this.emulator = emulator;
 
     this.rom = new Uint8Array(0);        // raw cartridge ROM file
-    this.mbcType = 0;                    // 0 = ROM only, 1 = MBC1, 3 = MBC3
+    this.mbcType = 0;                    // 0 = ROM only, 1 = MBC1, 2 = MBC2, 3 = MBC3
     this.currentROMBank = 1;
     this.currentRAMBank = 0;
     this.ramEnabled = false;
@@ -1450,6 +1450,7 @@ class MMU {
     this.cartTypeByte = cartType;
     if (cartType === 0x00) { this.mbcType = 0; this.cartTypeSupported = true; }
     else if (cartType >= 0x01 && cartType <= 0x03) { this.mbcType = 1; this.cartTypeSupported = true; }
+    else if (cartType === 0x05 || cartType === 0x06) { this.mbcType = 2; this.cartTypeSupported = true; }
     else if (cartType >= 0x0F && cartType <= 0x13) { this.mbcType = 3; this.cartTypeSupported = true; }
     else { this.mbcType = 1; this.cartTypeSupported = false; } // unrecognized mapper: fall back to MBC1 behavior, best-effort only
 
@@ -1524,8 +1525,15 @@ class MMU {
     if (addr < 0x4000) return this.rom[addr] ?? 0xFF;                              // ROM bank 0
     if (addr < 0x8000) return this.rom[this.currentROMBank * 0x4000 + (addr - 0x4000)] ?? 0xFF; // switchable ROM bank
     if (addr < 0xA000) return this.vram[addr - 0x8000];                            // VRAM
-    if (addr < 0xC000) {                                                           // cart RAM / MBC3 RTC
+    if (addr < 0xC000) {                                                           // cart RAM / MBC2 built-in RAM / MBC3 RTC
       if (this.mbcType === 3 && this.rtcSelect !== -1) return this.readRTCRegister();
+      if (this.mbcType === 2) {
+        if (!this.ramEnabled) return 0xFF;
+        // MBC2's built-in RAM is only 512 nibbles, mirrored across the whole 0xA000-0xBFFF
+        // window (bank switching doesn't apply - there's only ever one "bank"). Real hardware
+        // only wires up 4 data lines here, so the upper nibble of every byte reads back as 1s.
+        return 0xF0 | (this.cartRAM[addr & 0x1FF] & 0x0F);
+      }
       return this.ramEnabled ? this.cartRAM[this.currentRAMBank * 0x2000 + (addr - 0xA000)] : 0xFF;
     }
     if (addr < 0xE000) return this.wram[addr - 0xC000];                            // WRAM
@@ -1542,9 +1550,10 @@ class MMU {
     this.noteAccess(addr, 'write');
     if (addr < 0x8000) { this.handleBanking(addr, val); return; }
     if (addr < 0xA000) { this.vram[addr - 0x8000] = val; return; }
-    if (addr < 0xC000) {                                                           // cart RAM / MBC3 RTC
+    if (addr < 0xC000) {                                                           // cart RAM / MBC2 built-in RAM / MBC3 RTC
       if (!this.ramEnabled) return;
       if (this.mbcType === 3 && this.rtcSelect !== -1) { this.writeRTCRegister(val); return; }
+      if (this.mbcType === 2) { this.cartRAM[addr & 0x1FF] = val & 0x0F; return; } // only the low nibble is real hardware
       this.cartRAM[this.currentRAMBank * 0x2000 + (addr - 0xA000)] = val;
       return;
     }
@@ -1579,6 +1588,20 @@ class MMU {
       } else {
         this.bankingMode = val & 0x01;
       }
+    } else if (this.mbcType === 2) {
+      // MBC2 crams both RAM-enable and ROM-bank-select into 0x0000-0x3FFF; which one a write
+      // does depends on bit 8 of the address (the least significant bit of the address's high
+      // byte), not on which half of the 0x0000-0x3FFF range it falls in like MBC1/MBC3.
+      if (addr < 0x4000) {
+        if ((addr & 0x0100) === 0) {
+          this.ramEnabled = (val & 0x0F) === 0x0A;
+        } else {
+          let bank = val & 0x0F; // only 4 bits: max 16 ROM banks (256KB)
+          if (bank === 0) bank = 1; // same "0 is never selectable" quirk as MBC1/MBC3
+          this.currentROMBank = bank;
+        }
+      }
+      // 0x4000-0x7FFF isn't wired to anything on MBC2 - no RAM bank select, no latch.
     } else if (this.mbcType === 3) {
       if (addr < 0x2000) {
         this.ramEnabled = (val & 0x0F) === 0x0A;
@@ -3705,7 +3728,7 @@ const CART_TYPE_NAMES = {
 // The mapper families this emulator actually implements bank-switching logic for.
 // (0x0F-0x13 includes the MBC3 RTC support added above.)
 function isCartTypeSupported(t) {
-  return t === 0x00 || (t >= 0x01 && t <= 0x03) || (t >= 0x0F && t <= 0x13);
+  return t === 0x00 || (t >= 0x01 && t <= 0x03) || t === 0x05 || t === 0x06 || (t >= 0x0F && t <= 0x13);
 }
 function getMBCName(bytes) {
   const t = bytes[0x147];
@@ -4229,7 +4252,18 @@ const RTC_REG_LABEL = { 0x08: 'RTC Seconds', 0x09: 'RTC Minutes', 0x0A: 'RTC Hou
 
 // Describes what's currently mapped into the 0xA000-0xBFFF window: a cart RAM bank, an MBC3
 // RTC register, "disabled", or "no cart RAM" for mappers without any external RAM at all.
+// How many switchable 8KB cart-RAM banks a mapper exposes. MBC2 has RAM, but it's a single
+// built-in 512x4-bit chip with no bank switching at all, so it's called out separately rather
+// than counted here (see ramBankTarget/bankingDesc below).
+function getRamBankTotal(mmu) {
+  if (mmu.mbcType === 0 || mmu.mbcType === 2) return 0;
+  return 4; // this MMU always allocates 4 cart-RAM banks' worth of space for MBC1/MBC3
+}
+
+// Describes what's currently mapped into the 0xA000-0xBFFF window: a cart RAM bank, MBC2's
+// built-in RAM, an MBC3 RTC register, "disabled", or "no cart RAM" for mappers with none.
 function ramBankTarget(mmu, ramBankTotal) {
+  if (mmu.mbcType === 2) return mmu.ramEnabled ? 'Built-in RAM (512×4-bit)' : 'disabled';
   if (!ramBankTotal) return 'no cart RAM';
   if (!mmu.ramEnabled) return 'disabled';
   if (mmu.mbcType === 3 && mmu.rtcSelect !== -1) return RTC_REG_LABEL[mmu.rtcSelect] || 'RTC register';
@@ -4240,12 +4274,13 @@ function buildBankingPanel() {
   const mmu = emulator.mmu;
   const romBytes = mmu.rom ? mmu.rom.length : 0;
   const romBankTotal = romBytes > 0 ? Math.max(1, Math.ceil(romBytes / 0x4000)) : 0;
-  const ramBankTotal = mmu.mbcType === 0 ? 0 : 4; // this MMU always allocates 4 cart-RAM banks' worth of space
+  const ramBankTotal = getRamBankTotal(mmu);
 
   bankingDesc.innerHTML = romBytes === 0
     ? 'Load a ROM to see its mapper and which ROM/RAM banks are currently switched in.'
     : `Mapper: <b>${getMBCName(mmu.rom)}</b> &middot; ${romBankTotal} ROM bank(s) of 16KB` +
-      (ramBankTotal ? ` &middot; up to ${ramBankTotal} RAM bank(s) of 8KB` : ' &middot; no external RAM') +
+      (mmu.mbcType === 2 ? ' &middot; 512×4-bit built-in RAM (no banking)'
+        : ramBankTotal ? ` &middot; up to ${ramBankTotal} RAM bank(s) of 8KB` : ' &middot; no external RAM') +
       (!mmu.cartTypeSupported ? `<br><span style="color:#e8794b">⚠ Unsupported mapper - banking below is simulated as MBC1 and won't match real hardware.</span>` : '');
 
   bankingWindows.innerHTML = `
@@ -4259,7 +4294,7 @@ function buildBankingPanel() {
       <div class="bw-range">CPU addresses 0x4000–0x7FFF</div>
       <div class="bw-arrow">↓ currently mapped to</div>
       <div class="bw-target" id="bwSwitchableTarget">${romBankTotal ? 'ROM Bank ' + mmu.currentROMBank : '—'}</div>
-      <div class="bw-note">Switched by writing to 0x2000–0x3FFF (MBC1/MBC3). This is what "bank switching" means.</div>
+      <div class="bw-note">Switched by writing to 0x2000–0x3FFF (MBC1/MBC3), or 0x0000–0x3FFF with address bit 8 set (MBC2). This is what "bank switching" means.</div>
     </div>
     <div class="bank-window" id="bwRam">
       <div class="bw-range">CPU addresses 0xA000–0xBFFF</div>
@@ -4284,7 +4319,9 @@ function buildBankingPanel() {
   romBankCountEl.textContent = romBankTotal ? `(${romBankTotal} × 16KB = ${(romBankTotal * 16)}KB ROM)` : '';
 
   ramBankGrid.innerHTML = '';
-  if (ramBankTotal === 0) {
+  if (mmu.mbcType === 2) {
+    ramBankGrid.innerHTML = '<div class="bank-empty">Built-in 512×4-bit RAM - not bank-switched, see readout above.</div>';
+  } else if (ramBankTotal === 0) {
     ramBankGrid.innerHTML = '<div class="bank-empty">This mapper has no external RAM.</div>';
   } else {
     for (let i = 0; i < ramBankTotal; i++) {
@@ -4313,7 +4350,7 @@ function drawBanking() {
   const romTarget = document.getElementById('bwSwitchableTarget');
   if (romTarget) romTarget.textContent = 'ROM Bank ' + mmu.currentROMBank;
   const ramTarget = document.getElementById('bwRamTarget');
-  if (ramTarget) ramTarget.textContent = ramBankTarget(mmu, mmu.mbcType === 0 ? 0 : 4);
+  if (ramTarget) ramTarget.textContent = ramBankTarget(mmu, getRamBankTotal(mmu));
 
   romBankGrid.querySelectorAll('.bank-tile').forEach(t => {
     t.classList.toggle('bank-active', Number(t.dataset.bank) === mmu.currentROMBank);
@@ -4339,7 +4376,7 @@ function drawBanking() {
     }
 
     bankingLog.textContent = `Write ${hex8(bs.val)} → ${hex16(bs.addr)}  (${BANK_KIND_LABEL[bs.kind]})` +
-      `  ⇒  ROM bank ${bs.romBank}` + (mmu.mbcType !== 0 ? `, ${ramBankTarget(mmu, mmu.mbcType === 0 ? 0 : 4)}` : '');
+      `  ⇒  ROM bank ${bs.romBank}` + (mmu.mbcType !== 0 ? `, ${ramBankTarget(mmu, getRamBankTotal(mmu))}` : '');
   }
 }
 

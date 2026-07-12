@@ -101,7 +101,7 @@ Notes: MBC1 and MBC5 together dominate the library (adoption flipped to MBC5 onc
 
 **[Pan Docs](https://gbdev.io/pandocs/)** is the definitive community-maintained Game Boy hardware reference this emulator is based on. You can use rgbds and [rgbds-live](https://github.com/gbdev/rgbds-live) to compile your own games. A small snake demo game is included in this repository, compiled from asm and c code also included.
 
-You can find GB homebrew games at [itch.io](https://itch.io/games/free/tag-gameboy).
+You can find GB homebrew games at [itch.io](https://itch.io/games/free/tag-gameboy). Check also itch.io [gbjam](https://itch.io/jam/gbjam-13).
 
 Examples:
 - [birb](https://lazydevs.itch.io/birb). H platf.

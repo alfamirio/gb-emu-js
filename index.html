@@ -449,6 +449,7 @@
   }
   .tool-tab:hover { color: #fff; border-color: #666; }
   .tool-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tool-tab.hidden { display: none; }
   .tool-panel { margin-top: 10px; }
   .tool-panel.hidden { display: none; }
   .tool-desc { color: #999; font-size: 0.75rem; margin: 0 0 10px; line-height: 1.6; }
@@ -1081,6 +1082,70 @@
     min-height: 1.2em;
   }
 
+  /* ---- RTC (MBC3 real-time clock) ---- */
+  .rtc-empty { color: #777; font-size: 0.8rem; padding: 24px 8px; text-align: center; }
+  .rtc-card {
+    background: #1b1b22;
+    border-radius: 8px;
+    padding: 18px;
+    margin-bottom: 16px;
+  }
+  .rtc-clock-row { margin-bottom: 10px; }
+  .rtc-clock-row:last-child { margin-bottom: 0; }
+  .rtc-clock-label {
+    font-size: 0.68rem;
+    color: #777;
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 2px;
+  }
+  .rtc-clock {
+    font-family: 'Consolas', monospace;
+    font-size: 1.9rem;
+    letter-spacing: 1px;
+    color: #fff;
+    text-align: center;
+  }
+  .rtc-clock .rtc-days { font-size: 1.1rem; color: #999; margin-right: 8px; }
+  .rtc-flags { display: flex; justify-content: center; gap: 8px; margin-top: 10px; }
+  .rtc-flag {
+    font-size: 0.68rem;
+    padding: 3px 10px;
+    border-radius: 10px;
+    background: #34343f;
+    color: #888;
+    border: 1px solid #444;
+  }
+  .rtc-flag.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .rtc-flag.warn.active { background: #b93a3a; border-color: #b93a3a; }
+  .rtc-regs {
+    margin-top: 12px;
+    text-align: center;
+    font-family: 'Consolas', monospace;
+    font-size: 0.7rem;
+    color: #777;
+  }
+  .rtc-section-title { font-size: 0.82rem; color: #eee; margin: 0 0 10px; }
+  .rtc-fields { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
+  .rtc-field label { display: block; font-size: 0.68rem; color: #999; margin-bottom: 4px; }
+  .rtc-field input {
+    width: 100%;
+    background: #101014;
+    border: 1px solid #444;
+    color: #fff;
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.9rem;
+    box-sizing: border-box;
+  }
+  .rtc-field input:focus { outline: none; border-color: var(--accent); }
+  .rtc-halt-row { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 0.8rem; color: #ccc; }
+  .rtc-halt-row input { accent-color: var(--accent); }
+  .rtc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .rtc-info { margin-top: 10px; font-size: 0.72rem; color: #999; min-height: 1.2em; }
+
   /* ---- RAM Editor ---- */
   .ramedit-regions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
   .ramedit-region-btn {
@@ -1599,6 +1664,7 @@
       <button class="tool-tab" data-tool="oam">Sprites (OAM)</button>
       <button class="tool-tab" data-tool="tilemap">Tile Map</button>
       <button class="tool-tab" data-tool="tileinspect">Inspector</button>
+      <button class="tool-tab hidden" data-tool="rtc">RTC</button>
     </div>
 
     <div class="tool-panel hidden" id="panel-scanline">
@@ -1753,6 +1819,72 @@
             <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13"/><path d="M6 12l6 6 6-6"/><path d="M5 21h14"/></svg>
           </button>
         </div>
+      </div>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-rtc">
+      <p class="tool-desc" id="rtcDesc">
+        The MBC3 cartridge's battery-backed real-time clock - only present on
+        MBC3+TIMER carts. It keeps counting in the
+        background based on wall-clock time, even while paused or reset, exactly like the
+        real chip does when the Game Boy is off. The fields below edit the live counters
+        directly, then re-latch them, so the game will see the new value the next time it
+        reads the clock.
+      </p>
+      <div id="rtcEmpty" class="rtc-empty">Load an MBC3+TIMER ROM to see its RTC here.</div>
+      <div id="rtcContent" class="hidden">
+        <div class="rtc-card">
+          <div class="rtc-clock-row">
+            <div class="rtc-clock-label">Raw RTC</div>
+            <div class="rtc-clock" id="rtcClock"><span class="rtc-days" id="rtcClockDays"></span><span id="rtcClockTime">00:00:00</span></div>
+          </div>
+          <div class="rtc-flags">
+            <span class="rtc-flag" id="rtcFlagHalt">Halted</span>
+            <span class="rtc-flag warn" id="rtcFlagCarry">Day carry</span>
+          </div>
+          <div class="rtc-regs" id="rtcRegs"></div>
+        </div>
+
+        <h3 class="rtc-section-title">Set clock</h3>
+        <div class="rtc-fields">
+          <div class="rtc-field">
+            <label for="rtcInputDays">Days (0-511)</label>
+            <input type="number" id="rtcInputDays" min="0" max="511" step="1">
+          </div>
+          <div class="rtc-field">
+            <label for="rtcInputHours">Hours (0-23)</label>
+            <input type="number" id="rtcInputHours" min="0" max="23" step="1">
+          </div>
+          <div class="rtc-field">
+            <label for="rtcInputMinutes">Minutes (0-59)</label>
+            <input type="number" id="rtcInputMinutes" min="0" max="59" step="1">
+          </div>
+          <div class="rtc-field">
+            <label for="rtcInputSeconds">Seconds (0-59)</label>
+            <input type="number" id="rtcInputSeconds" min="0" max="59" step="1">
+          </div>
+        </div>
+        <label class="rtc-halt-row"><input type="checkbox" id="rtcInputHalt"> Halt the clock (stops it from advancing)</label>
+
+        <h3 class="rtc-section-title">Clock correction</h3>
+        <div class="rtc-fields">
+          <div class="rtc-field">
+            <label for="rtcInputCorrectionH">Correction hours (±23)</label>
+            <input type="number" id="rtcInputCorrectionH" min="-23" max="23" step="1" value="0">
+          </div>
+          <div class="rtc-field">
+            <label for="rtcInputCorrectionM">Correction minutes (±59)</label>
+            <input type="number" id="rtcInputCorrectionM" min="-59" max="59" step="1" value="0">
+          </div>
+        </div>
+
+        <div class="rtc-actions">
+          <button type="button" class="ui-btn" id="btnRtcApply">Set clock</button>
+          <button type="button" class="ui-btn" id="btnRtcNow">Set to current date &amp; time</button>
+          <button type="button" class="ui-btn" id="btnRtcClearCarry">Clear day-carry flag</button>
+          <button type="button" class="ui-btn danger" id="btnRtcZero">Zero clock</button>
+        </div>
+        <div class="rtc-info" id="rtcInfo"></div>
       </div>
     </div>
 

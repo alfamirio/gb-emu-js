@@ -138,6 +138,27 @@ const romBankCountEl = document.getElementById('romBankCount');
 const ramBankCountEl = document.getElementById('ramBankCount');
 const bankingLog = document.getElementById('bankingLog');
 
+/* ---- 11. RTC panel refs ---- */
+const rtcEmptyEl = document.getElementById('rtcEmpty');
+const rtcContentEl = document.getElementById('rtcContent');
+const rtcClockDaysEl = document.getElementById('rtcClockDays');
+const rtcClockTimeEl = document.getElementById('rtcClockTime');
+const rtcFlagHaltEl = document.getElementById('rtcFlagHalt');
+const rtcFlagCarryEl = document.getElementById('rtcFlagCarry');
+const rtcRegsEl = document.getElementById('rtcRegs');
+const rtcInputDays = document.getElementById('rtcInputDays');
+const rtcInputHours = document.getElementById('rtcInputHours');
+const rtcInputMinutes = document.getElementById('rtcInputMinutes');
+const rtcInputSeconds = document.getElementById('rtcInputSeconds');
+const rtcInputHalt = document.getElementById('rtcInputHalt');
+const rtcInputCorrectionH = document.getElementById('rtcInputCorrectionH');
+const rtcInputCorrectionM = document.getElementById('rtcInputCorrectionM');
+const rtcInfoEl = document.getElementById('rtcInfo');
+const btnRtcApply = document.getElementById('btnRtcApply');
+const btnRtcNow = document.getElementById('btnRtcNow');
+const btnRtcClearCarry = document.getElementById('btnRtcClearCarry');
+const btnRtcZero = document.getElementById('btnRtcZero');
+
 /* ============================ Memory Map + MBC Banking visualizers ===================== */
 
 // Static region layout for the 0x0000-0xFFFF strip. `weight` drives proportional width via
@@ -706,6 +727,7 @@ const debugToolsContainer = document.getElementById('debugTools');
 const visualToolsContainer = document.getElementById('visualTools');
 const cpuDebugControls = document.getElementById('cpuDebugControls');
 const TOOLS_NEEDING_CPU_CONTROLS = ['trace', 'disasm', 'stack'];
+const rtcTabBtn = visualToolsContainer.querySelector('.tool-tab[data-tool="rtc"]');
 
 function updateCpuControlsVisibility(tool) {
   cpuDebugControls.classList.toggle('hidden', !TOOLS_NEEDING_CPU_CONTROLS.includes(tool));
@@ -735,6 +757,7 @@ function setupTabGroup(container) {
         updateCpuControlsVisibility(btn.dataset.tool);
         syncAccessTracking(btn.dataset.tool);
       }
+      if (btn.dataset.tool === 'rtc') syncRtcInputsFromLive(); // fresh "Set clock" defaults each time the tab is opened
       refreshDebugTools();
     });
   });
@@ -745,6 +768,28 @@ setupTabGroup(visualToolsContainer);
 
 updateCpuControlsVisibility(debugToolsContainer.querySelector('.tool-tab.active').dataset.tool);
 syncAccessTracking(debugToolsContainer.querySelector('.tool-tab.active').dataset.tool);
+
+// RTC only exists on MBC3+TIMER carts (cart types 0x0F/0x10) - the tab itself is hidden the
+// rest of the time rather than left visible with an empty state, since "usable at all" is a
+// per-ROM fact, not something worth a click to discover. Called on every ROM (re)load/reset
+// so it always reflects whatever's currently in the emulator.
+function rtcUsable() {
+  const mmu = emulator.mmu;
+  return !!(mmu && mmu.rom && mmu.rom.length && mmu.mbcType === 3 && mmu.hasTimer);
+}
+function updateRtcTabAvailability() {
+  const usable = rtcUsable();
+  rtcTabBtn.classList.toggle('hidden', !usable);
+  if (!usable && rtcTabBtn.classList.contains('active')) {
+    // The active tab just stopped being usable (e.g. a non-RTC ROM was loaded while it was
+    // open) - steer back to the default tab via a real click so all the usual bookkeeping
+    // (active class, panel visibility, refreshDebugTools) happens exactly like a user click would.
+    visualToolsContainer.querySelector('.tool-tab[data-tool="layers"]').click();
+  } else if (usable) {
+    syncRtcInputsFromLive();
+  }
+}
+updateRtcTabAvailability();
 
 // Keep the trace panel's height matched to its sibling column across window resizes, but
 // only while it's actually the visible tab - other debug panels are unaffected either way.
@@ -1621,6 +1666,231 @@ function drawScanlineTimeline() {
   drawScanlineStats(ppu);
 }
 
+/* ---- 4d. RTC (MBC3 real-time clock) viewer: only relevant for MBC3+TIMER carts (0x0F/0x10)
+   - rtcUsable()/updateRtcTabAvailability() above are what actually hide the tab the rest of
+   the time. Shows the live counters (ticked forward to "now" on every draw, since the real
+   chip keeps running even while the Game Boy is off) next to the latched snapshot the game
+   itself reads, and lets the person edit the live clock directly - "Set clock" writes straight
+   onto the live registers and then immediately copies them into the latched snapshot too, so
+   the game sees the new value on its very next read instead of waiting for its own
+   0x00->0x01 latch write sequence. ---- */
+function pad2(n) { return String(n).padStart(2, '0'); }
+function rtcClamp(v, lo, hi) {
+  let n = Math.floor(Number(v));
+  if (!Number.isFinite(n)) n = lo;
+  return Math.min(hi, Math.max(lo, n));
+}
+
+// Copies the live counters into the latched snapshot, simulating an instant 0x00->0x01 latch
+// write so an edit is visible to the game right away.
+function relatchRTCNow(mmu) {
+  const rtc = mmu.rtc;
+  rtc.latched.s = rtc.s; rtc.latched.m = rtc.m; rtc.latched.h = rtc.h;
+  rtc.latched.dl = rtc.dl; rtc.latched.dh = rtc.dh;
+}
+
+/* Clock correction: some games (Pokémon Gold/Silver/Crystal being the well-known case) store
+   their own clock offset in the save file - baked in once via an in-game "set your clock"
+   event - and display raw RTC + that stored offset rather than the raw RTC directly. Poking
+   the RTC registers from here bypasses that stored offset entirely, so it still applies on
+   top of whatever we set, making the in-game clock look wrong even though the RTC itself is
+   correct. Rather than emulate that per-game offset (it varies save-to-save), we let the user
+   compensate for it directly: this correction is added to the requested time whenever the
+   clock is set, so what shows up in-game ends up right. Persisted across visits since it's a
+   fixed property of a given save file. */
+const rtcCorrectionStore = makePersistedConfig('jsgb-config:rtc-correction', { h: 0, m: 0 });
+function loadRtcCorrection() { return rtcCorrectionStore.load(); }
+function saveRtcCorrection(partial) { rtcCorrectionStore.save(partial); }
+
+// Like rtcClamp, but a blank/NaN field falls back to 0 rather than to `lo` - appropriate here
+// since these ranges are signed and centered on 0 (an empty correction field should mean "no
+// correction", not "-23").
+function rtcClampSigned(v, lo, hi) {
+  let n = Math.floor(Number(v));
+  if (!Number.isFinite(n)) n = 0;
+  return Math.min(hi, Math.max(lo, n));
+}
+
+(function initRtcCorrectionInputs() {
+  const saved = loadRtcCorrection();
+  rtcInputCorrectionH.value = saved.h;
+  rtcInputCorrectionM.value = saved.m;
+  rtcInputCorrectionH.addEventListener('input', () => { if (rtcUsable()) drawRTC(); });
+  rtcInputCorrectionM.addEventListener('input', () => { if (rtcUsable()) drawRTC(); });
+  rtcInputCorrectionH.addEventListener('change', () => {
+    saveRtcCorrection({ h: rtcClampSigned(rtcInputCorrectionH.value, -23, 23) });
+  });
+  rtcInputCorrectionM.addEventListener('change', () => {
+    saveRtcCorrection({ m: rtcClampSigned(rtcInputCorrectionM.value, -59, 59) });
+  });
+})();
+
+// Reads the correction fields as signed whole hours/minutes (blank/NaN treated as 0).
+function getRtcCorrectionSeconds() {
+  const h = rtcClampSigned(rtcInputCorrectionH.value, -23, 23);
+  const m = rtcClampSigned(rtcInputCorrectionM.value, -59, 59);
+  return h * 3600 + m * 60;
+}
+
+// Applies the correction offset to an h/m/s/day tuple, wrapping seconds-of-day into 0-86399
+// and rolling any overflow/underflow into a signed day delta (so correcting backwards across
+// midnight and correcting forwards across midnight both land on the right day too).
+function applyRtcCorrection(hours, minutes, seconds, days, sign = 1) {
+  const correctionSecs = getRtcCorrectionSeconds() * sign;
+  const totalSecs = hours * 3600 + minutes * 60 + seconds + correctionSecs;
+  const dayDelta = Math.floor(totalSecs / 86400);
+  const secOfDay = ((totalSecs % 86400) + 86400) % 86400;
+  return {
+    hours: Math.floor(secOfDay / 3600),
+    minutes: Math.floor((secOfDay % 3600) / 60),
+    seconds: secOfDay % 60,
+    days: days + dayDelta,
+  };
+}
+
+let rtcInfoTimer = null;
+function setRtcInfo(msg) {
+  rtcInfoEl.textContent = msg;
+  clearTimeout(rtcInfoTimer);
+  rtcInfoTimer = setTimeout(() => { rtcInfoEl.textContent = ''; }, 2500);
+}
+
+// Fills the "Set clock" fields from the live clock's current values. Called when the RTC tab
+// is opened (and after Zero clock) so the fields start out matching what's actually running
+// instead of stale numbers left over from a previous ROM or a previous visit to the tab -
+// deliberately NOT called on every redraw, so mid-edit fields aren't clobbered while typing.
+function syncRtcInputsFromLive() {
+  if (!rtcUsable()) return;
+  const mmu = emulator.mmu;
+  mmu.tickRTC();
+  const rtc = mmu.rtc;
+  rtcInputDays.value = ((rtc.dh & 0x01) << 8) | rtc.dl;
+  rtcInputHours.value = rtc.h;
+  rtcInputMinutes.value = rtc.m;
+  rtcInputSeconds.value = rtc.s;
+  rtcInputHalt.checked = (rtc.dh & 0x40) !== 0;
+}
+
+function drawRTC() {
+  const usable = rtcUsable();
+  rtcEmptyEl.classList.toggle('hidden', usable);
+  rtcContentEl.classList.toggle('hidden', !usable);
+  if (!usable) return;
+
+  const mmu = emulator.mmu;
+  mmu.tickRTC(); // catch the live counters up to "now" before displaying them
+  const rtc = mmu.rtc;
+  const halted = (rtc.dh & 0x40) !== 0;
+  const carry = (rtc.dh & 0x80) !== 0;
+  const days = ((rtc.dh & 0x01) << 8) | rtc.dl;
+
+  // The live registers already hold the corrected time - "Set clock"/"Set to now" bake the
+  // correction in when writing (adding it so the game's own internal offset cancels back out
+  // to the intended real time). Subtract it back out here to show the plain, uncorrected time.
+  const plain = applyRtcCorrection(rtc.h, rtc.m, rtc.s, days, -1);
+  rtcClockDaysEl.textContent = `Day ${plain.days}`;
+  rtcClockTimeEl.textContent = `${pad2(plain.hours)}:${pad2(plain.minutes)}:${pad2(plain.seconds)}`;
+
+  rtcFlagHaltEl.classList.toggle('active', halted);
+  rtcFlagCarryEl.classList.toggle('active', carry);
+
+  const l = rtc.latched;
+  rtcRegsEl.textContent =
+    `live  S:${hex8(rtc.s)} M:${hex8(rtc.m)} H:${hex8(rtc.h)} DL:${hex8(rtc.dl)} DH:${hex8(rtc.dh)}` +
+    `   latched (what the game reads)  S:${hex8(l.s)} M:${hex8(l.m)} H:${hex8(l.h)} DL:${hex8(l.dl)} DH:${hex8(l.dh)}`;
+}
+
+btnRtcApply.addEventListener('click', () => {
+  if (!rtcUsable()) return;
+  const mmu = emulator.mmu;
+  const rawDays = rtcClamp(rtcInputDays.value, 0, 511);
+  const rawHours = rtcClamp(rtcInputHours.value, 0, 23);
+  const rawMinutes = rtcClamp(rtcInputMinutes.value, 0, 59);
+  const rawSeconds = rtcClamp(rtcInputSeconds.value, 0, 59);
+  const halt = rtcInputHalt.checked;
+
+  // Apply the clock correction (see "Clock correction" above) on top of the raw fields the
+  // user typed in, then clamp the corrected day count back into the counter's 0-511 range.
+  const corrected = applyRtcCorrection(rawHours, rawMinutes, rawSeconds, rawDays);
+  const days = rtcClamp(corrected.days, 0, 511);
+  const hours = corrected.hours, minutes = corrected.minutes, seconds = corrected.seconds;
+
+  const rtc = mmu.rtc;
+  rtc.s = seconds; rtc.m = minutes; rtc.h = hours;
+  rtc.dl = days & 0xFF;
+  rtc.dh = (rtc.dh & 0x80)       // preserve whatever the day-carry flag currently is
+         | ((days >> 8) & 0x01)  // day counter bit 8
+         | (halt ? 0x40 : 0x00); // halt flag from the checkbox
+  rtc.lastRealMs = Date.now();   // live clock resumes ticking from "now" using the new base
+  relatchRTCNow(mmu);
+
+  setRtcInfo('Clock set.');
+  refreshDebugTools();
+});
+
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+btnRtcNow.addEventListener('click', () => {
+  if (!rtcUsable()) return;
+  const mmu = emulator.mmu;
+  // Real-world wall-clock date/time - the emulated day counter has no calendar of its own
+  // (it's just elapsed days since the clock was last set), so it's re-based here to today's
+  // weekday (0 = Sunday, per Date.getDay()) rather than left alone, so games that derive an
+  // in-game day-of-week as (day counter % 7) land on the right day.
+  const now = new Date();
+  const rawWeekday = now.getDay(); // 0-6, Sunday = 0
+
+  // Apply the clock correction (see "Clock correction" above) on top of the real wall-clock
+  // time, same as "Set clock" does - here the "day" being corrected is just the weekday, so
+  // any day-delta from crossing midnight wraps mod 7 instead of clamping into 0-511.
+  const corrected = applyRtcCorrection(now.getHours(), now.getMinutes(), now.getSeconds(), rawWeekday);
+  const hours = corrected.hours, minutes = corrected.minutes, seconds = corrected.seconds;
+  const weekday = ((corrected.days % 7) + 7) % 7;
+
+  const rtc = mmu.rtc;
+  rtc.s = seconds; rtc.m = minutes; rtc.h = hours;
+  rtc.dl = weekday; // 0-6 fits entirely in the low byte, so dh's day-MSB bit is always 0 here
+  rtc.dh = 0;        // also clears halt and day-carry - "sync to now" should leave it running
+  rtc.lastRealMs = Date.now();
+  relatchRTCNow(mmu);
+
+  // Fill the Set Clock boxes with the plain current date/time exactly as read from the system
+  // clock - NOT a readback of the (corrected) hardware value that was just written. The boxes
+  // are meant to always hold the "real" reference time; the correction is applied only when
+  // that reference gets written into the RTC hardware, and shown separately in the "with
+  // correction" readout above.
+  rtcInputDays.value = rawWeekday;
+  rtcInputHours.value = now.getHours();
+  rtcInputMinutes.value = now.getMinutes();
+  rtcInputSeconds.value = now.getSeconds();
+  rtcInputHalt.checked = false;
+
+  setRtcInfo(`Clock set to today (${WEEKDAY_NAMES[weekday]}), ${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}.`);
+  refreshDebugTools();
+});
+
+btnRtcClearCarry.addEventListener('click', () => {
+  if (!rtcUsable()) return;
+  const mmu = emulator.mmu;
+  mmu.tickRTC();
+  mmu.rtc.dh &= ~0x80;
+  relatchRTCNow(mmu);
+  setRtcInfo('Day-carry flag cleared.');
+  refreshDebugTools();
+});
+
+btnRtcZero.addEventListener('click', () => {
+  if (!rtcUsable()) return;
+  const mmu = emulator.mmu;
+  const rtc = mmu.rtc;
+  rtc.s = 0; rtc.m = 0; rtc.h = 0; rtc.dl = 0; rtc.dh = 0;
+  rtc.lastRealMs = Date.now();
+  relatchRTCNow(mmu);
+  syncRtcInputsFromLive();
+  setRtcInfo('Clock zeroed.');
+  refreshDebugTools();
+});
+
 /* ---- 5. Live disassembler: decodes the bytes around PC into mnemonics ---- */
 /* ---- Frame Activity: emulated-hardware content per frame, not JS/host timing ----
    Left canvas: one bar per recent frame, height = instructions executed that frame; click a
@@ -2242,6 +2512,7 @@ function refreshDebugTools() {
   else if (activeVisual === 'layers') drawLayers();
   else if (activeVisual === 'oscilloscope') drawOscilloscope();
   else if (activeVisual === 'scanline') drawScanlineTimeline();
+  else if (activeVisual === 'rtc') drawRTC();
 
   // Frame Activity isn't a tab - it's always visible below the 3-column layout - so it
   // redraws every time regardless of which tabs are currently active above.

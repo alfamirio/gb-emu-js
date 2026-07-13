@@ -154,6 +154,7 @@ class MMU {
       lastRealMs: Date.now(),                   // wall-clock time the live registers are caught up to
     };
     this.rtcSelect = -1; // -1 = 0xA000-0xBFFF maps to cart RAM; 0x08-0x0C = that RTC register instead
+    this.hasTimer = false; // true only for cart types 0x0F/0x10 (MBC3+TIMER...) - the ones that actually have the RTC chip wired up, vs. plain MBC3/MBC3+RAM which don't
     const MEM = EMU_CORE_CONFIG.MEMORY;
     this.vram    = new Uint8Array(MEM.VRAM_SIZE); // 0x8000-0x9FFF
     this.wram    = new Uint8Array(MEM.WRAM_SIZE); // 0xC000-0xDFFF
@@ -214,6 +215,7 @@ class MMU {
     else if (cartType >= 0x19 && cartType <= 0x1E) { this.mbcType = 5; this.cartTypeSupported = true; }
     else { this.mbcType = 1; this.cartTypeSupported = false; } // unrecognized mapper: fall back to MBC1 behavior, best-effort only
     this.hasRumble = (cartType >= 0x1C && cartType <= 0x1E); // MBC5+RUMBLE variants
+    this.hasTimer = (cartType === 0x0F || cartType === 0x10); // MBC3+TIMER+BATTERY / MBC3+TIMER+RAM+BATTERY only - the RTC chip isn't present on plain MBC3 (0x11-0x13)
 
     this.currentROMBank = 1;
     this.currentRAMBank = 0;

@@ -90,6 +90,7 @@ class CGBMMU {
       lastRealMs: Date.now(),
     };
     this.rtcSelect = -1;
+    this.hasTimer = false; // true only for cart types 0x0F/0x10 (MBC3+TIMER...) - see DMG MMU for the same flag
 
     // ---- CGB-specific memory: two VRAM banks, eight 4KB WRAM banks ----
     this.vramBanks = [new Uint8Array(CGB.VRAM_BANK_SIZE), new Uint8Array(CGB.VRAM_BANK_SIZE)];
@@ -180,6 +181,7 @@ class CGBMMU {
     else if (cartType >= 0x19 && cartType <= 0x1E) { this.mbcType = 5; this.cartTypeSupported = true; }
     else { this.mbcType = 1; this.cartTypeSupported = false; }
     this.hasRumble = (cartType >= 0x1C && cartType <= 0x1E);
+    this.hasTimer = (cartType === 0x0F || cartType === 0x10); // MBC3+TIMER+BATTERY / MBC3+TIMER+RAM+BATTERY only
 
     this.currentROMBank = 1;
     this.currentRAMBank = 0;

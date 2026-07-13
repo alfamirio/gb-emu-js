@@ -408,6 +408,7 @@ async function loadROMBytes(bytes) {
   lastRenderedAccessSeq = -1;
   lastRenderedBankSwitchT = -1;
   buildBankingPanel();
+  updateRtcTabAvailability(); // show/hide the RTC tab depending on whether this ROM is MBC3+TIMER
   selectedFrameStatsIndex = null; // follow the latest frame again for this newly-loaded ROM
   selectedAnatomyLine = null;     // clear any pinned scanline from the previous ROM
   btnPause.disabled = false; btnReset.disabled = false;
@@ -538,6 +539,7 @@ btnReset.addEventListener('click', () => {
     lastRenderedAccessSeq = -1;
     lastRenderedBankSwitchT = -1;
     buildBankingPanel();
+    updateRtcTabAvailability();
     emulator.start();
     btnPause.textContent = '⏸ Pause';
     bpStatus.textContent = 'Reset.';
@@ -820,6 +822,7 @@ function applyLoadedState(state) {
   emulator.pause();
   emulator.loadSaveState(state);
   emulator.draw();        // repaint immediately from the restored framebuffer
+  updateRtcTabAvailability();
   refreshDebugTools();
   if (wasRunning) emulator.start();
 }

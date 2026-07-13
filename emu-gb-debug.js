@@ -53,16 +53,21 @@ const REG_DERIVED = {
 /* ---- 1. VRAM tile viewer refs ---- */
 const tileViewerCanvas = document.getElementById('tileViewerCanvas');
 const tileViewerCtx = tileViewerCanvas.getContext('2d');
-// Grid layout: 16 cols x 24 rows of tiles, with a 1px (native) gap between/around cells so
-// hovering can visually pick out one tile from the next. Each source pixel is drawn as a
-// TV_SCALE x TV_SCALE block (supersampled) rather than 1:1, so that fixed 1px gap ends up
-// thinner relative to the tile art - and thinner on screen, since the canvas's overall CSS
-// size doesn't change, just its internal pixel density. TV_W/TV_H are the canvas's real pixel
-// dimensions once cells + gaps are included.
-const TV_COLS = 16, TV_ROWS = 24, TV_SCALE = 2, TV_CELL = 8 * TV_SCALE, TV_GAP = 1;
+// Grid layout: 16 cols x 24 rows of tiles, with a 1px gap between/around cells so hovering can
+// visually pick out one tile from the next. Each source Game Boy pixel is drawn as a
+// TV_SCALE x TV_SCALE block so the tile art is zoomed in and crisp - but TV_GAP is NOT part of
+// that supersample, and the canvas is never CSS-scaled on top of its native size (no
+// style.width/height, no aspect-ratio trick, no ResizeObserver). That means TV_GAP stays
+// exactly 1 real screen pixel no matter how zoomed the art is, instead of being stretched into
+// 2px/3px/5px along with everything else. TV_W/TV_H (the canvas's native pixel size - now also
+// its displayed size, since there's no CSS scaling) are fixed by TV_SCALE, so the viewer is the
+// same size regardless of which sidebar is open or hidden.
+const TV_COLS = 16, TV_ROWS = 24, TV_SCALE = 3, TV_CELL = 8 * TV_SCALE, TV_GAP = 1;
 const TV_PITCH = TV_CELL + TV_GAP;
-const TV_W = TV_COLS * TV_PITCH + TV_GAP;  // 273
-const TV_H = TV_ROWS * TV_PITCH + TV_GAP;  // 409
+const TV_W = TV_COLS * TV_PITCH + TV_GAP;  // 401
+const TV_H = TV_ROWS * TV_PITCH + TV_GAP;  // 601
+tileViewerCanvas.width = TV_W;
+tileViewerCanvas.height = TV_H;
 const tileViewerImageData = tileViewerCtx.createImageData(TV_W, TV_H);
 const tileViewerWrap = document.getElementById('tileViewerWrap');
 const tileViewerHover = document.getElementById('tileViewerHover');

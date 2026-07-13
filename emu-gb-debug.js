@@ -1,41 +1,29 @@
 /* =========================================================================================
-   emu-gb-debug.js — debugging / visualization tools
+   emu-gb-debug.js — Debugging & Visualization Tools
    -----------------------------------------------------------------------------------------
-   The inspector panels: an editable CPU registers/flags panel (the one panel here that can
-   write back to emulator state - directly onto the CPU instance's own fields, never through
-   the MMU - and only while paused), plus the read-only ones: VRAM tile viewer, tile map
-   viewer, per-layer viewer, OAM/sprite inspector, palette viewer, per-channel oscilloscope,
-   scanline timeline, live disassembler, stack panel, interrupts panel, execution trace, memory
-   map strip, and MBC banking panel - plus the tab-switching, mode/model/scanline-mark/layer-
-   tint/dot-matrix toggles, and the refreshDebugTools() orchestrator that redraws whichever tab
-   is active.
+   Manages all inspector and visualization panels.
 
-   Depends on: emu-gb-core.js (Emulator instance, EMU_CORE_CONFIG, hex8/hex16) AND
-   emu-gb-app.js (savedUIConfig/saveUIConfig, APP_CONFIG, getMBCName, the `emulator` global,
-   and the DOM refs those set up) must both be loaded first - several toggle sections here
-   read savedUIConfig and call buildBankingPanel()/buildMemMapStrip() immediately at the top
-   level, not inside a deferred handler.
+   Key Features:
+   - Editable CPU registers/flags panel (writes directly to CPU state while paused).
+   - Graphics viewers (VRAM tiles, tile maps, layers, sprites, palettes).
+   - Audio/System metrics (oscilloscope, scanline timeline, execution trace, stack/interrupts).
+   - UI controls (disassembler, tab switching, display toggles, refresh orchestration).
 
-   Load order: emu-gb-core.js -> emu-gb-app.js -> emu-gb-debug.js.
-   ========================================================================================= */
-
-/* ============================ Debugging / visualization tools ============================
-   Six independent read-only views into emulator state, decoded straight from the same
-   MMU/PPU data the real rendering pipeline uses. These live in the left sidebar and run on
-   their own low-frequency timer (not the main 60fps loop) since they're for inspection,
-   not real-time display; only the active tab's view is redrawn.
+   Dependencies & Load Order:
+   1. emu-gb-core.js  (Provides core logic and types)
+   2. emu-gb-app.js   (Provides UI configuration, app state, and core DOM references)
+   3. emu-gb-debug.js (Must load last; immediately executes initialization code using app constants)
    ========================================================================================= */
 
 /* ---- 0. CPU registers editor refs ---- */
 const regPausedNote = document.getElementById('regPausedNote');
 const regIoReadout = document.getElementById('regIoReadout');
-// 8-bit registers (A B C D E H L) + 16-bit registers (SP PC), each { el, key, bits }
+// 8-bit (A B C D E H L) + 16-bit (SP PC) registers, each { el, key, bits }
 const REG_INPUTS = ['A', 'B', 'C', 'D', 'E', 'H', 'L', 'SP', 'PC'].map(key => {
   const el = document.getElementById('reg' + key);
   return { el, key, bits: (key === 'SP' || key === 'PC') ? 16 : 8 };
 });
-// Flags + CPU state toggles - checkbox element paired with the exact CPU property name it
-// reads/writes (flagZ/flagN/flagH/flagC/IME/halted are all plain boolean fields on the CPU).
+// Flags + CPU state toggles, paired with the CPU boolean field they read/write
 const REG_FLAGS = [
   { el: document.getElementById('regFlagZ'), key: 'flagZ' },
   { el: document.getElementById('regFlagN'), key: 'flagN' },
@@ -53,15 +41,7 @@ const REG_DERIVED = {
 /* ---- 1. VRAM tile viewer refs ---- */
 const tileViewerCanvas = document.getElementById('tileViewerCanvas');
 const tileViewerCtx = tileViewerCanvas.getContext('2d');
-// Grid layout: 16 cols x 24 rows of tiles, with a 1px gap between/around cells so hovering can
-// visually pick out one tile from the next. Each source GB pixel is drawn as a
-// TV_SCALE x TV_SCALE block so the tile art is zoomed in and crisp - but TV_GAP is NOT part of
-// that supersample, and the canvas is never CSS-scaled on top of its native size (no
-// style.width/height, no aspect-ratio trick, no ResizeObserver). That means TV_GAP stays
-// exactly 1 real screen pixel no matter how zoomed the art is, instead of being stretched into
-// 2px/3px/5px along with everything else. TV_W/TV_H (the canvas's native pixel size, and thus
-// its displayed size since there's no CSS scaling) are fixed by TV_SCALE, so the viewer is
-// the same size regardless of which sidebar is open or hidden.
+// Grid: 16 cols x 24 rows, 1px gap between cells. Each GB pixel is a TV_SCALE x TV_SCALE block.
 const TV_COLS = 16, TV_ROWS = 24, TV_SCALE = 3, TV_CELL = 8 * TV_SCALE, TV_GAP = 1;
 const TV_PITCH = TV_CELL + TV_GAP;
 const TV_W = TV_COLS * TV_PITCH + TV_GAP;  // 401
@@ -79,9 +59,7 @@ const tileMapCanvas = document.getElementById('tileMapCanvas');
 const tileMapCtx = tileMapCanvas.getContext('2d');
 const tileMapImageData = tileMapCtx.createImageData(256, 256); // 32x32 tiles of 8x8
 
-/* ---- 2b. Tile inspector refs: decodes any 16 bytes at a user-given address as one 8x8 tile.
-   Rendered by painting the true 8x8 pixels onto an offscreen canvas, then scaling that up onto
-   the visible (larger) canvas with smoothing off, so it stays crisp instead of blurry. */
+/* ---- 2b. Tile inspector refs: decodes 16 bytes at a given address as an 8x8 tile. ---- */
 const tileInspectCanvas = document.getElementById('tileInspectCanvas');
 const tileInspectCtx = tileInspectCanvas.getContext('2d');
 tileInspectCtx.imageSmoothingEnabled = false;
@@ -161,35 +139,33 @@ const btnRtcZero = document.getElementById('btnRtcZero');
 
 /* ============================ Memory Map + MBC Banking visualizers ===================== */
 
-// Static region layout for the 0x0000-0xFFFF strip. `weight` drives proportional width via
-// flex-grow; `minPx` is a floor so tiny regions (OAM/IO/HRAM/IE) don't disappear entirely.
-// `purpose` is a one-line explanation surfaced as a hover tooltip on the Mem Map strip and
-// the RAM Editor's region tabs (see buildRamEditRegionTabs()/ramEditRegionMeta()).
+// Region layout for the 0x0000-0xFFFF strip. `weight` sets proportional width; `minPx` is a
+// floor for tiny regions; `purpose` shows as a hover tooltip.
 const MEM_REGIONS = [
   { key: 'ROM0',   label: 'ROM Bank 0',    range: '0x0000–0x3FFF', color: '#5a9bd8', weight: 0x4000, minPx: 46,
-    purpose: 'Fixed 16KB ROM bank - always mapped, never bank-switched. Holds the entry point, interrupt vectors, and whatever code/data the cartridge keeps permanently resident.' },
+    purpose: 'Fixed 16KB ROM bank, always mapped. Entry point, interrupt vectors, resident code/data.' },
   { key: 'ROMX',   label: 'ROM Bank N',    range: '0x4000–0x7FFF', color: '#8fc0ec', weight: 0x4000, minPx: 46,
-    purpose: 'Switchable 16KB ROM bank. The cartridge\'s mapper (MBC) swaps which bank is visible here so games bigger than 32KB can access the rest of their code/data.' },
+    purpose: 'Switchable 16KB ROM bank, swapped by the mapper (MBC) for games larger than 32KB.' },
   { key: 'VRAM',   label: 'VRAM',          range: '0x8000–0x9FFF', color: '#e0a63d', weight: 0x2000, minPx: 34,
-    purpose: 'Video RAM: tile pixel data plus the background/window tile maps. This is what the PPU reads every scanline to draw the screen.' },
+    purpose: 'Video RAM: tile pixel data and BG/window tile maps, read by the PPU each scanline.' },
   { key: 'ERAM',   label: 'Cart RAM',      range: '0xA000–0xBFFF', color: '#d9534f', weight: 0x2000, minPx: 34,
-    purpose: 'Optional cartridge RAM (SRAM), used for save data or MBC3\'s RTC registers. Often battery-backed; only readable/writable once the mapper enables it.' },
+    purpose: 'Optional cartridge RAM (SRAM) for save data or MBC3 RTC registers. Mapper-gated.' },
   { key: 'WRAM',   label: 'WRAM',          range: '0xC000–0xDFFF', color: '#5cb85c', weight: 0x2000, minPx: 34,
-    purpose: 'General-purpose work RAM - the game\'s variables, stack, and internal state. Not visible to the PPU or any other hardware block.' },
+    purpose: 'General-purpose work RAM: variables, stack, internal state.' },
   { key: 'ECHO',   label: 'Echo RAM',      range: '0xE000–0xFDFF', color: '#3f7a3f', weight: 0x1E00, minPx: 22, aliasOf: 'WRAM',
-    purpose: 'Unofficial mirror of WRAM 0xC000-0xDDFF - reads/writes here actually hit WRAM. Real games are supposed to avoid it; it exists here for hardware-accurate behavior.' },
+    purpose: 'Mirror of WRAM 0xC000-0xDDFF; reads/writes here hit WRAM.' },
   { key: 'OAM',    label: 'OAM',           range: '0xFE00–0xFE9F', color: '#b366cc', weight: 0x00A0, minPx: 20,
-    purpose: 'Object Attribute Memory - up to 40 sprite entries (X/Y position, tile index, flip/priority/palette flags) that the PPU composites onto each scanline.' },
+    purpose: 'Object Attribute Memory: up to 40 sprite entries composited by the PPU each scanline.' },
   { key: 'UNUSED', label: 'Unused',        range: '0xFEA0–0xFEFF', color: '#3a3a42', weight: 0x0060, minPx: 16,
-    purpose: 'Unmapped on DMG hardware. Real GBs return inconsistent (often 0x00) values here depending on model/revision; no game is meant to rely on it.' },
+    purpose: 'Unmapped on DMG hardware; returns inconsistent values depending on model.' },
   { key: 'IO',     label: 'I/O Regs',      range: '0xFF00–0xFF7F', color: '#e05fb0', weight: 0x0080, minPx: 20,
-    purpose: 'Memory-mapped hardware registers: joypad input, serial, timers, sound channels, and LCD/PPU control - the interface between code and the rest of the hardware.' },
+    purpose: 'Memory-mapped hardware registers: joypad, serial, timers, sound, LCD/PPU control.' },
   { key: 'HRAM',   label: 'HRAM',          range: '0xFF80–0xFFFE', color: '#f0d84a', weight: 0x007F, minPx: 20,
-    purpose: 'High RAM - 127 bytes, fastest to access. Commonly used as scratch space for code that needs to keep running while OAM DMA has the rest of memory bus locked out.' },
+    purpose: 'High RAM, 127 bytes, fastest to access. Common scratch space during OAM DMA.' },
   { key: 'IE',     label: 'IE',            range: '0xFFFF',        color: '#f5f5f5', weight: 0x0001, minPx: 16,
-    purpose: 'Interrupt Enable register - one bit per interrupt source (VBlank/STAT/Timer/Serial/Joypad) masking whether it can fire at all.' },
+    purpose: 'Interrupt Enable register, one bit per interrupt source.' },
 ];
-let memRegionEls = {}; // key -> { el, key } (ECHO shares the 'WRAM' flash key via aliasOf)
+let memRegionEls = {}; // key -> { el, key } (ECHO shares WRAM's flash key via aliasOf)
 
 function buildMemMapStrip() {
   memmapStrip.innerHTML = '';
@@ -211,8 +187,7 @@ let lastRenderedAccessSeq = -1;
 
 function drawMemMap() {
   const mmu = emulator.mmu;
-  // Keep the "currently mapped bank" tag on the switchable ROM block accurate even when
-  // nothing has been read from it yet this frame.
+  // Keep the ROM bank tag accurate even if nothing was read from it this frame
   const bankTag = document.getElementById('mmRomBankTag');
   if (bankTag) bankTag.textContent = 'Bank ' + mmu.currentROMBank;
 
@@ -221,8 +196,7 @@ function drawMemMap() {
 
   if (a.seq !== lastRenderedAccessSeq) {
     lastRenderedAccessSeq = a.seq;
-    // Echo RAM writes are drawn on the ECHO block itself (not WRAM) so the "why is there a
-    // second green-ish strip" question has an obvious visual answer.
+    // Echo RAM writes flash the ECHO block itself, not WRAM
     const flashKey = a.region === 'WRAM' && a.addr >= 0xE000 ? 'ECHO' : a.region;
     const el = memRegionEls[flashKey];
     if (el) {
@@ -241,17 +215,14 @@ function drawMemMap() {
 
 const RTC_REG_LABEL = { 0x08: 'RTC Seconds', 0x09: 'RTC Minutes', 0x0A: 'RTC Hours', 0x0B: 'RTC Day (lo)', 0x0C: 'RTC Day (hi)/Flags' };
 
-// How many switchable 8KB cart-RAM banks a mapper exposes. MBC2 has RAM, but it's a single
-// built-in 512x4-bit chip with no bank switching at all, so it's called out separately rather
-// than counted here (see ramBankTarget/bankingDesc below).
+// Switchable 8KB cart-RAM banks a mapper exposes (MBC2's RAM has no banking).
 function getRamBankTotal(mmu) {
   if (mmu.mbcType === 0 || mmu.mbcType === 2) return 0;
-  if (mmu.mbcType === 5) return 16; // MBC5's RAM bank register is a full 4 bits
-  return 4; // this MMU always allocates 4 cart-RAM banks' worth of space for MBC1/MBC3
+  if (mmu.mbcType === 5) return 16;
+  return 4;
 }
 
-// Describes what's currently mapped into the 0xA000-0xBFFF window: a cart RAM bank, MBC2's
-// built-in RAM, an MBC3 RTC register, "disabled", or "no cart RAM" for mappers with none.
+// What's mapped into 0xA000-0xBFFF right now.
 function ramBankTarget(mmu, ramBankTotal) {
   if (mmu.mbcType === 2) return mmu.ramEnabled ? 'Built-in RAM (512×4-bit)' : 'disabled';
   if (!ramBankTotal) return 'no cart RAM';
@@ -335,8 +306,7 @@ function drawBanking() {
   const mmu = emulator.mmu;
   if (!mmu.rom || mmu.rom.length === 0) return;
 
-  // Keep the "currently mapped" readouts and the active-tile highlight correct every frame,
-  // independent of whether a fresh switch just happened.
+  // Keep readouts and active-tile highlight correct every frame
   const romTarget = document.getElementById('bwSwitchableTarget');
   if (romTarget) romTarget.textContent = 'ROM Bank ' + mmu.currentROMBank;
   const ramTarget = document.getElementById('bwRamTarget');
@@ -373,26 +343,15 @@ function drawBanking() {
 buildMemMapStrip();
 buildBankingPanel();
 
-/* ============================ RAM Editor ================================================
-   Read/write panel for the regions that are real RAM (VRAM, cart RAM, WRAM/Echo, OAM, HRAM),
-   plus IE, plus a dedicated bit-level view for the I/O registers - ROM stays read-only. Every
-   read here goes through mmu.peek8 (same address decoding as the CPU's read8, just without
-   flagging the access to the Memory Map visualizer) and every write goes through the real
-   mmu.write8 - never touching mmu.vram/wram/oam/etc. arrays directly - so banking, Echo RAM
-   mirroring, and I/O side effects (DIV reset, DMA trigger, APU register masks, ...) all behave
-   exactly as they would for a write coming from the CPU.
-   ========================================================================================= */
+/* RAM Editor: read/write panel for RAM regions plus IE, with a bit-level view for I/O
+   registers; ROM stays read-only. Reads/writes go through mmu.peek8/write8. */
 
 const ramEditRegionsEl = document.getElementById('ramEditRegions');
 const ramEditInfoEl = document.getElementById('ramEditInfo');
 const ramEditNavEl = document.getElementById('ramEditNav');
 const ramEditBodyEl = document.getElementById('ramEditBody');
 
-// Per-region edit policy. ROM is always read-only (real hardware can't write it either).
-// VRAM/WRAM+Echo/OAM/HRAM are plain RAM, edited as a hex dump. Cart RAM is real RAM too, but
-// only actually backed by storage while the cartridge's mapper has it enabled. I/O and IE get
-// the dedicated per-bit editor instead of raw hex, since many of their bits are write-only,
-// read-only, or trigger a side effect the moment they're written.
+// Per-region edit policy: ROM read-only; most regions as hex dump; I/O and IE use a per-bit editor.
 const RAMEDIT_META = {
   ROM0: { editable: false, mode: 'hex', note: 'Read-only: on real hardware ROM can\'t be written either.' },
   ROMX: { editable: false, mode: 'hex', note: 'Read-only: on real hardware ROM can\'t be written either.' },
@@ -410,10 +369,8 @@ const RAMEDIT_BASE = { ROM0: 0x0000, ROMX: 0x4000, VRAM: 0x8000, ERAM: 0xA000, W
 const RAMEDIT_LEN = { ROM0: 0x4000, ROMX: 0x4000, VRAM: 0x2000, ERAM: 0x2000, WRAM: 0x2000, ECHO: 0x1E00, OAM: 0xA0, IO: 0x80, HRAM: 0x7F, IE: 0x1 };
 const RAMEDIT_PAGE = 256; // bytes per page (16 rows x 16 bytes) for regions bigger than this
 
-// Friendly names/descriptions for the well-known DMG I/O registers, with optional bit labels
-// (MSB first, matching the checkbox order the row is built in) for the ones worth spelling
-// out. Registers not listed here still get a row, just with a plain hex byte editor instead
-// of bit toggles, since we don't have documented per-bit semantics to expose for them.
+// Names/descriptions for known DMG I/O registers, with optional bit labels (MSB first).
+// Unlisted registers fall back to a plain hex byte editor.
 const IO_REG_INFO = {
   0xFF00: { name: 'P1/JOYP', desc: 'Joypad. Bits 5-4 select which button line is being read; bits 3-0 are inputs (0 = pressed) that real hardware doesn\'t let software force.' },
   0xFF01: { name: 'SB', desc: 'Serial data buffer.' },
@@ -530,9 +487,9 @@ function buildRamEditNav(meta) {
   ramEditNavEl.appendChild(row);
 }
 
-// Applies a hex-cell edit through the real MMU write path (never mmu.vram/wram/... directly).
+// Applies a hex-cell edit through the real MMU write path.
 function commitRamEditCell(input) {
-  if (input.value === '') return; // leave it blank; the next live refresh repaints the real value
+  if (input.value === '') return; // next live refresh repaints the real value
   const addr = parseInt(input.dataset.addr, 10);
   const val = parseInt(input.value, 16) & 0xFF;
   emulator.mmu.write8(addr, val);
@@ -648,8 +605,7 @@ function buildRamEditIoTable(meta) {
     } else if (info) {
       buildRamEditIoBitRow(row, addr, info.bitLabels || null);
     } else {
-      // No documented bit semantics in this emulator for this address: fall back to a plain
-      // single-byte hex editor rather than guessing at bit meanings.
+      // No documented bit semantics for this address: fall back to a raw hex editor
       const hexRow = document.createElement('div');
       hexRow.className = 'ramedit-io-hexrow';
       hexRow.appendChild(makeRamEditHexInput(addr));
@@ -676,10 +632,7 @@ function buildRamEditBody() {
   drawRamEditor(); // paint real values immediately, don't wait for the next tick
 }
 
-// Live refresh: repaints every visible cell/register from mmu.peek8 so a value the game
-// itself changes shows up, not just what the student typed - same idea as the always-live
-// VRAM/OAM panels. Never repaints whichever input currently has focus, so it doesn't fight
-// the student mid-edit.
+// Live refresh: repaints visible cells from mmu.peek8, skipping any focused input.
 function drawRamEditor() {
   const mmu = emulator.mmu;
   const meta = ramEditRegionMeta(ramEditKey);
@@ -722,7 +675,7 @@ function drawRamEditor() {
 buildRamEditRegionTabs();
 buildRamEditBody();
 
-/* ---- tab switching (scoped per sidebar, so each tracks its own active tab) ---- */
+/* ---- tab switching (each sidebar tracks its own active tab) ---- */
 const debugToolsContainer = document.getElementById('debugTools');
 const visualToolsContainer = document.getElementById('visualTools');
 const cpuDebugControls = document.getElementById('cpuDebugControls');
@@ -733,11 +686,8 @@ function updateCpuControlsVisibility(tool) {
   cpuDebugControls.classList.toggle('hidden', !TOOLS_NEEDING_CPU_CONTROLS.includes(tool));
 }
 
-// MMU.noteAccess() (Mem Map/Banking) and the CPU's per-instruction trace snapshot/diff
-// (Execution Trace) are the two hottest pieces of debug instrumentation. Both are wasted work
-// unless the specific tab that consumes them is the open one, so keep emulator.trackMemMap /
-// emulator.trackTrace synced to (debug mode on) AND (that tab active) - called on tab
-// switches and from applyMode() so either kind of change is caught.
+// Keep emulator.trackMemMap/trackTrace synced to (debug mode on) AND (that tab active),
+// so the hot instrumentation only runs when its tab is actually open.
 function syncAccessTracking(activeDebugTool) {
   const debugging = !document.body.classList.contains('playing-mode');
   emulator.trackMemMap = debugging && (activeDebugTool === 'memmap' || activeDebugTool === 'banking');
@@ -769,10 +719,8 @@ setupTabGroup(visualToolsContainer);
 updateCpuControlsVisibility(debugToolsContainer.querySelector('.tool-tab.active').dataset.tool);
 syncAccessTracking(debugToolsContainer.querySelector('.tool-tab.active').dataset.tool);
 
-// RTC only exists on MBC3+TIMER carts (cart types 0x0F/0x10) - the tab itself is hidden the
-// rest of the time rather than left visible with an empty state, since "usable at all" is a
-// per-ROM fact, not something worth a click to discover. Called on every ROM (re)load/reset
-// so it always reflects whatever's currently in the emulator.
+// RTC only exists on MBC3+TIMER carts (0x0F/0x10); the tab hides otherwise.
+// Called on every ROM (re)load/reset.
 function rtcUsable() {
   const mmu = emulator.mmu;
   return !!(mmu && mmu.rom && mmu.rom.length && mmu.mbcType === 3 && mmu.hasTimer);
@@ -781,9 +729,7 @@ function updateRtcTabAvailability() {
   const usable = rtcUsable();
   rtcTabBtn.classList.toggle('hidden', !usable);
   if (!usable && rtcTabBtn.classList.contains('active')) {
-    // The active tab just stopped being usable (e.g. a non-RTC ROM was loaded while it was
-    // open) - steer back to the default tab via a real click so all the usual bookkeeping
-    // (active class, panel visibility, refreshDebugTools) happens exactly like a user click would.
+    // Active tab just stopped being usable: steer back via a real click so normal bookkeeping runs
     visualToolsContainer.querySelector('.tool-tab[data-tool="layers"]').click();
   } else if (usable) {
     syncRtcInputsFromLive();
@@ -791,10 +737,7 @@ function updateRtcTabAvailability() {
 }
 updateRtcTabAvailability();
 
-// Keep the trace panel's height matched to its sibling column across window resizes, but
-// only while it's actually the visible tab - other debug panels are unaffected either way.
-// (No initial call needed here: Registers is the default active tab, and syncTraceListHeight()
-// runs itself via drawTrace() the moment the Execution Trace tab is actually opened.)
+// Keep the trace panel's height matched to its sibling column on resize, while its tab is active
 window.addEventListener('resize', () => {
   if (debugToolsContainer.querySelector('.tool-tab.active').dataset.tool === 'trace') syncTraceListHeight();
 });
@@ -804,8 +747,8 @@ document.querySelectorAll('input[name="tmSelect"]').forEach(r => {
   r.addEventListener('change', () => { tileMapSelect = r.value; refreshDebugTools(); });
 });
 
-/* ---- play / debug mode toggle: checked = debugging GUI (default), unchecked = playing ----
-   The chosen mode is persisted (in the shared UI config) so it's restored on the next visit. */
+/* ---- play / debug mode toggle: checked = debugging GUI (default), unchecked = playing.
+   Persisted in the shared UI config. ---- */
 const modeToggle = document.getElementById('modeToggle');
 const modeLabelPlay = document.getElementById('modeLabelPlay');
 const modeLabelDebug = document.getElementById('modeLabelDebug');
@@ -821,7 +764,7 @@ function applyMode() {
   if (debugging) refreshDebugTools();
 }
 
-// Restore the saved mode (if any) before the first render so the UI doesn't flash the default.
+// Restore saved mode before first render to avoid a flash of the default
 if (typeof savedUIConfig.debugMode === 'boolean') modeToggle.checked = savedUIConfig.debugMode;
 
 modeToggle.addEventListener('change', applyMode);
@@ -838,8 +781,7 @@ function applyScreenModel() {
   modelLabelGBP.classList.toggle('active', isGBP);
   modelLabelGB.classList.toggle('active', !isGBP);
   saveUIConfig({ gbp: isGBP });
-  // Repaint immediately with the new palette instead of waiting for the next emulated frame,
-  // and refresh any open debug/visualization panels that render colors (tile map, palettes, etc).
+  // Repaint immediately with the new palette and refresh any open color panels
   if (emulator.mmu.rom && emulator.mmu.rom.length) emulator.draw();
   refreshDebugTools();
 }
@@ -848,9 +790,8 @@ if (typeof savedUIConfig.gbp === 'boolean') modelToggle.checked = savedUIConfig.
 
 modelToggle.addEventListener('change', applyScreenModel);
 
-/* ---- navbar toggle: overlay a line on the GB screen at the PPU's current scanline (LY) ----
-   Deliberately NOT persisted to saved UI config - always starts off on load/refresh, unlike
-   the other navbar toggles. */
+/* ---- navbar toggle: overlay a line at the PPU's current scanline (LY).
+   Not persisted; always starts off on load. ---- */
 const scanlineMarkToggle = document.getElementById('scanlineMarkToggle');
 const scanlineMarkLabelOn = document.getElementById('scanlineMarkLabelOn');
 
@@ -864,11 +805,7 @@ function applyScanlineMark() {
 
 scanlineMarkToggle.addEventListener('change', applyScanlineMark);
 
-// The "Line" toggle is a debug aid (where's the PPU right now?) that only makes sense to
-// flip while paused - changing it mid-play would just be invisible until the next pause
-// anyway. Lock it while the emulator is actually running, unlock it the instant it isn't.
-// Driven entirely by emulator.onRunStateChange (fired only on real start()/pause()
-// transitions, see _setRunning() in emu-gb-core.js) - no polling of emulator.running needed.
+// Lock the toggle while running (only meaningful while paused); driven by emulator.onRunStateChange
 const scanlineMarkToggleWrap = scanlineMarkToggle.closest('.scanline-mark-toggle');
 function setScanlineMarkToggleLocked(running) {
   scanlineMarkToggle.disabled = running;
@@ -877,8 +814,7 @@ function setScanlineMarkToggleLocked(running) {
 setScanlineMarkToggleLocked(emulator.running);
 emulator.onRunStateChange = setScanlineMarkToggleLocked;
 
-/* ---- navbar toggle: wash each PPU layer (background / window "tiles" / sprites) with its
-   own tint color, so overlapping layers are easy to tell apart on the GB screen ---- */
+/* ---- navbar toggle: tint each PPU layer (BG/window/sprites) so overlaps are easy to tell apart ---- */
 const layerTintToggle = document.getElementById('layerTintToggle');
 const layerTintLabelOn = document.getElementById('layerTintLabelOn');
 
@@ -895,9 +831,7 @@ if (typeof savedUIConfig.layerTint === 'boolean') layerTintToggle.checked = save
 
 layerTintToggle.addEventListener('change', applyLayerTint);
 
-/* ---- navbar toggle: overlay a hairline pixel grid on the GB screen, mimicking the visible
-   dot matrix of a real GB LCD. Purely cosmetic (CSS overlay, no canvas/shader work
-   needed), so no repaint is required when toggling. ---- */
+/* ---- navbar toggle: overlay a hairline pixel grid mimicking a real GB LCD's dot matrix ---- */
 const dotMatrixToggle = document.getElementById('dotMatrixToggle');
 const dotMatrixLabelOn = document.getElementById('dotMatrixLabelOn');
 
@@ -912,17 +846,9 @@ if (typeof savedUIConfig.dotMatrix === 'boolean') dotMatrixToggle.checked = save
 
 dotMatrixToggle.addEventListener('change', applyDotMatrix);
 
-/* ---- hidden click-combo for enableEmuDevUnlock() ----
-   Alternate path into the same dev unlock flag documented at the top of emu-gb-app.js
-   (normally set via enableEmuDevUnlock() in the devtools console). Here, clicking the
-   "GB Emu" navbar badge 11 times while the Layers toggle, the Shader toggle, and the
-   model toggle (in its "GB" position, i.e. unchecked) are all in place flips it instead.
-   The badge intentionally has no hover/active/focus styling and no click feedback (see the
-   CSS in index.html), so there's nothing visually marking this as interactive. Click count
-   resets whenever any of those three conditions isn't met, so all three must already be in
-   place for the whole sequence of 11 clicks. Like the console path, this only sets the
-   localStorage flag - isDevUnlocked() is read once at load, so a page reload is still
-   needed for it to take effect. */
+/* ---- hidden click-combo for enableEmuDevUnlock(): click the navbar badge 23 times while
+   layerTint + dotMatrix are on and model is set to GB. Sets the same localStorage flag as
+   the console path; requires a page reload to take effect. ---- */
 const navTitle = document.getElementById('navTitle');
 const DEV_UNLOCK_CLICKS_NEEDED = 23;
 let devUnlockClickCount = 0;
@@ -938,19 +864,14 @@ navTitle.addEventListener('click', () => {
   }
 });
 
-/* ---- navbar toggles: independently show/hide the Debugging Tools sidebar, the
-   Visualization Tools sidebar, and the Frame Activity panel. Each one is a simple
-   checked=visible/unchecked=hidden switch (unlike the play/debug toggle above, these use
-   display:none in CSS, so hiding a panel actually reclaims its layout space). Persisted
-   in the shared UI config so hidden panels stay hidden on the next visit. */
+/* ---- navbar toggles: show/hide the Debug Tools sidebar, Visualization Tools sidebar,
+   and Frame Activity panel (display:none, reclaiming layout space). Persisted in UI config. ---- */
 function makePanelVisToggle(toggleId, labelId, bodyClass, configKey, onShow) {
   const toggle = document.getElementById(toggleId);
   const label = document.getElementById(labelId);
 
-  // Just reflects toggle.checked into the DOM (body class + label) - no persistence, no
-  // onShow. Split out from apply() so setup below can sync the panel's actual visibility to
-  // whatever the checkbox starts at (HTML default or restored from saved config) without
-  // firing onShow before this panel's own canvases/elements are declared later in the file.
+  // Reflects toggle.checked into the DOM only; split from apply() so initial sync
+  // doesn't fire onShow before this panel's elements exist.
   function syncVisualState() {
     const visible = toggle.checked;
     document.body.classList.toggle(bodyClass, !visible);
@@ -964,10 +885,7 @@ function makePanelVisToggle(toggleId, labelId, bodyClass, configKey, onShow) {
   }
 
   if (typeof savedUIConfig[configKey] === 'boolean') toggle.checked = savedUIConfig[configKey];
-  // Without this, a panel that should start hidden (no saved config yet, or saved as hidden)
-  // stayed visible - the 'hide-*' body class was previously only ever added inside apply(),
-  // which only ran once the user interacted with the toggle.
-  syncVisualState();
+  syncVisualState(); // apply initial hidden/visible state before any user interaction
   toggle.addEventListener('change', apply);
   return apply;
 }
@@ -985,20 +903,14 @@ const applyFrameActivityVisibility = makePanelVisToggle(
   () => { drawFrameActivity(); drawFrameAnatomy(); drawLineAnatomy(); }
 );
 
-/* ---- CGB-aware color helpers, shared by every visualization panel below. DMG has one flat
-   BGP/OBP0/OBP1 register per layer; CGB instead resolves color per-tile (BG/window) or
-   per-sprite (OBJ) from one of 8 palettes in CGB palette RAM. Centralizing the branch here
-   means each panel just asks "what color is this pixel", the same way the real CGBPPU/PPU
-   renderers do, instead of re-deriving DMG-vs-CGB logic in every draw function. ---- */
+/* ---- CGB-aware color helpers, shared by every visualization panel below. DMG uses one flat
+   BGP/OBP0/OBP1 register per layer; CGB resolves color per-tile/per-sprite from palette RAM. ---- */
 function isCGBRun() { return emulator.ppu instanceof CGBPPU; }
 
 // Raw VRAM bank access: CGB has two banks (vramBanks[0/1]); DMG has one, exposed as `vram`.
 function vramBank(mmu, bank) { return mmu.vramBanks ? mmu.vramBanks[bank & 1] : mmu.vram; }
 
-// BG/window pixel color at tile-map pixel-space (mapX, mapY) under the given map base
-// (0x9800/0x9C00). On CGB this resolves the tile's own bank/flip/palette attributes (stored
-// in VRAM bank 1) via the real getBGWindowPixel() the hardware renderer uses; on DMG it's
-// just the flat BGP register.
+// BG/window pixel color at tile-map pixel-space (mapX, mapY) under the given map base.
 function bgWindowPixelRGB(ppu, tileMapBase, mapX, mapY) {
   if (ppu instanceof CGBPPU) {
     const { colorIndex, paletteNum } = ppu.getBGWindowPixel(tileMapBase, mapX, mapY);
@@ -1009,19 +921,14 @@ function bgWindowPixelRGB(ppu, tileMapBase, mapX, mapY) {
   return ppu.applyPalette(colorNum, ppu.bgp);
 }
 
-// Sprite pixel color given the sprite's OAM attribute byte and an already-decoded 0-3 color
-// number. CGB picks one of 8 OBJ palettes from attrs bits 0-2; DMG picks OBP0 or OBP1 from
-// attrs bit 4.
+// Sprite pixel color from the OAM attribute byte and a decoded 0-3 color number.
 function spritePixelRGB(ppu, attrs, colorNum) {
   if (ppu instanceof CGBPPU) return ppu.mmu.getPaletteRGB(true, attrs & 0x07, colorNum);
   return ppu.applyPalette(colorNum, (attrs & 0x10) ? ppu.obp1 : ppu.obp0);
 }
 
-/* ---- 1. VRAM tile viewer: every tile in a VRAM bank, raw, no palette. Palette-agnostic by
-   design on both systems - a tile has no fixed color until it's placed in a BG/window map or
-   OAM entry, which is what picks its palette - so this stays greyscale even on CGB. What DOES
-   differ on CGB is that there are two independent 384-tile banks instead of one, so a bank
-   selector (wired up below, shown only for CGB ROMs) picks which one is displayed. ---- */
+/* ---- 1. VRAM tile viewer: every tile in a VRAM bank, raw, greyscale (no palette applied).
+   CGB has two 384-tile banks; a bank selector below (CGB ROMs only) picks which is shown. ---- */
 let tileViewerBank = 0;
 function drawTileViewer() {
   const cgb = isCGBRun();
@@ -1029,8 +936,7 @@ function drawTileViewer() {
   const vram = cgb ? vramBank(emulator.mmu, tileViewerBank) : emulator.mmu.vram;
   const data = tileViewerImageData.data;
 
-  // Fill the whole canvas with the grid-line color first; tile pixels get painted over the
-  // top of it below, so only the 1px gaps between/around cells are left showing through.
+  // Fill with the grid-line color first; tile pixels painted over it leave only the gaps visible.
   for (let i = 0; i < data.length; i += 4) {
     data[i] = 42; data[i + 1] = 42; data[i + 2] = 50; data[i + 3] = 255;
   }
@@ -1063,10 +969,8 @@ document.querySelectorAll('input[name="tvBank"]').forEach(r => {
   r.addEventListener('change', () => { tileViewerBank = parseInt(r.value, 10); drawTileViewer(); });
 });
 
-/* ---- 1b. Sprite Sheet hover: highlight the cell under the cursor and show its tile index +
-   VRAM address in a small floating tooltip. Uses percentage-based positioning for the highlight
-   box so it stays aligned with the canvas's displayed (CSS-scaled) size without recalculating
-   pixel offsets on resize. ---- */
+/* ---- 1b. Sprite Sheet hover: highlight the cell under the cursor, show tile index + VRAM
+   address in a tooltip. Percentage-based positioning keeps it aligned when CSS-scaled. ---- */
 function tileViewerCellAt(clientX, clientY) {
   const rect = tileViewerCanvas.getBoundingClientRect();
   const relX = clientX - rect.left, relY = clientY - rect.top;
@@ -1114,10 +1018,7 @@ function drawTileMap() {
   const mapBase = tileMapSelect === '9800' ? 0x9800 : 0x9C00;
   const data = tileMapImageData.data;
 
-  // bgWindowPixelRGB() does the full tile lookup itself (index, bank, flip, palette) - on
-  // CGB via the same getBGWindowPixel() the real renderer uses, so bank-1 tile data,
-  // X/Y-flip, and per-tile palette selection (0-7) all show up correctly here instead of
-  // being silently read as bank-0/no-flip/palette-0 like the old DMG-only version did.
+  // bgWindowPixelRGB() handles the full tile lookup (index, bank, flip, palette).
   for (let ty = 0; ty < 32; ty++) {
     for (let tx = 0; tx < 32; tx++) {
       for (let py = 0; py < 8; py++) {
@@ -1130,7 +1031,7 @@ function drawTileMap() {
     }
   }
 
-  // Highlight the current 160x144 viewport (SCX/SCY), wrapping around the map edges.
+  // Highlight the current viewport (SCX/SCY), wrapping around the map edges.
   const scx = ppu.scx, scy = ppu.scy, vw = EMU_CORE_CONFIG.SCREEN.WIDTH, vh = EMU_CORE_CONFIG.SCREEN.HEIGHT;
   for (let x = 0; x < vw; x++) {
     setMapPixel(data, scx + x, scy, 255, 221, 0);
@@ -1144,9 +1045,8 @@ function drawTileMap() {
   tileMapCtx.putImageData(tileMapImageData, 0, 0);
 }
 
-/* ---- 2c. Tile inspector: decode+render the 16 bytes at tileInspectAddr as a single 8x8 tile.
-   Uses mmu.peek8() (not read8()) so pointing this at live hardware registers or ROM never
-   triggers real side effects or shows up as CPU activity in the Memory Map visualizer. */
+/* ---- 2c. Tile inspector: decode+render the 16 bytes at tileInspectAddr as an 8x8 tile.
+   Uses mmu.peek8() so this never triggers real side effects or CPU-activity tracking. */
 function drawTileInspector() {
   const mmu = emulator.mmu;
   const data = tileInspectImageData.data;
@@ -1156,7 +1056,7 @@ function drawTileInspector() {
     for (let px = 0; px < 8; px++) {
       const bit = 7 - px;
       const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
-      const shade = 255 - colorNum * 85; // same palette-agnostic grayscale as the Sprite Sheet tab
+      const shade = 255 - colorNum * 85; // greyscale, same as the Sprite Sheet tab
       const idx = (py * 8 + px) * 4;
       data[idx] = shade; data[idx + 1] = shade; data[idx + 2] = shade; data[idx + 3] = 255;
     }
@@ -1191,10 +1091,8 @@ tileInspectNextBtn.addEventListener('click', () => setTileInspectAddr(tileInspec
 
 
 /* ---- 2b. Layer viewer: background / window / sprites, each rendered independently at full
-   160x144 frame resolution using the PPU's *current* registers - a static "what does this
-   layer alone look like right now" snapshot, not tied to the current scanline like the real
-   per-line renderer. Window and sprites fill with transparent pixels where they don't draw
-   anything, so empty areas show through to whatever sits behind the canvas. ---- */
+   frame resolution using the PPU's current registers. Window/sprites use transparent pixels
+   where nothing is drawn. ---- */
 const layerCanvasBG = document.getElementById('layerCanvasBG');
 const layerCtxBG = layerCanvasBG.getContext('2d');
 const layerImageDataBG = layerCtxBG.createImageData(EMU_CORE_CONFIG.SCREEN.WIDTH, EMU_CORE_CONFIG.SCREEN.HEIGHT);
@@ -1237,11 +1135,9 @@ document.querySelectorAll('.layer-download-btn').forEach(btn => {
   });
 });
 
-// Renders every on-screen sprite into an RGBA pixel buffer (data, sized W*H*4), using the
-// exact same per-scanline candidate selection and priority rules the real renderer uses
-// (PPU.getSpriteCandidatesForLine / getSpriteRowBits / spriteRowColorIndex) - the hardware's
-// 10-sprites-per-line cap and X-then-OAM-index priority included. Shared by the Layers >
-// Sprites panel and the OAM tab's composited view, so the two can never drift apart.
+// Renders every on-screen sprite into an RGBA pixel buffer, using the same per-scanline
+// candidate selection and priority rules as the real renderer (10-sprite-per-line cap
+// included). Shared by the Layers > Sprites panel and the OAM composited view.
 function renderSpriteLayerPixels(data, W, H) {
   const ppu = emulator.ppu;
   const spriteHeight = (ppu.lcdc & 0x04) ? EMU_CORE_CONFIG.SPRITES.HEIGHT_TALL : EMU_CORE_CONFIG.SPRITES.HEIGHT_SMALL;
@@ -1269,9 +1165,8 @@ function drawLayers() {
   const ppu = emulator.ppu;
   const W = EMU_CORE_CONFIG.SCREEN.WIDTH, H = EMU_CORE_CONFIG.SCREEN.HEIGHT;
 
-  /* ---- Background: always covers the full 160x144 frame when enabled. Pixel decoding
-     goes through PPU.getBackgroundColorIndex() - the same helper renderBackgroundLine()
-     uses - so this view can never drift from what the real renderer draws. ---- */
+  /* ---- Background: covers the full frame when enabled, using the same pixel decode as
+     the real renderer. ---- */
   const bgOn = !!(ppu.lcdc & 0x01);
   setLayerStatus(layerStatusBG, layerCanvasBG.closest('.layer-block'), bgOn, 'LCDC.0');
   if (!bgOn) {
@@ -1290,11 +1185,8 @@ function drawLayers() {
   }
   layerCtxBG.putImageData(layerImageDataBG, 0, 0);
 
-  /* ---- Window: only draws where WX/WY currently place it; black elsewhere. Real hardware
-     also requires BG to be on for the window to render at all. Uses a plain y - WY per line
-     (rather than the real renderer's internal window-line counter) since this is a static
-     snapshot, not a live per-scanline render - but the tile lookup itself is the same
-     PPU.getWindowColorIndex() helper renderWindowLine() uses. ---- */
+  /* ---- Window: only draws where WX/WY place it; requires BG to be on. Static snapshot,
+     using a plain y - WY per line rather than the renderer's live window-line counter. ---- */
   const winOn = bgOn && !!(ppu.lcdc & 0x20);
   setLayerStatus(layerStatusWindow, layerCanvasWindow.closest('.layer-block'), winOn, bgOn ? 'LCDC.5' : 'LCDC.0');
   fillLayerImage(layerImageDataWindow, 0, 0, 0, 0);
@@ -1315,11 +1207,8 @@ function drawLayers() {
   }
   layerCtxWindow.putImageData(layerImageDataWindow, 0, 0);
 
-  /* ---- Sprites: every OAM entry currently on-screen, drawn with the real 10-per-line
-     hardware cap and OAM-index priority (via PPU.getSpriteCandidatesForLine(), the same
-     candidate selection renderSpritesLine() uses) - but ignoring BG-priority occlusion, so
-     the full sprite layer is visible even where the background would normally sit on top
-     of it. ---- */
+  /* ---- Sprites: every on-screen OAM entry, with the real 10-per-line cap and priority,
+     ignoring BG-priority occlusion so the full sprite layer stays visible. ---- */
   const sprOn = !!(ppu.lcdc & 0x02);
   setLayerStatus(layerStatusSprites, layerCanvasSprites.closest('.layer-block'), sprOn, 'LCDC.1');
   fillLayerImage(layerImageDataSprites, 0, 0, 0, 0);
@@ -1332,8 +1221,7 @@ function drawLayers() {
 /* ---- 3. OAM / sprite inspector: all 40 entries, decoded ---- */
 function makeTd(text) { const td = document.createElement('td'); td.textContent = text; return td; }
 
-// Shared by both the composited view and the hover hit-test: real screen-space X/Y for OAM
-// entry i, and the tile-data offset (accounting for 8x16 mode forcing the low tile bit to 0).
+// Screen-space X/Y for OAM entry i, and its tile-data offset (8x16 mode forces low tile bit to 0).
 function oamSpriteGeometry(i, spriteHeight) {
   const mmu = emulator.mmu;
   const base = i * 4;
@@ -1346,12 +1234,9 @@ function oamSpriteGeometry(i, spriteHeight) {
   return { spriteX, spriteY, tileIndex, idxTile, attrs };
 }
 
-/* ---- 3a. Composited sprite view: same per-scanline candidate/priority rendering as the
-   Layers > Sprites panel (via the shared renderSpriteLayerPixels()), just always drawn
-   regardless of LCDC.1 - this tab is for inspecting the raw OAM data as configured, not "what's
-   currently visible", so a sprite-disable toggle shouldn't blank it out. No background/window
-   layer is drawn under it - this is sprites-only, so transparent pixels just show the canvas's
-   plain dark fill. ---- */
+/* ---- 3a. Composited sprite view: same rendering as Layers > Sprites, always drawn
+   regardless of LCDC.1 since this tab inspects raw OAM data, not what's currently visible.
+   Sprites only - no background/window layer underneath. ---- */
 function drawOAMComposition() {
   const W = EMU_CORE_CONFIG.SCREEN.WIDTH, H = EMU_CORE_CONFIG.SCREEN.HEIGHT;
   const imgData = oamCompCtx.createImageData(W, H);
@@ -1361,8 +1246,7 @@ function drawOAMComposition() {
   oamCompCtx.putImageData(imgData, 0, 0);
 }
 
-// Finds the highest-priority sprite (lowest OAM index) whose bounding box covers screen pixel
-// (px, py), matching the same priority order the composited view was painted in.
+// Finds the highest-priority sprite (lowest OAM index) whose bounding box covers (px, py).
 function oamSpriteAt(px, py) {
   const ppu = emulator.ppu;
   const spriteHeight = (ppu.lcdc & 0x04) ? 16 : 8;
@@ -1387,7 +1271,7 @@ oamCompCanvas.addEventListener('mousemove', (e) => {
   const hit = oamSpriteAt(px, py);
   if (!hit) { oamCompHover.style.display = 'none'; oamCompTooltip.style.display = 'none'; return; }
 
-  // Clamp the highlight box to the visible canvas area (a sprite's origin can be negative).
+  // Clamp the highlight box to the visible canvas area.
   const boxX = Math.max(0, hit.spriteX), boxY = Math.max(0, hit.spriteY);
   const boxRight = Math.min(W, hit.spriteX + 8), boxBottom = Math.min(H, hit.spriteY + hit.spriteHeight);
   oamCompHover.style.left = (boxX / W * 100) + '%';
@@ -1462,8 +1346,7 @@ function drawOAMTable() {
   }
 }
 
-/* ---- 4. Palette viewer: BGP/OBP0/OBP1 swatches on DMG; all 8 BG + 8 OBJ CGB palettes
-   (real color straight from palette RAM, via mmu.getPaletteRGB) on CGB. ---- */
+/* ---- 4. Palette viewer: BGP/OBP0/OBP1 swatches on DMG; all 8 BG + 8 OBJ palettes on CGB. ---- */
 function drawPalettes() {
   const ppu = emulator.ppu;
   paletteGrid.innerHTML = '';
@@ -1497,9 +1380,7 @@ function drawPalettes() {
     return col;
   }
 
-  // Two columns side by side either way - Background palette(s) on the left, Object/sprite
-  // palette(s) on the right - so DMG (1 BG + 2 OBJ registers) and CGB (8 BG + 8 OBJ palettes)
-  // share the same layout and are easy to compare at a glance.
+  // Background palette(s) on the left, Object palette(s) on the right, for both DMG and CGB.
   const bgCol = addColumn('Background');
   const objCol = addColumn('Objects (Sprites)');
 
@@ -1522,9 +1403,8 @@ const scopeCanvases = {
   4: document.getElementById('scopeCh4'),
 };
 
-// Per-channel mute buttons: toggles emulator.apu.chMuted[i], which silences that channel in
-// both the mixed audio output and its own scope trace. Restored from - and persisted to -
-// the same sound-settings storage as the master mute/volume controls.
+// Per-channel mute buttons: toggles emulator.apu.chMuted[i], silencing both audio output
+// and the scope trace for that channel. Persisted with the master sound settings.
 const scopeMuteButtons = document.querySelectorAll('.scope-mute-btn');
 scopeMuteButtons.forEach(btn => {
   const ch = Number(btn.dataset.ch);
@@ -1552,8 +1432,7 @@ function drawScopeChannel(canvas, buffer, writePos, color) {
   const w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
 
-  // Center line, so a silent/off channel (which sits at the DAC's -1 "digital zero" level,
-  // not a centered 0) still has a visible reference point.
+  // Center reference line (a silent channel sits at the DAC's -1 level, not 0).
   ctx.strokeStyle = '#2a2a2a';
   ctx.beginPath();
   ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2);
@@ -1581,10 +1460,8 @@ function drawOscilloscope() {
   drawScopeChannel(scopeCanvases[4], apu.scopeCh4, apu.scopeWritePos, SCOPE_COLORS[4]);
 }
 
-/* ---- 4c. Scanline timeline: where the PPU is right now within the 154-line frame, plus a
-   zoomed-in view of the current line's OAM Search / Pixel Transfer / H-Blank split. Uses the
-   same fixed per-mode cycle counts the PPU's step() switch above runs on, so the picture
-   always matches this emulator's actual timing model. ---- */
+/* ---- 4c. Scanline timeline: PPU position within the 154-line frame, plus a zoomed-in view
+   of the current line's OAM Search / Pixel Transfer / H-Blank split. ---- */
 const SCANLINE_OAM = EMU_CORE_CONFIG.PPU_MODE_CYCLES.OAM_SEARCH;
 const SCANLINE_TRANSFER = EMU_CORE_CONFIG.PPU_MODE_CYCLES.PIXEL_TRANSFER;
 const SCANLINE_HBLANK = EMU_CORE_CONFIG.PPU_MODE_CYCLES.HBLANK;
@@ -1607,14 +1484,14 @@ function drawFrameTimeline(ppu) {
   ctx.fillStyle = '#5ac2e0'; ctx.fillRect(0, 0, visibleW, h);
   ctx.fillStyle = '#8a5ac2'; ctx.fillRect(visibleW, 0, w - visibleW, h);
 
-  // Faint tick marks every 16 lines, just for a sense of scale.
+  // Tick marks every 16 lines
   ctx.strokeStyle = 'rgba(0,0,0,.25)';
   for (let line = 16; line < SCANLINE_TOTAL_LINES; line += 16) {
     const x = Math.round((line / SCANLINE_TOTAL_LINES) * w) + 0.5;
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
   }
 
-  // Playhead: the scanline the PPU is on right now.
+  // Playhead: current scanline
   const playX = (ppu.ly / SCANLINE_TOTAL_LINES) * w;
   const playW = Math.max(2, w / SCANLINE_TOTAL_LINES);
   ctx.fillStyle = '#ffdd00';
@@ -1635,8 +1512,7 @@ function drawLineTimeline(ppu) {
   ctx.clearRect(0, 0, w, h);
 
   if (ppu.mode === 1) {
-    // V-Blank lines don't go through OAM Search / Pixel Transfer / H-Blank at all -
-    // it's one mode for the entire 456-cycle line.
+    // V-Blank: single mode for the whole 456-cycle line
     ctx.fillStyle = '#8a5ac2';
     ctx.fillRect(0, 0, w, h);
     ctx.fillStyle = 'rgba(255,255,255,.85)';
@@ -1698,14 +1574,7 @@ function drawScanlineTimeline() {
   drawScanlineStats(ppu);
 }
 
-/* ---- 4d. RTC (MBC3 real-time clock) viewer: only relevant for MBC3+TIMER carts (0x0F/0x10)
-   - rtcUsable()/updateRtcTabAvailability() above are what actually hide the tab the rest of
-   the time. Shows the live counters (ticked forward to "now" on every draw, since the real
-   chip keeps running even while the GB is off) next to the latched snapshot the game
-   itself reads, and lets the person edit the live clock directly - "Set clock" writes straight
-   onto the live registers and then immediately copies them into the latched snapshot too, so
-   the game sees the new value on its very next read instead of waiting for its own
-   0x00->0x01 latch write sequence. ---- */
+/* ---- 4d. RTC (MBC3 real-time clock) viewer: for MBC3+TIMER carts (0x0F/0x10) ---- */
 function pad2(n) { return String(n).padStart(2, '0'); }
 function rtcClamp(v, lo, hi) {
   let n = Math.floor(Number(v));
@@ -1713,30 +1582,19 @@ function rtcClamp(v, lo, hi) {
   return Math.min(hi, Math.max(lo, n));
 }
 
-// Copies the live counters into the latched snapshot, simulating an instant 0x00->0x01 latch
-// write so an edit is visible to the game right away.
+// Copies live counters into the latched snapshot (instant latch write)
 function relatchRTCNow(mmu) {
   const rtc = mmu.rtc;
   rtc.latched.s = rtc.s; rtc.latched.m = rtc.m; rtc.latched.h = rtc.h;
   rtc.latched.dl = rtc.dl; rtc.latched.dh = rtc.dh;
 }
 
-/* Clock correction: some games (Pokémon Gold/Silver/Crystal being the well-known case) store
-   their own clock offset in the save file - baked in once via an in-game "set your clock"
-   event - and display raw RTC + that stored offset rather than the raw RTC directly. Poking
-   the RTC registers from here bypasses that stored offset entirely, so it still applies on
-   top of whatever we set, making the in-game clock look wrong even though the RTC itself is
-   correct. Rather than emulate that per-game offset (it varies save-to-save), we let the user
-   compensate for it directly: this correction is added to the requested time whenever the
-   clock is set, so what shows up in-game ends up right. Persisted across visits since it's a
-   fixed property of a given save file. */
+// Clock correction: offsets some games apply on top of raw RTC (e.g. Pokémon G/S/C). Added when the clock is set; persisted per save file.
 const rtcCorrectionStore = makePersistedConfig('jsgb-config:rtc-correction', { h: 0, m: 0 });
 function loadRtcCorrection() { return rtcCorrectionStore.load(); }
 function saveRtcCorrection(partial) { rtcCorrectionStore.save(partial); }
 
-// Like rtcClamp, but a blank/NaN field falls back to 0 rather than to `lo` - appropriate here
-// since these ranges are signed and centered on 0 (an empty correction field should mean "no
-// correction", not "-23").
+// Like rtcClamp, but blank/NaN falls back to 0 (signed range)
 function rtcClampSigned(v, lo, hi) {
   let n = Math.floor(Number(v));
   if (!Number.isFinite(n)) n = 0;
@@ -1757,16 +1615,14 @@ function rtcClampSigned(v, lo, hi) {
   });
 })();
 
-// Reads the correction fields as signed whole hours/minutes (blank/NaN treated as 0).
+// Reads the correction fields as signed hours/minutes
 function getRtcCorrectionSeconds() {
   const h = rtcClampSigned(rtcInputCorrectionH.value, -23, 23);
   const m = rtcClampSigned(rtcInputCorrectionM.value, -59, 59);
   return h * 3600 + m * 60;
 }
 
-// Applies the correction offset to an h/m/s/day tuple, wrapping seconds-of-day into 0-86399
-// and rolling any overflow/underflow into a signed day delta (so correcting backwards across
-// midnight and correcting forwards across midnight both land on the right day too).
+// Applies the correction offset to an h/m/s/day tuple, wrapping into a signed day delta
 function applyRtcCorrection(hours, minutes, seconds, days, sign = 1) {
   const correctionSecs = getRtcCorrectionSeconds() * sign;
   const totalSecs = hours * 3600 + minutes * 60 + seconds + correctionSecs;
@@ -1787,10 +1643,8 @@ function setRtcInfo(msg) {
   rtcInfoTimer = setTimeout(() => { rtcInfoEl.textContent = ''; }, 2500);
 }
 
-// Fills the "Set clock" fields from the live clock's current values. Called when the RTC tab
-// is opened (and after Zero clock) so the fields start out matching what's actually running
-// instead of stale numbers left over from a previous ROM or a previous visit to the tab -
-// deliberately NOT called on every redraw, so mid-edit fields aren't clobbered while typing.
+// Fills "Set clock" fields from the live clock. Called on tab open / Zero clock only,
+// not on every redraw, so mid-edit fields aren't clobbered.
 function syncRtcInputsFromLive() {
   if (!rtcUsable()) return;
   const mmu = emulator.mmu;
@@ -1810,15 +1664,13 @@ function drawRTC() {
   if (!usable) return;
 
   const mmu = emulator.mmu;
-  mmu.tickRTC(); // catch the live counters up to "now" before displaying them
+  mmu.tickRTC(); // catch counters up to "now"
   const rtc = mmu.rtc;
   const halted = (rtc.dh & 0x40) !== 0;
   const carry = (rtc.dh & 0x80) !== 0;
   const days = ((rtc.dh & 0x01) << 8) | rtc.dl;
 
-  // The live registers already hold the corrected time - "Set clock"/"Set to now" bake the
-  // correction in when writing (adding it so the game's own internal offset cancels back out
-  // to the intended real time). Subtract it back out here to show the plain, uncorrected time.
+  // Live registers hold the corrected time; subtract the correction back out for display.
   const plain = applyRtcCorrection(rtc.h, rtc.m, rtc.s, days, -1);
   rtcClockDaysEl.textContent = `Day ${plain.days}`;
   rtcClockTimeEl.textContent = `${pad2(plain.hours)}:${pad2(plain.minutes)}:${pad2(plain.seconds)}`;
@@ -1841,8 +1693,7 @@ btnRtcApply.addEventListener('click', () => {
   const rawSeconds = rtcClamp(rtcInputSeconds.value, 0, 59);
   const halt = rtcInputHalt.checked;
 
-  // Apply the clock correction (see "Clock correction" above) on top of the raw fields the
-  // user typed in, then clamp the corrected day count back into the counter's 0-511 range.
+  // Apply the clock correction, then clamp the day count to 0-511.
   const corrected = applyRtcCorrection(rawHours, rawMinutes, rawSeconds, rawDays);
   const days = rtcClamp(corrected.days, 0, 511);
   const hours = corrected.hours, minutes = corrected.minutes, seconds = corrected.seconds;
@@ -1850,10 +1701,10 @@ btnRtcApply.addEventListener('click', () => {
   const rtc = mmu.rtc;
   rtc.s = seconds; rtc.m = minutes; rtc.h = hours;
   rtc.dl = days & 0xFF;
-  rtc.dh = (rtc.dh & 0x80)       // preserve whatever the day-carry flag currently is
+  rtc.dh = (rtc.dh & 0x80)       // preserve day-carry flag
          | ((days >> 8) & 0x01)  // day counter bit 8
-         | (halt ? 0x40 : 0x00); // halt flag from the checkbox
-  rtc.lastRealMs = Date.now();   // live clock resumes ticking from "now" using the new base
+         | (halt ? 0x40 : 0x00); // halt flag
+  rtc.lastRealMs = Date.now();
   relatchRTCNow(mmu);
 
   setRtcInfo('Clock set.');
@@ -1865,32 +1716,23 @@ const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', '
 btnRtcNow.addEventListener('click', () => {
   if (!rtcUsable()) return;
   const mmu = emulator.mmu;
-  // Real-world wall-clock date/time - the emulated day counter has no calendar of its own
-  // (it's just elapsed days since the clock was last set), so it's re-based here to today's
-  // weekday (0 = Sunday, per Date.getDay()) rather than left alone, so games that derive an
-  // in-game day-of-week as (day counter % 7) land on the right day.
+  // Re-base the day counter to today's weekday so (day counter % 7) matches reality.
   const now = new Date();
   const rawWeekday = now.getDay(); // 0-6, Sunday = 0
 
-  // Apply the clock correction (see "Clock correction" above) on top of the real wall-clock
-  // time, same as "Set clock" does - here the "day" being corrected is just the weekday, so
-  // any day-delta from crossing midnight wraps mod 7 instead of clamping into 0-511.
+  // Apply the clock correction; day-delta wraps mod 7 instead of clamping to 0-511.
   const corrected = applyRtcCorrection(now.getHours(), now.getMinutes(), now.getSeconds(), rawWeekday);
   const hours = corrected.hours, minutes = corrected.minutes, seconds = corrected.seconds;
   const weekday = ((corrected.days % 7) + 7) % 7;
 
   const rtc = mmu.rtc;
   rtc.s = seconds; rtc.m = minutes; rtc.h = hours;
-  rtc.dl = weekday; // 0-6 fits entirely in the low byte, so dh's day-MSB bit is always 0 here
-  rtc.dh = 0;        // also clears halt and day-carry - "sync to now" should leave it running
+  rtc.dl = weekday; // 0-6 fits in the low byte
+  rtc.dh = 0;        // clears halt and day-carry
   rtc.lastRealMs = Date.now();
   relatchRTCNow(mmu);
 
-  // Fill the Set Clock boxes with the plain current date/time exactly as read from the system
-  // clock - NOT a readback of the (corrected) hardware value that was just written. The boxes
-  // are meant to always hold the "real" reference time; the correction is applied only when
-  // that reference gets written into the RTC hardware, and shown separately in the "with
-  // correction" readout above.
+  // Fill the Set Clock boxes with the plain system time, not the corrected hardware value.
   rtcInputDays.value = rawWeekday;
   rtcInputHours.value = now.getHours();
   rtcInputMinutes.value = now.getMinutes();
@@ -1925,12 +1767,9 @@ btnRtcZero.addEventListener('click', () => {
 
 /* ---- 5. Live disassembler: decodes the bytes around PC into mnemonics ---- */
 /* ---- Frame Activity: emulated-hardware content per frame, not JS/host timing ----
-   Left canvas: one bar per recent frame, height = instructions executed that frame; click a
-   bar to select it. Middle canvas: the selected frame's 154 scanlines with markers showing
-   where interrupts, OAM DMA, bank switches, and APU triggers happened, plus a sprites-per-line
-   sparkline; click a scanline to select it. Bottom canvas: that single scanline's fixed 456T
-   mode structure plus the exact events/sprite count recorded on it. Selection defaults to
-   whichever frame most recently completed. */
+   Left canvas: instructions per recent frame, click a bar to select it. Middle canvas: the
+   selected frame's 154 scanlines with event markers and a sprites-per-line sparkline, click
+   to select a line. Bottom canvas: that scanline's mode structure plus its recorded events. */
 const frameActivityCanvas = document.getElementById('frameActivityCanvas');
 const frameAnatomyCanvas = document.getElementById('frameAnatomyCanvas');
 const lineAnatomyCanvas = document.getElementById('lineAnatomyCanvas');
@@ -1941,16 +1780,15 @@ const lineAnatomyIndexEl = document.getElementById('lineAnatomyIndex');
 const lineAnatomyFrameIndexEl = document.getElementById('lineAnatomyFrameIndex');
 const lineAnatomyStatsEl = document.getElementById('lineAnatomyStats');
 
-let selectedFrameStatsIndex = null; // a frameStats.index value, or null to always follow the latest frame
-let selectedAnatomyLine = null;     // a scanline 0-153 within the selected frame, or null if none chosen yet
+let selectedFrameStatsIndex = null; // frameStats.index, or null to follow the latest frame
+let selectedAnatomyLine = null;     // scanline 0-153, or null if none chosen
 
 function getFrameActivitySlice() {
   const hist = emulator.frameStatsHistory;
   return hist.slice(Math.max(0, hist.length - emulator.FRAME_STATS_HISTORY));
 }
 
-// The single frame entry both the "Anatomy of frame" and "Anatomy of line" views are showing -
-// whichever frame is pinned by selectedFrameStatsIndex, or the latest one if none is pinned.
+// The frame entry shown by both "Anatomy of frame" and "Anatomy of line".
 function getSelectedAnatomyEntry() {
   const hist = emulator.frameStatsHistory;
   if (hist.length === 0) return null;
@@ -1967,8 +1805,7 @@ function drawFrameActivity() {
   frameActivityCountEl.textContent = slice.length;
   if (slice.length === 0) return;
 
-  // Manual max instead of Math.max(1, ...slice.map(...)) - that allocated a fresh array via
-  // map() and another via the spread every call, up to 60x/sec while running in debug mode.
+  // Manual max to avoid extra array allocations from map()/spread
   let maxInstr = 1;
   for (let i = 0; i < slice.length; i++) if (slice[i].instructions > maxInstr) maxInstr = slice[i].instructions;
   const barW = w / slice.length;
@@ -1982,10 +1819,7 @@ function drawFrameActivity() {
   }
 }
 
-// Clicking a bar pins the anatomy view to that specific frame; the x position maps directly
-// to an index into the currently-displayed slice regardless of how the canvas is CSS-scaled.
-// The previously-selected line (if any) carries over, so switching frames while a line is
-// pinned lets you compare the same scanline across different frames.
+// Clicking a bar pins the anatomy view to that frame; the previously-selected line carries over.
 frameActivityCanvas.addEventListener('click', (e) => {
   const slice = getFrameActivitySlice();
   if (slice.length === 0) return;
@@ -2022,13 +1856,12 @@ function drawFrameAnatomy() {
   }
   frameAnatomyIndexEl.textContent = '#' + entry.index;
 
-  // Background split: visible lines 0-143 vs V-Blank lines 144-153, same proportions as the
-  // scanline timeline above so the two views read consistently.
+  // Background split: visible lines 0-143 vs V-Blank lines 144-153
   const visibleW = w * (144 / 154);
   ctx.fillStyle = '#20303a'; ctx.fillRect(0, 0, visibleW, h);
   ctx.fillStyle = '#2a2036'; ctx.fillRect(visibleW, 0, w - visibleW, h);
 
-  // Sprites-per-line sparkline (0-10, the hardware's per-line sprite cap) across the visible region.
+  // Sprites-per-line sparkline (0-10, hardware's per-line cap)
   ctx.strokeStyle = '#4ade80'; ctx.lineWidth = 1.5; ctx.beginPath();
   for (let line = 0; line < 144; line++) {
     const x = (line / 154) * w;
@@ -2037,15 +1870,14 @@ function drawFrameAnatomy() {
   }
   ctx.stroke();
 
-  // Event ticks: interrupts, DMA, bank switches, APU triggers, placed at the scanline they fired on.
+  // Event ticks at the scanline they fired on
   for (const ev of entry.events) {
     const x = (ev.line / 154) * w;
     ctx.fillStyle = FRAME_EVENT_COLORS[ev.kind] || '#fff';
     ctx.fillRect(x - 1.5, 2, 3, h - 4);
   }
 
-  // Highlight the currently-selected scanline (if any) with an outlined column, so it's clear
-  // which slice "Anatomy of line" below is describing.
+  // Highlight the selected scanline
   if (selectedAnatomyLine !== null) {
     const lineW = w / 154;
     ctx.strokeStyle = '#ffdd00'; ctx.lineWidth = 2;
@@ -2063,21 +1895,17 @@ function drawFrameAnatomy() {
     `<span><b>${entry.apuTriggers}</b> APU triggers</span>`;
 }
 
-// Clicking a scanline in "Anatomy of frame" pins the "Anatomy of line" view below it to that line.
+// Clicking a scanline pins "Anatomy of line" below it to that line.
 frameAnatomyCanvas.addEventListener('click', (e) => {
   if (!getSelectedAnatomyEntry()) return;
   const rect = frameAnatomyCanvas.getBoundingClientRect();
   const frac = (e.clientX - rect.left) / rect.width;
   selectedAnatomyLine = Math.min(153, Math.max(0, Math.floor(frac * 154)));
-  drawFrameAnatomy(); // redraw to show the highlighted column
+  drawFrameAnatomy();
   drawLineAnatomy();
 });
 
-// Draws the selected scanline's fixed 456T mode timeline (Mode 2/3/0 for a visible line, or a
-// single Mode 1 span for a V-Blank line) and lists exactly what was recorded on that line:
-// sprites drawn and any interrupt/DMA/bank/APU events. This emulator uses fixed-length modes
-// (see the Scanline Timeline tool above), so the mode split is always the same shape for every
-// visible line - what differs line to line is only the sprite count and the events list.
+// Draws the selected scanline's 456T mode timeline plus its recorded sprites/events.
 function drawLineAnatomy() {
   const ctx = lineAnatomyCanvas.getContext('2d');
   const w = lineAnatomyCanvas.width, h = lineAnatomyCanvas.height;
@@ -2095,7 +1923,7 @@ function drawLineAnatomy() {
   lineAnatomyFrameIndexEl.textContent = '#' + entry.index;
 
   if (line < 144) {
-    // Mode 2 (80T) -> Mode 3 (172T) -> Mode 0 (204T), drawn to scale across the 456T line.
+    // Mode 2 (80T) -> Mode 3 (172T) -> Mode 0 (204T), to scale
     const modes = [
       { t: 80,  color: '#e0b45a' },
       { t: 172, color: '#5ac2e0' },
@@ -2108,7 +1936,7 @@ function drawLineAnatomy() {
       x += mw;
     }
   } else {
-    // V-Blank lines are Mode 1 for their entire 456T - no OAM Search / Pixel Transfer / H-Blank split.
+    // V-Blank lines are Mode 1 for the entire 456T
     ctx.fillStyle = '#8a5ac2'; ctx.fillRect(0, 0, w, h);
   }
 
@@ -2128,7 +1956,7 @@ function drawLineAnatomy() {
   if (events.length === 0) {
     html += `<span>No interrupt/DMA/bank/APU events recorded on this line this frame.</span>`;
   } else {
-    // Group same-kind events (e.g. two APU triggers on one line) into a single "x N" entry.
+    // Group same-kind events into a single "x N" entry
     const counts = {};
     for (const ev of events) counts[ev.kind] = (counts[ev.kind] || 0) + 1;
     for (const kind of Object.keys(counts)) {
@@ -2139,15 +1967,9 @@ function drawLineAnatomy() {
   lineAnatomyStatsEl.innerHTML = html;
 }
 
-// Cache of the previous frame's "before PC" resync result for the Disassembly panel. PC
-// almost always advances by exactly the length of whatever instruction was "current" last
-// frame (straight-line execution - no jump/call/ret actually taken this step), in which case
-// the previous frame's already-resynced boundaries are still valid: just slide the window
-// forward by pushing that now-past instruction onto the tail and dropping the oldest line,
-// with zero new resync decoding needed. Also short-circuits when PC didn't move at all (e.g.
-// HALTed). Only falls back to the up-to-12x-forward-decode resync search when neither holds
-// (an actual jump was taken, single-stepped over one, a breakpoint landed elsewhere, or a
-// new ROM was loaded - the `rom` reference check below invalidates the cache in that case).
+// Cache of the previous frame's "before PC" resync result for the Disassembly panel. On
+// straight-line execution, slides the window forward instead of re-running the resync search.
+// Falls back to a full resync on jumps, single-steps, breakpoints, or a new ROM.
 let disasmResyncCache = null; // { pc, rom, beforeLines, currentText, nextExpectedPc } or null
 
 function drawDisassembly() {
@@ -2158,17 +1980,15 @@ function drawDisassembly() {
   let beforeLines;
   const cache = disasmResyncCache;
   if (cache && cache.rom === mmu.rom && cache.pc === pc) {
-    // PC hasn't moved since the last redraw (e.g. HALTed) - identical result, no work needed.
+    // PC hasn't moved (e.g. HALTed) - reuse as-is.
     beforeLines = cache.beforeLines;
   } else if (cache && cache.rom === mmu.rom && cache.nextExpectedPc === pc) {
-    // Straight-line advance from last frame: slide the window forward instead of re-running
-    // the resync search - the instruction that was "current" becomes the new newest "before" line.
+    // Straight-line advance: slide the window forward instead of re-resyncing.
     beforeLines = cache.beforeLines.slice(1);
     beforeLines.push({ addr: cache.pc, text: cache.currentText });
   } else {
-    // GB machine code isn't self-synchronizing, so to find instruction boundaries *before*
-    // PC, try progressively shorter lookbacks and keep the longest one that decodes forward
-    // and lands exactly back on PC (a genuine resync), rather than guessing at a byte offset.
+    // GB code isn't self-synchronizing: try progressively shorter lookbacks and keep the
+    // longest one that decodes forward and lands exactly back on PC.
     beforeLines = [];
     for (let back = MAX_LOOKBACK; back >= 1; back--) {
       let addr = pc - back;
@@ -2205,7 +2025,7 @@ function drawDisassembly() {
   }
 }
 
-/* ---- Interrupts panel: IME/IE/IF live status plus a log of recently-serviced interrupts ---- */
+/* ---- Interrupts panel: IME/IE/IF status plus recently-serviced interrupt log ---- */
 const INTERRUPT_SOURCES = [
   { name: 'V-Blank',  bit: 0, vector: 0x40 },
   { name: 'LCD STAT', bit: 1, vector: 0x48 },
@@ -2251,11 +2071,7 @@ function drawInterrupts() {
       ).join('');
 }
 
-/* ---- Stack panel: a window of 16-bit words around SP ----
-   Rows are aligned to SP itself (not to an even/odd address) since that's what PUSH/POP
-   actually step by two from. WORDS_ABOVE covers still-unused stack space just below SP
-   in address terms (deeper future pushes); WORDS_BELOW covers words already on the stack
-   that a POP/RET further up the call chain would eventually read. */
+/* ---- Stack panel: a window of 16-bit words around SP, row-aligned to SP itself ---- */
 function drawStack() {
   if (!lastROMBytes) { stackList.innerHTML = '<div class="disasm-empty">Load a ROM to see the stack.</div>'; stackSpReadout.textContent = '—'; return; }
   const mmu = emulator.mmu, sp = emulator.cpu.SP;
@@ -2266,9 +2082,7 @@ function drawStack() {
   const rows = [];
   for (let i = -WORDS_ABOVE; i <= WORDS_BELOW; i++) {
     const addr = (sp + i * 2) & 0xFFFF;
-    // peek8, not read8: this is the debugger looking at memory, not something the CPU/game
-    // actually did - read8 would both pay noteAccess's bookkeeping cost needlessly and
-    // misattribute these 29 reads/frame to CPU activity on the Mem Map's "last access" flash.
+    // peek8, not read8: debugger inspection shouldn't count as CPU memory activity.
     const lo = mmu.peek8(addr);
     const hi = mmu.peek8((addr + 1) & 0xFFFF);
     const word = lo | (hi << 8);
@@ -2284,14 +2098,9 @@ function drawStack() {
   if (cur) cur.scrollIntoView({ block: 'center' });
 }
 
-/* ---- 5b. CPU registers editor: reads straight off (and, when paused, writes straight onto)
-   the CPU instance's own fields - A B C D E H L, SP, PC, the four flag bits, and IME/halted.
-   These are plain JS properties on the CPU object, not memory addresses, so edits never go
-   through the MMU (no mmu.write8() involved) - just `cpu[key] = value` directly. ---- */
+/* ---- 5b. CPU registers editor: reads/writes CPU fields directly, no MMU involved ---- */
 
-// Accepts an optional "0x" prefix (case-insensitive) so the field can round-trip hex8/hex16's
-// own formatting; returns null (meaning "reject, keep the old value") for anything that isn't
-// clean hex, rather than trying to guess what the student meant.
+// Accepts an optional "0x" prefix; returns null (reject, keep old value) for non-hex input.
 function parseHexInput(str, maxVal) {
   const clean = str.trim().replace(/^0x/i, '');
   if (!/^[0-9a-f]+$/i.test(clean)) return null;
@@ -2300,9 +2109,8 @@ function parseHexInput(str, maxVal) {
   return Math.max(0, Math.min(maxVal, v));
 }
 
-// Applies one 8/16-bit register field on blur/Enter. Bails out (just redrawing to restore the
-// live value) if the emulator is running - inputs are disabled while running, but this is a
-// second line of defense in case a value was already in flight when Start/Resume was pressed.
+// Applies one 8/16-bit register field on blur/Enter. No-op while running (second line of
+// defense in case a value was in flight when Start/Resume was pressed).
 function commitRegInput(input) {
   const spec = REG_INPUTS.find(r => r.el === input);
   if (!emulator.running && spec) {
@@ -2331,8 +2139,7 @@ function drawRegisters() {
   const running = emulator.running;
 
   REG_INPUTS.forEach(({ el, key, bits }) => {
-    // Never stomp on what's currently being typed - only the field the student isn't
-    // actively focused on gets repainted from the live CPU value.
+    // Only repaint fields that aren't currently focused, to avoid stomping on typing.
     if (document.activeElement !== el) el.value = bits === 16 ? hex16(cpu[key]) : hex8(cpu[key]);
     el.disabled = running;
   });
@@ -2355,20 +2162,14 @@ drawRegisters(); // paint the boot-state register values immediately, before any
 
 /* ---- 6. Execution trace: scrollback of the last instructions actually executed ---- */
 
-// Sizes #traceList to match the height of the neighboring main-content column (screen +
-// controls + save states) - no taller, and normally with no inner scrollbar. This is only
-// ever called while the Execution Trace tab is the active one; the disassembler,
-// registers, memory map, and MBC banking panels are never touched by it and keep their
-// own normal compact height.
+// Sizes #traceList to match the height of the neighboring main-content column. Only called
+// while the Execution Trace tab is active; other panels keep their normal compact height.
 function syncTraceListHeight() {
   const mainContent = document.querySelector('.main-content');
   const sidebar = document.querySelector('.debug-tools-sidebar');
   if (!mainContent || !sidebar) return;
   const mainHeight = mainContent.getBoundingClientRect().height;
-  // Everything in the sidebar other than the trace list itself (heading, tabs,
-  // step/breakpoint controls, description text) - keep that chrome at its natural
-  // size and only stretch the trace list, so the sidebar's *total* height ends up
-  // matching main-content rather than just the trace list in isolation.
+  // Keep sidebar chrome (heading, tabs, controls) at natural size; stretch only the trace list.
   const chrome = sidebar.getBoundingClientRect().height - traceList.getBoundingClientRect().height;
   const target = Math.round(mainHeight - chrome);
   if (target > 0) {
@@ -2381,14 +2182,8 @@ function isTraceAtBottom() {
   return traceList.scrollHeight - traceList.scrollTop - traceList.clientHeight < 24;
 }
 
-// Cache of decoded mnemonic + plain-English explanation for each execution-trace ring-buffer
-// slot (0..TRACE_SIZE-1), so drawTrace() doesn't have to re-run disassembleBytes()/
-// explainInstruction() for every visible row on every redraw - only for slots whose content
-// actually changed since we last drew that physical index. A game idling in a wait loop (the
-// common case while staring at the Trace tab) tends to keep landing on the same handful of
-// (addr, opcode) pairs at roughly the same ring-buffer offsets frame to frame, so most slots
-// hit the cache; addr/b0/b1/b2 are checked on every lookup so a slot that really did get
-// overwritten with different bytes is always recomputed rather than shown stale.
+// Cache of decoded mnemonic + explanation per trace ring-buffer slot, keyed by (addr,b0,b1,b2)
+// so a slot is only recomputed when its content actually changed.
 const traceDecodeCache = new Array(emulator.TRACE_SIZE).fill(null);
 
 function getTraceDecoded(idx, addr, b0, b1, b2) {
@@ -2406,14 +2201,8 @@ function getTraceDecoded(idx, addr, b0, b1, b2) {
 function drawTrace() {
   syncTraceListHeight();
 
-  // This runs every rendered frame while the emulator is running. Thousands of
-  // instructions can execute per frame, so the "last 200" window below is effectively
-  // brand new content each call. Re-rendering it while the user is scrolled up would make
-  // whatever they're reading get silently swapped out for newer instructions - which looks
-  // exactly like the view auto-scrolling down, even though nothing touches scrollTop.
-  // So: only live-update while the user is pinned to the bottom (i.e. actively following
-  // execution). Otherwise, freeze the DOM as-is until they scroll back down or click
-  // "Jump to latest" themselves.
+  // Only live-update while pinned to the bottom; otherwise freeze the DOM so scrolled-up
+  // content doesn't get swapped out under the user.
   if (!isTraceAtBottom() && traceList.childElementCount > 0 && !traceList.querySelector('.trace-empty')) {
     btnTraceFollow.style.display = '';
     traceFrozenNote.style.display = '';
@@ -2424,13 +2213,9 @@ function drawTrace() {
 
   const entries = emulator.getTraceEntries();
   if (entries.length === 0) { traceList.innerHTML = '<div class="trace-empty">No instructions executed yet.</div>'; return; }
-  const recent = entries.slice(-200); // cap rendered rows; the ring buffer itself holds more
+  const recent = entries.slice(-200); // cap rendered rows; ring buffer holds more
 
-  // Collapse runs of consecutive entries that share the same (addr, opcode) - e.g. a tight
-  // `JR NZ,-5`-style spin loop landing on the same instruction over and over - into a single
-  // row with a "× N" badge, so the interesting instructions before/after it aren't buried.
-  // idx is carried along from the first entry in the run - decode only depends on the bytes
-  // (identical for the whole group by construction), so any member's slot works as the cache key.
+  // Collapse consecutive entries sharing (addr, opcode) into a single "x N" row.
   const groups = [];
   for (const e of recent) {
     const last = groups[groups.length - 1];
@@ -2441,8 +2226,7 @@ function drawTrace() {
   traceList.innerHTML = groups.map((g, i) => {
     const { text, explain } = getTraceDecoded(g.idx, g.addr, g.b0, g.b1, g.b2);
     const isLatest = i === groups.length - 1;
-    // Show the diff from the most recent occurrence in the run - the one whose effect is
-    // still visible in the current register state.
+    // Diff from the most recent occurrence in the run.
     const diff = g.last.diff;
     const repeatBadge = g.count > 1 ? `<span class="trace-repeat">× ${g.count}</span>` : '';
     return `<div class="trace-line${isLatest ? ' latest' : ''}">` +
@@ -2452,11 +2236,10 @@ function drawTrace() {
              `<span class="trace-explain">${explain}</span>` +
            `</div>`;
   }).join('');
-  traceList.scrollTop = traceList.scrollHeight; // we're pinned to the bottom, so stay pinned
+  traceList.scrollTop = traceList.scrollHeight;
 }
 
-// Manual scroll (not caused by our own re-render) should immediately reflect frozen/live
-// state, rather than waiting for the next emulation frame to notice.
+// Manual scroll should immediately reflect frozen/live state.
 traceList.addEventListener('scroll', () => {
   const atBottom = isTraceAtBottom();
   btnTraceFollow.style.display = atBottom ? 'none' : '';
@@ -2465,15 +2248,11 @@ traceList.addEventListener('scroll', () => {
 
 btnTraceFollow.addEventListener('click', () => {
   traceList.scrollTop = traceList.scrollHeight;
-  drawTrace(); // immediately refresh with whatever's happened since we froze, instead of waiting for the next frame
+  drawTrace();
 });
 
-// Exports the *entire* trace ring buffer (up to TRACE_SIZE entries, not just the ~200
-// rows drawTrace() renders to the DOM) as a plain-text file: one line per executed
-// instruction, address + raw opcode byte + disassembly + the register/flag diff it
-// caused + the same plain-English explanation shown next to each row on screen.
-// Consecutive repeats are collapsed with a "x N" suffix, same as the on-screen view, so
-// a tight spin loop doesn't produce hundreds of identical lines.
+// Exports the entire trace ring buffer as plain text: address, opcode, disassembly, diff,
+// and explanation per line. Consecutive repeats are collapsed with "x N", same as on screen.
 function buildTraceExportText() {
   const entries = emulator.getTraceEntries();
   const lines = [];
@@ -2546,15 +2325,12 @@ function refreshDebugTools() {
   else if (activeVisual === 'scanline') drawScanlineTimeline();
   else if (activeVisual === 'rtc') drawRTC();
 
-  // Frame Activity isn't a tab - it's always visible below the 3-column layout - so it
-  // redraws every time regardless of which tabs are currently active above.
+  // Frame Activity isn't a tab - it's always visible - so it redraws every time.
   drawFrameActivity();
   drawFrameAnatomy();
   drawLineAnatomy();
 }
 
-// Fallback redraw for when the emulator isn't actively running (paused, stepping, or no
-// ROM loaded yet) - e.g. after loading a save state by hand. While running, the loop()
-// itself calls refreshDebugTools() paced by the current speed, so this skips redundant
-// (and speed-uncorrelated) redraws in that case.
+// Fallback redraw for when the emulator isn't running (paused, stepping, no ROM loaded).
+// While running, loop() calls refreshDebugTools() itself, paced by the current speed.
 setInterval(() => { if (!emulator.running) refreshDebugTools(); }, 150);

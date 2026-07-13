@@ -1,39 +1,26 @@
 /* =========================================================================================
-   emu-gb-app.js — application wiring: ROM loading, playback controls, save states, capture
+   emu-gb-app.js — Application Wiring
    -----------------------------------------------------------------------------------------
-   Everything that isn't the emulation core itself (emu-gb-core.js) and isn't one of the
-   debug/visualizer inspector panels (emu-gb-debug.js): the screen canvas + Emulator
-   instance, ROM loading (including drag/drop and in-browser zip extraction), playback
-   controls, rewind, step/breakpoint debugger controls, sound/speed controls, keyboard
-   input, save-state slots, .sav (battery cart RAM) export/import, hotkeys, and the
-   screenshot/gameplay-clip/audio capture tools.
+   Manages the emulator UI and system integration (everything except the core and debugger).
+   
+   Key Features:
+   - Screen canvas, input handling, and audio/speed controls.
+   - ROM loading (drag-and-drop, ZIP extraction).
+   - Playback mechanics (rewind, step/breakpoint controls, save states).
+   - File/media export (.sav battery RAM, screenshots, audio/video clips).
 
-   Depends on: emu-gb-core.js (Emulator, EMU_CORE_CONFIG, hex8/hex16/base64 helpers) must be
-   loaded first. Several handlers here call into emu-gb-debug.js (refreshDebugTools(),
-   buildBankingPanel(), etc.) - those are all deferred (inside event handlers/callbacks), so
-   it's fine for this file to load *before* emu-gb-debug.js; nothing here calls a debug.js
-   function immediately at the top level.
-
-   Load order: emu-gb-core.js -> emu-gb-app.js -> emu-gb-debug.js (see index.html for why:
-   emu-gb-debug.js's own top-level setup code reads UI config/constants this file defines).
+   Dependencies & Load Order:
+   1. emu-gb-core.js  (Required first; provides core logic and configuration)
+   2. emu-gb-app.js   (Defines UI constants read by the debugger)
+   3. emu-gb-debug.js (Safe to load last; app calls to it are deferred inside callbacks)
    ========================================================================================= */
 
-/* ======================================= UI wiring ======================================= */
-
-/* ---- screen canvas + emulator instance ----
-   `emulator` is deliberately `let`, not `const`: coreToggle below swaps it between a
-   GBEmulator (original DMG core) and CGBEmulator (GBC core, emu-gbc-core.js)
-   depending on which core the person has selected. Every other function in this file and
-   in emu-gb-debug.js reads `emulator` (and `emulator.mmu`/`.cpu`/`.ppu`/etc) fresh each time
-   it's called rather than caching a reference at load time, so the swap is transparent to
-   the rest of the app - see ensureEmulatorMatchesCoreToggle() below. */
+// `emulator` is `let` since coreToggle below swaps it between GBEmulator (DMG) and CGBEmulator (GBC).
 const canvas = document.getElementById('screen');
 const coreToggle = document.getElementById('coreToggle'); // unchecked = GB core, checked = GBC core
 let emulator = new GBEmulator(canvas);
 
-// Swaps `emulator` to match the GB/GBC core toggle, if it doesn't already. Pauses (and lets
-// go of) the old instance first so its rAF loop/audio context don't linger; callers that just
-// loaded a ROM call emulator.start() again right after loadROM() runs.
+// Swaps `emulator` to match the GB/GBC core toggle, pausing the old instance first.
 function ensureEmulatorMatchesCoreToggle() {
   const NeededClass = coreToggle.checked ? CGBEmulator : GBEmulator;
   if (emulator instanceof NeededClass) return;
@@ -41,44 +28,32 @@ function ensureEmulatorMatchesCoreToggle() {
   emulator = new NeededClass(canvas);
 }
 
-/* ---- ROM loading panel refs (file picker, drag-drop zone, ROM header info) ---- */
+// ROM loading panel refs (file picker, drag-drop zone, ROM header info)
 const fileInput = document.getElementById('fileInput');
 const dropZone = document.getElementById('dropZone');
 const romInfo = document.getElementById('romInfo');
 const checksumBadges = document.getElementById('checksumBadges');
 
-/* ---- playback controls refs (start/pause/reset/rewind) ---- */
+// Playback controls refs (start/pause/reset/rewind)
 const btnPause = document.getElementById('btnPause');
 const btnReset = document.getElementById('btnReset');
 const btnRewind = document.getElementById('btnRewind');
 const rewindInfo = document.getElementById('rewindInfo');
 
-/* ---- hidden dev/debug override ----
-   Not exposed anywhere in the UI - there is no button or setting for this. It exists purely
-   so a developer/instructor can test the app (commercial-ROM compatibility, long play
-   sessions, etc.) without the classroom guardrails getting in the way, while every student
-   still gets the guardrails at their normal defaults.
-
-   To enable for yourself: open the browser console on this page and run enableEmuDevUnlock(),
-   then reload. To go back to normal, run disableEmuDevUnlock() (also reload after) - or just
-   clear site data. Change DEV_UNLOCK_VALUE below to your own secret before deploying; the
-   point of checking a specific string (rather than just the key's presence) is that a student
-   poking around in devtools and finding the key name isn't enough on its own to flip it.
-   localStorage is per-browser-profile and never leaves the machine (unlike a cookie, it's
-   never sent to any server), so this can't leak through network logs. */
+/* Hidden dev/debug override: lets a developer/instructor bypass the classroom guardrails
+   (play-time cap, commercial-ROM filter) below without exposing this in the UI.
+   Enable: run enableEmuDevUnlock() in the console, then reload. Disable: disableEmuDevUnlock()
+   (also reload), or clear site data. Change DEV_UNLOCK_VALUE before deploying. */
 const DEV_UNLOCK_KEY = 'emuDevUnlock';
 const DEV_UNLOCK_VALUE = 'you shall not pass!';
 function isDevUnlocked() {
   try {
     return localStorage.getItem(DEV_UNLOCK_KEY) === DEV_UNLOCK_VALUE;
   } catch {
-    return false; // e.g. localStorage blocked (private mode edge cases) - fail safe, guardrails stay on
+    return false; // localStorage blocked - fail safe, guardrails stay on
   }
 }
-// Console helpers - not called anywhere in the app itself, just for a dev to invoke by hand
-// from devtools (e.g. `enableEmuDevUnlock()`). Guardrails are read once at load time (see the
-// PLAY_TIME_GUARDRAIL/GAME_FILTER_ENABLED consts below), so either one requires a reload to
-// actually take effect - both log a reminder of that rather than silently doing nothing.
+// Console-only helpers for toggling the dev unlock; require a reload to take effect.
 function enableEmuDevUnlock() {
   try {
     localStorage.setItem(DEV_UNLOCK_KEY, DEV_UNLOCK_VALUE);
@@ -96,51 +71,23 @@ function disableEmuDevUnlock() {
   }
 }
 
-/* ---- play-time guardrail config ----
-   Classroom/lab guardrail: caps how long the emulator can run continuously, so this stays a
-   debugging tool rather than a way to just play through the game. Everything is built from
-   PLAY_TIME_BASE_UNIT (seconds per unit - drop it to 1 for fast manual testing instead of
-   waiting out real minutes) and PLAY_TIME_TOTAL_LIMIT, with the badge/alert thresholds
-   expressed as fractions of the total limit rather than separate hardcoded durations, so
-   moving the total automatically moves the rest of the schedule with it. Compared directly
-   against playTimeSeconds below. "Continuous" here means this specific playTimeSeconds run -
-   see the note on resetPlayTime() for what resets it.
-
-   PLAY_TIME_BASE_UNIT and PLAY_TIME_TOTAL_LIMIT have to be defined outside the config object,
-   not as its own properties: object literals don't let other properties reference sibling
-   properties by name mid-literal - `AMBER_AT: 0.5 * PLAY_TIME_TOTAL_LIMIT` inside the object
-   would have no PLAY_TIME_TOTAL_LIMIT in scope to read, since a property key isn't a variable
-   binding. Pulling both out into their own consts first, then using those consts in the
-   literal, is what actually lets this work.
-
-   PLAY_TIME_GUARDRAIL is the master on/off switch for the whole system - flip it to false to
-   disable the cap, warning alert, and badge coloring entirely (e.g. for a build that isn't
-   running in a classroom/lab context). Defaults to true, except when isDevUnlocked() is true
-   (see the hidden dev/debug override above), in which case it's forced off regardless of the
-   line below - that override is per-browser via localStorage, so it never affects students. */
-const PLAY_TIME_GUARDRAIL = isDevUnlocked() ? false : true; // master switch - set to false to disable the guardrail entirely
+/* Play-time guardrail: caps continuous emulator runtime so this stays a debugging/classroom
+   tool rather than a way to play through games. PLAY_TIME_GUARDRAIL is the master switch
+   (forced off when isDevUnlocked()). Thresholds are fractions of PLAY_TIME_TOTAL_LIMIT. */
+const PLAY_TIME_GUARDRAIL = isDevUnlocked() ? false : true; // master switch
 const PLAY_TIME_BASE_UNIT = 60; // seconds per unit; set to 1 for fast manual testing
-const PLAY_TIME_TOTAL_LIMIT = 20 * PLAY_TIME_BASE_UNIT; // hard cap, referenced to PLAY_TIME_BASE_UNIT
+const PLAY_TIME_TOTAL_LIMIT = 20 * PLAY_TIME_BASE_UNIT; // hard cap
 const PLAY_TIME_LIMIT_CONFIG = {
-  TOTAL_LIMIT: PLAY_TIME_TOTAL_LIMIT,          // hard cap - page reloads automatically once this is reached
-  AMBER_AT: 0.5 * PLAY_TIME_TOTAL_LIMIT,       // playTime badge switches from green to amber at this point
-  RED_AT: 0.8 * PLAY_TIME_TOTAL_LIMIT,         // playTime badge switches from amber to red at this point
-  WARNING_ALERT: 0.8 * PLAY_TIME_TOTAL_LIMIT,  // a one-time alert() fires when this many seconds is reached
+  TOTAL_LIMIT: PLAY_TIME_TOTAL_LIMIT,          // page reloads automatically once reached
+  AMBER_AT: 0.5 * PLAY_TIME_TOTAL_LIMIT,       // badge switches green -> amber
+  RED_AT: 0.8 * PLAY_TIME_TOTAL_LIMIT,         // badge switches amber -> red
+  WARNING_ALERT: 0.8 * PLAY_TIME_TOTAL_LIMIT,  // one-time alert() threshold
 };
 
-/* ---- play-time timer (badge on the same line as the "Load ROM" title) ----
-   Tracks real wall-clock time the currently loaded ROM has spent actually running (i.e.
-   while emulator.running is true) - time before a ROM is loaded, paused time, and
-   debugger single-stepping don't count. Resets to 0 on every new ROM load and on Reset.
-   Implemented as a poll (like updateRewindButton() below) rather than hooking every
-   play/pause/step/rewind/breakpoint call site, so it stays correct no matter how playback
-   was started or stopped, and survives the GB/GBC core swap transparently.
-
-   This is also the counter the play-time guardrail (PLAY_TIME_LIMIT_CONFIG above) enforces
-   against directly, badge color and all - deliberately not a separate "session" counter, so
-   loading a fresh ROM or hitting Reset does give a clean slate. That's an intentional
-   trade-off for a first pass at this guardrail: it stops long, unbroken play sessions, not a
-   student who deliberately hits Reset every 29 minutes to dodge it. */
+/* Play-time timer (badge next to the "Load ROM" title): tracks wall-clock time the current
+   ROM has spent actually running. Resets on new ROM load / Reset. Polled rather than hooked
+   into every play/pause/step call site, so it stays correct regardless of how playback
+   was started/stopped and survives the GB/GBC core swap. */
 const playTimeLabel = document.getElementById('playTime');
 let playTimeSeconds = 0;
 let playTimeLastTick = null; // performance.now() at the last tick emulator was running, or null if not running
@@ -166,9 +113,7 @@ function resetPlayTime() {
 }
 
 function tickPlayTime() {
-  // The timer itself (tracking + the visible badge text) always runs, guardrail or not.
-  // PLAY_TIME_GUARDRAIL only gates the enforcement layer below: badge coloring, the one-time
-  // warning alert, and the auto-reload. Disabled just means "time is shown, nothing happens".
+  // Timer always runs; PLAY_TIME_GUARDRAIL only gates enforcement (coloring/alert/reload).
   const now = performance.now();
   if (emulator.running) {
     if (playTimeLastTick !== null) playTimeSeconds += (now - playTimeLastTick) / 1000;
@@ -200,7 +145,7 @@ function tickPlayTime() {
 }
 setInterval(tickPlayTime, 500);
 
-/* ---- step/breakpoint debugging controls refs ---- */
+// Step/breakpoint debugging controls refs
 const btnStep = document.getElementById('btnStep');
 const btnStepLine = document.getElementById('btnStepLine');
 const btnStepFrame = document.getElementById('btnStepFrame');
@@ -209,12 +154,7 @@ const bpStatus = document.getElementById('bpStatus');
 
 let lastROMBytes = null;
 
-/* ---- app-level UI/feature configuration ----
-   Constants for the UI and feature layer only - NOT emulator-core values (CPU cycle
-   counts, PPU timing, hardware register bit widths, etc. stay as their real hardware
-   numbers, defined right where they're used in the CPU/PPU/APU/MMU classes). Grouping
-   these UI-layer numbers here means tweaking e.g. the volume step or how many save slots
-   are kept doesn't mean hunting through the file for a raw number typed inline. */
+// App-level UI/feature configuration (not emulator-core values, which stay next to their CPU/PPU/APU/MMU usage).
 const APP_CONFIG = {
   MAX_SAVE_SLOTS: 5,                  // save-state slots kept per ROM (oldest dropped first)
   VOLUME_MIN: 0,
@@ -236,11 +176,8 @@ const APP_CONFIG = {
   AUDIO_EXPORT_BITRATE_KBPS: 32,     // target bitrate for the standalone audio-only export
 };
 
-/* ---- localStorage-persisted config helper ----
-   Small factory for the "load merged JSON from a key, save merged JSON back to it" pattern.
-   Both the UI config (model/mode/etc., below) and the sound config (mute/volume/channel
-   mutes, further down) are exactly this shape - this is the one place that pattern is
-   written, so the next persisted setting just needs `makePersistedConfig('some:key')`. */
+/* Small factory for the "load merged JSON from a key, save merged JSON back to it" pattern,
+   shared by the UI config and sound config below. */
 function makePersistedConfig(key, defaults = {}) {
   function load() {
     try {
@@ -253,23 +190,20 @@ function makePersistedConfig(key, defaults = {}) {
       const merged = Object.assign(load(), partial);
       localStorage.setItem(key, JSON.stringify(merged));
       return merged;
-    } catch (e) { /* storage unavailable/full - ignore, settings just won't persist */ }
+    } catch (e) { /* storage unavailable/full - settings won't persist */ }
   }
   return { load, save };
 }
 
-/* ---- unified UI config: model (GB/GBP), play/debug mode, and "mark current line" all live
-   together in one localStorage entry so they're restored together on next visit (sound
-   mute/volume keep their own separate entry below, since they're wired up independently;
-   emulation speed is deliberately NOT persisted here - it always starts back at 1x). */
+/* Unified UI config: model (GB/GBP), play/debug mode, and "mark current line" persisted
+   together. Sound mute/volume use a separate entry below; speed is never persisted. */
 const uiConfigStore = makePersistedConfig('jsgb-config:ui');
 function loadUIConfig() { return uiConfigStore.load(); }
 function saveUIConfig(partial) { uiConfigStore.save(partial); }
 
 const savedUIConfig = loadUIConfig();
 
-/* ---- GB/GBC core toggle: unchecked = GB (DMG) core (default), checked = GBC core. Forces
-   which core every ROM loads into, overriding the cartridge header's own CGB flag. ---- */
+// GB/GBC core toggle: unchecked = GB (DMG) core (default), checked = GBC core. Overrides the cartridge header's own CGB flag.
 const coreLabelGB = document.getElementById('coreLabelGB');
 const coreLabelGBC = document.getElementById('coreLabelGBC');
 
@@ -287,17 +221,16 @@ if (typeof savedUIConfig.gbcCore === 'boolean') coreToggle.checked = savedUIConf
 applyCoreToggle();
 coreToggle.addEventListener('change', applyCoreToggle);
 
-// BloomFilter to exlude games.
+// Bloom filter used to exclude commercial games.
 class BloomFilter {
     constructor(arrayBuffer) {
-        // 1. Read the 5-byte header values from the buffer
+        // Read the 5-byte header, then the bit array.
         const dataView = new DataView(arrayBuffer, 0, 5);
-        this.m = dataView.getUint32(0, true); // Read 32-bit M_BITS (Little Endian)
-        this.k = dataView.getUint8(4);        // Read 8-bit K_FUNCTIONS
+        this.m = dataView.getUint32(0, true); // M_BITS
+        this.k = dataView.getUint8(4);        // K_FUNCTIONS
 
-        // 2. Slice the rest of the buffer into the bit array (starting at byte index 5)
         this.bitArray = new Uint8Array(arrayBuffer, 5);
-        
+
         console.log(`Configured from header -> Bits (m): ${this.m}, Hashes (k): ${this.k}`);
     }
 
@@ -325,32 +258,16 @@ class BloomFilter {
     }
 }
 
-/* ---- No-Intro commercial-ROM bloom filter ----------------------------------------------
-   Blocks ROMs that match a prebuilt No-Intro bloom filter (produced by
-   bloom_filter_builder.html from a No-Intro .dat file) so this stays limited to homebrew/
-   non-commercial ROMs, in keeping with the "educational purposes" framing above.
+/* No-Intro commercial-ROM bloom filter: blocks ROMs matching a prebuilt No-Intro bloom filter
+   (from bloom_filter_builder.html), keeping this limited to homebrew/non-commercial ROMs.
+   Separate GB and GBC filters are checked regardless of core (coreToggle forces a core
+   independently of the ROM's own header), so a match on either blocks the ROM.
 
-   There are two separate filters - one built from the GB .dat, one from the GBC .dat -
-   since No-Intro keeps those as separate datasets with separate CRC32 lists. A ROM is
-   checked against both, regardless of which core it's about to run on (coreToggle forces
-   a core independently of the ROM's own CGB header flag, so a commercial ROM could easily
-   end up running on either core's filter list) - a match on *either* filter blocks the ROM.
+   GAME_FILTER_ENABLED is the master switch (forced off when isDevUnlocked()).
+   GAME_FILTER_URLS points at the .js file downloaded from bloom_filter_builder.html, fetched
+   once at startup. If missing/unparsable, the check is silently skipped for that core. */
 
-   GAME_FILTER_ENABLED is the master on/off switch - set to false to skip loading both
-   filters and skip the check entirely (every ROM loads, same as before this feature
-   existed). Defaults to true, except when isDevUnlocked() is true (see the hidden dev/debug
-   override above), in which case it's forced off regardless of the line below, so commercial
-   ROMs can be loaded for testing - that override is per-browser via localStorage, so it never
-   affects students.
-
-   GAME_FILTER_URLS points at the one .js file downloaded from bloom_filter_builder.html;
-   it is fetched once at startup relative to index.html. If either is missing, fails to
-   fetch, or fails to parse, the check is silently skipped *for that core only* for this
-   session (a missing filter file should never prevent the emulator itself from working) -
-   a warning is logged to the console.
-*/
-
-const GAME_FILTER_ENABLED = isDevUnlocked() ? false : true; // master switch - set to false to disable the commercial-ROM check entirely
+const GAME_FILTER_ENABLED = isDevUnlocked() ? false : true; // master switch
 
 let commercialRomFilters = { gb: null, gbc: null }; // each becomes a BloomFilter instance once decoded; stays null if disabled, missing, or unparsable
 
@@ -380,8 +297,7 @@ function getROMTitle(bytes) {
   }
   return title.trim() || 'Unknown';
 }
-// Every officially-assigned cartridge type byte (header offset 0x147), so unsupported
-// mappers can still be identified by name in the UI instead of just showing a raw hex value.
+// All officially-assigned cartridge type bytes (header offset 0x147).
 const CART_TYPE_NAMES = {
   0x00: 'ROM ONLY', 0x01: 'MBC1', 0x02: 'MBC1+RAM', 0x03: 'MBC1+RAM+BATTERY',
   0x05: 'MBC2', 0x06: 'MBC2+BATTERY',
@@ -394,8 +310,7 @@ const CART_TYPE_NAMES = {
   0x20: 'MBC6', 0x22: 'MBC7+SENSOR+RUMBLE+RAM+BATTERY',
   0xFC: 'POCKET CAMERA', 0xFD: 'BANDAI TAMA5', 0xFE: 'HuC3', 0xFF: 'HuC1+RAM+BATTERY',
 };
-// The mapper families this emulator actually implements bank-switching logic for.
-// (0x0F-0x13 includes the MBC3 RTC support added above.)
+// Mapper families this emulator implements bank-switching for.
 function isCartTypeSupported(t) {
   return t === 0x00 || (t >= 0x01 && t <= 0x03) || t === 0x05 || t === 0x06 || (t >= 0x0F && t <= 0x13) || (t >= 0x19 && t <= 0x1E);
 }
@@ -403,36 +318,27 @@ function getMBCName(bytes) {
   const t = bytes[0x147];
   return CART_TYPE_NAMES[t] || ('Unknown type 0x' + t.toString(16));
 }
-// Returns a short warning string when the cartridge uses a mapper this emulator doesn't
-// actually implement (it silently falls back to MBC1-style banking, which will misbehave
-// for anything with different bank-select widths, extra RAM chip behavior, rumble, an
-// accelerometer, a camera sensor, etc.) Returns null for mappers that are fully supported.
+// Warns when the cartridge uses an unimplemented mapper (falls back to MBC1-style banking).
 function getMBCCompatibilityWarning(bytes) {
   const t = bytes[0x147];
   if (isCartTypeSupported(t)) return null;
   const name = CART_TYPE_NAMES[t] || ('unknown type 0x' + t.toString(16));
   return `This ROM uses ${name}, which isn't implemented. Falling back to MBC1-style banking - expect glitches, save data that doesn't stick, or a game that doesn't boot.`;
 }
-// Returns a mild informational note (not a warning) for mappers that are fully supported for
-// banking/save purposes but have some real hardware feature this emulator doesn't reproduce -
-// currently just the MBC5 rumble motor, which has no gameplay effect if it's simply silent.
+// Informational note for supported mappers with an unemulated hardware feature (MBC5 rumble).
 function getMBCInfoNote(bytes) {
   const t = bytes[0x147];
   if (t >= 0x1C && t <= 0x1E) return "This cartridge's rumble motor isn't emulated (no vibration) - everything else works normally.";
   return null;
 }
 
-// Which cartridge types have battery-backed save RAM this emulator actually implements
-// persistence for (i.e. the mappers with a real cartRAM read/write path - MBC1/2/3/5).
-// MBC6/MBC7/MMM01/HuC1/HuC3/POCKET CAMERA carts also have batteries on real hardware, but
-// this emulator doesn't implement those mappers, so there's no real save data to export.
+// Cartridge types with battery-backed save RAM this emulator persists (MBC1/2/3/5).
 function hasBatteryBackedRAM(bytes) {
   const t = bytes[0x147];
   return t === 0x03 || t === 0x06 || t === 0x0F || t === 0x10 || t === 0x13 || t === 0x1B || t === 0x1E;
 }
-// How many bytes of cart RAM this ROM's header declares (offset 0x149), in the standard .sav
-// layout other emulators/hardware flash carts use. MBC2 is a fixed-size special case: its
-// 512 built-in 4-bit nibbles are conventionally saved as 512 bytes, one nibble per byte.
+// Cart RAM size declared in the ROM header (0x149), in the standard .sav layout. MBC2 is a
+// fixed-size special case: 512 nibbles saved as 512 bytes, one nibble per byte.
 function getCartRAMByteSize(bytes) {
   const t = bytes[0x147];
   if (t === 0x05 || t === 0x06) return 0x200;
@@ -440,11 +346,9 @@ function getCartRAMByteSize(bytes) {
   return RAM_SIZES[bytes[0x149]] || 0;
 }
 
-// The cartridge header's CGB flag (offset 0x143) tells us whether a ROM requires GB
-// Color hardware to run at all (0xC0), or merely takes advantage of it when present while
-// staying playable on original DMG hardware (0x80). The GB/GBC core toggle overrides this and
-// always forces one specific core, so these two helpers warn when that forced choice
-// conflicts with the header, and otherwise just note which core is actually running the ROM.
+// The header's CGB flag (0x143) says whether a ROM requires GBC hardware (0xC0) or merely
+// takes advantage of it (0x80). The GB/GBC toggle overrides this, so these warn on conflicts
+// and otherwise note which core is actually running the ROM.
 function getGBCCompatibilityWarning(bytes) {
   const flag = bytes[0x143];
   if (flag === 0xC0 && !coreToggle.checked) {
@@ -465,10 +369,9 @@ function getGBCInfoNote(bytes) {
 }
 
 
-// File-integrity checksums for the loaded ROM image, computed over the raw file bytes -
-// the same values a ROM database (No-Intro, GoodTools, etc.) or a "verify my dump" tool
-// would key off of. Distinct from the GB/GBC cartridge header's own internal checksum
-// bytes; these are standard general-purpose hashes.
+// File-integrity checksums for the loaded ROM image, computed over the raw file bytes
+// (the values a ROM database or verification tool would use). Distinct from the cartridge
+// header's own internal checksum bytes.
 
 // CRC32 (ISO-HDLC / zlib polynomial 0xEDB88320), table-based.
 const CRC32_TABLE = (() => {
@@ -486,7 +389,7 @@ function crc32(bytes) {
   return (crc ^ 0xFFFFFFFF) >>> 0;
 }
 
-// MD5 - compact standalone implementation (Web Crypto does not expose MD5).
+// MD5 - compact standalone implementation (Web Crypto doesn't expose MD5).
 function md5(bytes) {
   const s = [7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,
              5, 9,14,20,5, 9,14,20,5, 9,14,20,5, 9,14,20,
@@ -536,9 +439,7 @@ function bufToHex(buf) {
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Computes all four checksums for the loaded ROM. SHA-1/SHA-256 go through the browser's
-// native Web Crypto implementation; CRC32 and MD5 aren't exposed there, so they're computed
-// with the small implementations above.
+// Computes all four checksums for the loaded ROM (SHA-1/SHA-256 via Web Crypto; CRC32/MD5 above).
 async function computeChecksums(bytes) {
   const [sha1Buf, sha256Buf] = await Promise.all([
     crypto.subtle.digest('SHA-1', bytes),
@@ -552,9 +453,7 @@ async function computeChecksums(bytes) {
   };
 }
 
-// Renders the CRC32 / MD5 / SHA-1 / SHA-256 badges. Clicking a badge copies its full value
-// to the clipboard (with brief "Copied!" feedback); hovering shows the full value as a
-// native tooltip via the title attribute, since the badge itself only shows the algorithm name.
+// Renders the checksum badges; clicking one copies its value to the clipboard.
 function renderChecksumBadges(checksums) {
   const entries = [
     ['CRC32', checksums.crc32],
@@ -578,16 +477,10 @@ function renderChecksumBadges(checksums) {
   });
 }
 
-// Finishes loading a ROM once its raw bytes are in hand - shared by both the plain
-// .gb/.gbc/.bin path and the zip-extraction path below, so neither has to duplicate the
-// "wire it into the emulator and UI" bookkeeping.
+// Finishes loading a ROM once its raw bytes are in hand, shared by the plain-file and zip paths.
 async function loadROMBytes(bytes) {
-  // Commercial-ROM check: computed up front, before touching emulator/UI state at all, so a
-  // blocked ROM leaves whatever was previously loaded untouched. Checked against both the GB
-  // and GBC filters regardless of core - coreToggle forces a core independently of the ROM's
-  // own CGB flag, so either filter could be the one that actually recognizes it - and a match
-  // on either blocks the ROM. A filter that's null (GAME_FILTER_ENABLED false, or that .bin
-  // failed to load) is simply skipped, so this degrades gracefully if only one .bin is present.
+  // Commercial-ROM check, run before touching any state so a blocked ROM leaves the
+  // previous one untouched. Checked against both GB/GBC filters regardless of core.
   const gateCrc32 = crc32(bytes).toString(16).toUpperCase().padStart(8, '0');
   const gateMatch = (commercialRomFilters.gb && commercialRomFilters.gb.isCommercial(gateCrc32))
     || (commercialRomFilters.gbc && commercialRomFilters.gbc.isCommercial(gateCrc32));
@@ -635,12 +528,9 @@ async function loadROMBytes(bytes) {
   resetPlayTime();
 }
 
-/* ---- zipped ROM support ----
-   Minimal, dependency-free ZIP reader: walks the central directory to find .gb/.gbc/.bin
-   entries, then extracts the chosen one straight from its local file header. Stored (method
-   0) entries are used as-is; deflated (method 8) entries go through the browser's built-in
-   DecompressionStream, so no third-party unzip library is needed. Encrypted or zip64/multi-
-   disk archives (rare for ROM zips) aren't supported. */
+/* Zipped ROM support: minimal dependency-free ZIP reader. Walks the central directory to find
+   .gb/.gbc/.bin entries, then extracts via the local file header. Stored entries used as-is;
+   deflated entries go through DecompressionStream. Encrypted/zip64 archives aren't supported. */
 const ROM_IN_ZIP_RE = /\.(gb|gbc|bin)$/i;
 
 function readZipEntries(bytes) {
@@ -741,11 +631,9 @@ btnPause.addEventListener('click', () => {
   }
   refreshDebugTools();
 });
-// Shared by the Reset button and by .sav import below: reboots the emulator on the currently
-// loaded ROM. loadROM() reinitializes CPU/PPU/banking/RTC state but deliberately does NOT touch
-// cartRAM (it's allocated once and left alone across loads - see emu-gbc-core.js), so this is
-// safe to call right after writing new bytes into cartRAM and will make the game actually pick
-// them up, the same way power-cycling a real GB would.
+// Shared by Reset and .sav import: reboots the emulator on the loaded ROM. loadROM()
+// reinitializes CPU/PPU/banking/RTC state but doesn't touch cartRAM, so writing new bytes
+// into cartRAM first and then calling this is safe and mirrors power-cycling real hardware.
 function resetEmulator(statusMsg) {
   if (!lastROMBytes) return;
   emulator.loadROM(lastROMBytes);
@@ -762,8 +650,8 @@ function resetEmulator(statusMsg) {
 
 btnReset.addEventListener('click', () => resetEmulator('Reset.'));
 
-/* ---- rewind: in-memory-only, up to Emulator.REWIND_MAX_SNAPSHOTS deep, one snapshot every
-   Emulator.REWIND_SNAPSHOT_INTERVAL_SECONDS of emulated time (see Emulator.rewind()) ---- */
+// Rewind: in-memory only, up to Emulator.REWIND_MAX_SNAPSHOTS deep, one snapshot every
+// Emulator.REWIND_SNAPSHOT_INTERVAL_SECONDS of emulated time.
 function updateRewindButton() {
   const snapshots = emulator.rewindBuffer.length;
   const interval = emulator.REWIND_SNAPSHOT_INTERVAL_SECONDS;
@@ -821,17 +709,13 @@ btnStep1s.addEventListener('click', () => {
   refreshDebugTools();
 });
 
-/* ---- sound controls ---- */
-/* Mute state + volume level are persisted in localStorage so they're restored on the next visit
-   (same pattern as the play/debug mode toggle above, via the shared makePersistedConfig() helper). */
+// Sound controls: mute state + volume persisted in localStorage.
 const soundConfigStore = makePersistedConfig('jsgb-config:sound');
 function saveSoundConfig() {
   soundConfigStore.save({ muted: isMuted, volume: Number(soundControls.volumeSlider.value), channelMuted: emulator.apu.chMuted });
 }
 function loadSoundConfig() { return soundConfigStore.load(); }
 
-// DOM refs for this panel grouped together so it's obvious at a glance what the sound
-// controls touch (and safe to find/delete as a unit).
 const soundControls = {
   btnMute: document.getElementById('btnMute'),
   volumeSlider: document.getElementById('volumeSlider'),
@@ -843,8 +727,7 @@ soundControls.volumeSlider.max = APP_CONFIG.VOLUME_MAX;
 soundControls.volumeSlider.step = APP_CONFIG.VOLUME_STEP;
 soundControls.volumeSlider.value = APP_CONFIG.VOLUME_DEFAULT;
 
-// Snaps a percentage onto the configured step, so the slider and label stay in sync
-// with what dragging/arrow-keys can actually produce.
+// Snaps a percentage onto the configured step.
 function snapToVolumeStep(pct) {
   return Math.round(pct / APP_CONFIG.VOLUME_STEP) * APP_CONFIG.VOLUME_STEP;
 }
@@ -870,9 +753,7 @@ soundControls.volumeSlider.addEventListener('input', () => {
   saveSoundConfig();
 });
 
-/* ---- speed control: preset badges (x0.25 - 4x) set the emulation speed multiplier ----
-   Deliberately NOT persisted - always starts at 1x on load/refresh, regardless of what
-   speed was last used, so a forgotten turbo/slowdown setting never carries over silently. */
+// Speed control: preset badges (x0.25 - 4x). Not persisted; always starts at 1x.
 const speedBadges = [...document.querySelectorAll('.speed-badge')];
 
 function setSpeed(value) {
@@ -886,11 +767,7 @@ speedBadges.forEach(badge => {
   badge.addEventListener('click', () => setSpeed(Number(badge.dataset.speed)));
 });
 
-/* ---- turbo hotkey: T toggles between 1x and 2x speed ----
-   Goes through the same setSpeed() the speed badges use, so the 2x badge lights up while
-   turbo is on. Not persisted, same as the speed badges above. Skipped while a text
-   input/textarea has focus (e.g. the breakpoint PC field) so typing the letter T doesn't
-   accidentally toggle emulation speed. */
+// Turbo hotkey: T toggles between 1x and 2x speed. Skipped while a text input has focus.
 window.addEventListener('keydown', (e) => {
   if (e.key !== 't' && e.key !== 'T') return;
   const tag = e.target.tagName;
@@ -899,7 +776,7 @@ window.addEventListener('keydown', (e) => {
   setSpeed(emulator.speed === APP_CONFIG.TURBO_SPEED ? 1 : APP_CONFIG.TURBO_SPEED);
 });
 
-/* ---- keyboard input ---- */
+// Keyboard input
 const KEY_MAP = {
   ArrowRight: [0, true], ArrowLeft: [1, true], ArrowUp: [2, true], ArrowDown: [3, true],
   z: [0, false], Z: [0, false],  // A
@@ -911,16 +788,14 @@ window.addEventListener('keydown', (e) => { const m = KEY_MAP[e.key]; if (m) { e
 window.addEventListener('keyup', (e) => { const m = KEY_MAP[e.key]; if (m) { emulator.joypad.setButton(m[0], false, m[1]); e.preventDefault(); } });
 
 
-/* ================================== Save / load states ===================================
-   States are kept as a list of up to MAX_SLOTS snapshots per ROM (most recent first) in
-   localStorage, each holding a full emulator.getSaveState() snapshot - including the PPU
-   framebuffer, which doubles as the thumbnail image shown in the sidebar, so no separate
-   screenshot needs to be captured or stored.
-     - [ / "Save" button  -> quick-saves a new slot (oldest is dropped once at the limit)
+/* ===================================== Save / load states =====================================
+   Up to MAX_SLOTS snapshots per ROM (most recent first) in localStorage, each a full
+   emulator.getSaveState() snapshot including the PPU framebuffer as thumbnail.
+     - [ / "Save" button  -> quick-saves a new slot (oldest dropped at the limit)
      - ] / "Load" button  -> quick-loads the most recent slot
      - clicking a sidebar card -> loads that specific slot
-     - Export/Import .json -> moves a single snapshot in or out as a downloadable file
-   ========================================================================================= */
+     - Export/Import .json -> moves a single snapshot in or out as a file
+   ================================================================================================= */
 
 const MAX_SLOTS = APP_CONFIG.MAX_SAVE_SLOTS;
 
@@ -946,8 +821,7 @@ function loadSlots() {
   catch { return []; }
 }
 
-// Writes the slot list back to localStorage, dropping the oldest slot(s) and retrying if
-// the browser's storage quota is exceeded (e.g. from other sites' data sharing the origin).
+// Writes the slot list back to localStorage, dropping the oldest slot(s) if quota is exceeded.
 function writeSlots(slots) {
   while (true) {
     try { localStorage.setItem(slotsKey(), JSON.stringify(slots)); return slots; }
@@ -969,9 +843,7 @@ function updateStateButtons() {
   if (!(audioRecorder && audioRecorder.state !== 'inactive')) btnRecordAudio.disabled = !hasROM;
   document.querySelectorAll('.layer-download-btn').forEach(btn => { btn.disabled = !hasROM; });
 
-  // The .sav (battery cart RAM) controls only make sense for carts that actually have
-  // battery-backed save RAM this emulator persists (see hasBatteryBackedRAM) - e.g. it stays
-  // disabled for ROM-only carts or unsupported/unimplemented mappers, even once a ROM is loaded.
+  // .sav controls only apply to carts with battery-backed save RAM this emulator persists.
   const hasSaveRAM = hasROM && lastROMBytes && hasBatteryBackedRAM(lastROMBytes);
   btnDownloadSav.disabled = !hasSaveRAM;
   btnImportSavLabel.classList.toggle('disabled', !hasSaveRAM);
@@ -984,8 +856,7 @@ function updateStateButtons() {
   renderSlotList(slots);
 }
 
-// Decodes a slot's stored (base64) PPU framebuffer straight into its thumbnail canvas -
-// the same raw pixels the screen itself was showing at save time.
+// Decodes a slot's stored (base64) PPU framebuffer into its thumbnail canvas.
 function drawSlotThumbnail(canvas, state) {
   const ctx = canvas.getContext('2d');
   const imgData = ctx.createImageData(EMU_CORE_CONFIG.SCREEN.WIDTH, EMU_CORE_CONFIG.SCREEN.HEIGHT);
@@ -1029,8 +900,7 @@ function renderSlotList(slots) {
   });
 }
 
-// Applies a save-state object to the running emulator, pausing/resuming around it so a
-// partially-stepped frame never gets mixed with the restored state.
+// Applies a save-state object to the running emulator.
 function applyLoadedState(state) {
   const wasRunning = emulator.running;
   emulator.pause();
@@ -1081,8 +951,7 @@ function deleteSlot(id) {
   stateInfo.textContent = 'Save deleted.';
 }
 
-// Wipes every saved slot for the currently loaded ROM after a confirmation prompt,
-// since this can't be undone.
+// Wipes every saved slot for the currently loaded ROM.
 function deleteAllSlots() {
   const slots = loadSlots();
   if (slots.length === 0) return;
@@ -1152,13 +1021,8 @@ importStateInput.addEventListener('change', (e) => {
   importStateInput.value = ''; // allow re-importing the same file again later
 });
 
-/* ---- .sav export/import: battery-backed cart RAM only ----
-   Deliberately separate from the save-state system above. Save states snapshot the whole
-   emulator (CPU/PPU/APU/RAM/banking registers, everything) so you can resume mid-frame;
-   a .sav is just the cartridge's battery-backed RAM, in the plain flat-binary layout other
-   emulators and real flash carts use for in-game saves - so a file
-   exported here can be loaded into another emulator (or vice versa), which a .json save
-   state can't do. */
+/* ---- .sav export/import: battery-backed cart RAM only, flat binary layout
+   compatible with other emulators/flash carts. Separate from the save-state system. ---- */
 btnDownloadSav.addEventListener('click', () => {
   if (!lastROMBytes || !hasBatteryBackedRAM(lastROMBytes)) return;
   const size = getCartRAMByteSize(lastROMBytes);
@@ -1190,12 +1054,7 @@ importSavInput.addEventListener('change', (e) => {
     const mmu = emulator.mmu;
     const n = Math.min(bytes.length, mmu.cartRAM.length, expectedSize || bytes.length);
     mmu.cartRAM.set(bytes.subarray(0, n));
-    // Writing straight into cartRAM only updates the underlying "battery" - it doesn't make an
-    // already-running game notice, same as swapping a cartridge's battery contents mid-session
-    // on real hardware wouldn't. The game only re-reads its save data at boot (title screen,
-    // "Continue" check, etc.), so without a reset here the import would silently appear to do
-    // nothing even though the bytes did land - which is exactly the "saves fine, won't load
-    // back" symptom this fixes.
+    // Game only re-reads save RAM at boot, so reset to apply it.
     resetEmulator('Save file loaded, game reset to apply it.');
     savInfo.textContent = 'Save file loaded ✓ (game reset to apply it)';
   };
@@ -1203,9 +1062,7 @@ importSavInput.addEventListener('change', (e) => {
   reader.readAsArrayBuffer(file);
 });
 
-/* ---- hotkeys: [ quick-save, ] quick-load ----
-   F5/F9 are avoided since they're reserved for page refresh / browser dev tools in most
-   browsers; [ and ] are free, easy to reach, and read naturally as "save / load". */
+/* ---- hotkeys: [ quick-save, ] quick-load ---- */
 window.addEventListener('keydown', (e) => {
   if (e.key === '[') {
     e.preventDefault();
@@ -1216,9 +1073,7 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-/* ---- media capture: single-frame WEBP screenshots, WEBM gameplay clips (video+audio), and
-   standalone Opus audio export - all via browser-native encoding (canvas.toBlob /
-   MediaRecorder), no extra libraries. ---- */
+/* ---- media capture: WEBP screenshots, WEBM clips, Opus audio export ---- */
 const btnScreenshot = document.getElementById('btnScreenshot');
 const btnRecordClip = document.getElementById('btnRecordClip');
 const btnRecordAudio = document.getElementById('btnRecordAudio');
@@ -1246,11 +1101,7 @@ btnScreenshot.addEventListener('click', () => {
   }, 'image/webp', APP_CONFIG.SCREENSHOT_WEBP_QUALITY);
 });
 
-/* ---- gameplay clip recording ----
-   canvas.captureStream() gives a live video track straight from the screen canvas; the APU's
-   masterGain node (already feeding the speakers) is additionally tapped into a
-   MediaStreamAudioDestinationNode so the recording gets sound too. MediaRecorder then encodes
-   both together as WEBM in real time - no re-encoding step, no bundled codec library. */
+/* ---- gameplay clip recording ---- */
 let clipRecorder = null;
 let clipChunks = [];
 let clipAudioDest = null;
@@ -1325,14 +1176,8 @@ btnRecordClip.addEventListener('click', () => {
 });
 
 /* ---- audio-only export (Opus) ----
-   Taps the exact same masterGain node that feeds the speakers and the gameplay-clip
-   recorder above - the APU already zeroes out a channel's contribution to masterGain the
-   moment it's muted (master Mute button or a per-channel CH1-4 mute in the Oscilloscope
-   panel, see APU.mixSample), so the exported audio automatically reflects whatever is
-   actually mixed in right now. Nothing extra to filter here. MediaRecorder is asked for an
-   Opus codec explicitly; Ogg/Opus is preferred when the browser supports it since it's a
-   "real" standalone .opus file, falling back to WebM/Opus (still Opus audio, just a
-   different container) otherwise. */
+   Taps the same masterGain node feeding the speakers, so mixed/muted channels
+   are reflected automatically. Prefers Ogg/Opus, falls back to WebM/Opus. */
 let audioRecorder = null;
 let audioChunks = [];
 let audioDest = null;
@@ -1405,11 +1250,8 @@ btnRecordAudio.addEventListener('click', () => {
   else startAudioRecording();
 });
 
-/* ---- clear saved config: wipes the persisted UI config (model/mode/mark-line), sound config
-   (mute/volume/channel mutes), and every game's save-state slots (jsgb-saveslots:<rom>) from
-   localStorage, so the app falls back to its defaults next load with a clean slate. Save slots
-   are keyed per-ROM title, so they're found by scanning all localStorage keys for the prefix
-   rather than a single fixed key. */
+/* ---- clear saved config: wipes UI config, sound config, and all save-state
+   slots from localStorage, resetting to defaults on next load. ---- */
 const btnClearConfig = document.getElementById('btnClearConfig');
 btnClearConfig.addEventListener('click', () => {
   const ok = confirm('Clear all saved emulator config (model, play/debug mode, sound settings) AND all game save states? This cannot be undone.');

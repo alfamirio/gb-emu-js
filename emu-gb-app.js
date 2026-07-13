@@ -533,20 +533,26 @@ btnPause.addEventListener('click', () => {
   }
   refreshDebugTools();
 });
-btnReset.addEventListener('click', () => {
-  if (lastROMBytes) {
-    emulator.loadROM(lastROMBytes);
-    lastRenderedAccessSeq = -1;
-    lastRenderedBankSwitchT = -1;
-    buildBankingPanel();
-    updateRtcTabAvailability();
-    emulator.start();
-    btnPause.textContent = '⏸ Pause';
-    bpStatus.textContent = 'Reset.';
-    updateRewindButton(); // Reset starts a fresh run, so any rewind history from before is gone too
-    resetPlayTime();
-  }
-});
+// Shared by the Reset button and by .sav import below: reboots the emulator on the currently
+// loaded ROM. loadROM() reinitializes CPU/PPU/banking/RTC state but deliberately does NOT touch
+// cartRAM (it's allocated once and left alone across loads - see emu-gbc-core.js), so this is
+// safe to call right after writing new bytes into cartRAM and will make the game actually pick
+// them up, the same way power-cycling a real Game Boy would.
+function resetEmulator(statusMsg) {
+  if (!lastROMBytes) return;
+  emulator.loadROM(lastROMBytes);
+  lastRenderedAccessSeq = -1;
+  lastRenderedBankSwitchT = -1;
+  buildBankingPanel();
+  updateRtcTabAvailability();
+  emulator.start();
+  btnPause.textContent = '⏸ Pause';
+  bpStatus.textContent = statusMsg;
+  updateRewindButton(); // a fresh run means any rewind history from before is gone too
+  resetPlayTime();
+}
+
+btnReset.addEventListener('click', () => resetEmulator('Reset.'));
 
 /* ---- rewind: in-memory-only, up to Emulator.REWIND_MAX_SNAPSHOTS deep, one snapshot every
    Emulator.REWIND_SNAPSHOT_INTERVAL_SECONDS of emulated time (see Emulator.rewind()) ---- */
@@ -976,7 +982,14 @@ importSavInput.addEventListener('change', (e) => {
     const mmu = emulator.mmu;
     const n = Math.min(bytes.length, mmu.cartRAM.length, expectedSize || bytes.length);
     mmu.cartRAM.set(bytes.subarray(0, n));
-    savInfo.textContent = 'Save file loaded ✓';
+    // Writing straight into cartRAM only updates the underlying "battery" - it doesn't make an
+    // already-running game notice, same as swapping a cartridge's battery contents mid-session
+    // on real hardware wouldn't. The game only re-reads its save data at boot (title screen,
+    // "Continue" check, etc.), so without a reset here the import would silently appear to do
+    // nothing even though the bytes did land - which is exactly the "saves fine, won't load
+    // back" symptom this fixes.
+    resetEmulator('Save file loaded, game reset to apply it.');
+    savInfo.textContent = 'Save file loaded ✓ (game reset to apply it)';
   };
   reader.onerror = () => { alert('Could not read that file.'); };
   reader.readAsArrayBuffer(file);

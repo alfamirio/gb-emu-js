@@ -36,11 +36,15 @@
        0x10-byte block per H-Blank (matching real hardware's block size) but doesn't stall
        the CPU for the M-cycles a real transfer would cost.
      - OPRI (object priority mode, 0xFF6C) is accepted but always behaves as CGB-default
-       (OAM-index priority) - the DMG-style X-coordinate priority mode isn't implemented.
-     - No non-CGB "compatibility palette" boot behavior (the real boot ROM assigns DMG-like
-       greyscale/tint palettes to old cartridges that don't supply their own); CGB-flagged
-       carts always initialize with blank palette RAM, same as real hardware before a game
-       writes its own palettes (which every CGB-aware game does immediately).
+       (OAM-index priority) - the DMG-style X-coordinate priority mode isn't implemented, even
+       for a non-CGB cart running in DMG-compatibility mode below.
+     - DMG-compatibility mode: a cartridge without the CGB flag (0x143) never touches
+       BCPS/BCPD, so CGBMMU.applyDMGCompatPalette() translates its BGP/OBP0/OBP1 writes into
+       BG palette 0 / OBJ palettes 0-1 using the DMG core's Game Boy Pocket grayscale ramp -
+       a simplification of the real boot ROM, which instead assigns one of several built-in
+       tinted palettes per-game (keyed off the cartridge title/checksum). CGB-flagged carts
+       are unaffected: their palette RAM still starts blank, same as real hardware, since they
+       write their own palettes via BCPS/BCPD immediately.
    ========================================================================================= */
 
 /* ============================== 0. CGB-only config additions =========================== */
@@ -160,6 +164,15 @@ class CGBMMU {
     this.rom = bytes;
     const cartType = bytes[0x147];
     this.cartTypeByte = cartType;
+
+    // CGB flag (header offset 0x143): 0x80 = CGB-enhanced (also runs on plain DMG hardware),
+    // 0xC0 = CGB-exclusive. Anything else is a cartridge that has never heard of Game Boy
+    // Color - it will never touch BCPS/BCPD, so without a compatibility translation its BG/OBJ
+    // palette RAM would stay all-zero (black) forever. See applyDMGCompatPalette() below.
+    const cgbFlag = bytes[0x143];
+    this.cgbFlag = cgbFlag;
+    this.isCGBCart = (cgbFlag === 0x80 || cgbFlag === 0xC0);
+
     if (cartType === 0x00) { this.mbcType = 0; this.cartTypeSupported = true; }
     else if (cartType >= 0x01 && cartType <= 0x03) { this.mbcType = 1; this.cartTypeSupported = true; }
     else if (cartType === 0x05 || cartType === 0x06) { this.mbcType = 2; this.cartTypeSupported = true; }
@@ -204,6 +217,17 @@ class CGBMMU {
     this.io[0x49] = bootIO.OBP1;
     this.io[0x4F] = 0xFE; // VBK reads back with bits 1-7 set
     this.io[0x70] = 0xF8; // SVBK reads back with bits 3-7 set
+
+    // DMG-compatibility mode: a non-CGB cartridge will drive the screen entirely through
+    // BGP/OBP0/OBP1 and will never write BCPS/BCPD, so seed palette RAM from the boot
+    // register values now (applyDMGCompatPalette() also keeps it in sync on every later
+    // BGP/OBP0/OBP1 write - see writeIO). CGB-flagged carts are untouched here, matching the
+    // "blank palette RAM until the game writes its own" behavior documented in the file header.
+    if (!this.isCGBCart) {
+      this.applyDMGCompatPalette(0x47, bootIO.BGP);
+      this.applyDMGCompatPalette(0x48, bootIO.OBP0);
+      this.applyDMGCompatPalette(0x49, bootIO.OBP1);
+    }
   }
 
   /* ---- save state ---- */
@@ -444,6 +468,12 @@ class CGBMMU {
       case 0x41: this.io[reg] = (this.io[reg] & 0x07) | (val & 0xF8); return;
       case 0x44: this.io[reg] = 0; return;
       case 0x46: this.doDMA(val); return;
+      // BGP/OBP0/OBP1: on real CGB hardware these still exist and are still writable even by
+      // CGB-aware games, but only actually drive the screen for a non-CGB cart running in
+      // DMG-compatibility mode - see applyDMGCompatPalette().
+      case 0x47: this.io[reg] = val; if (!this.isCGBCart) this.applyDMGCompatPalette(0x47, val); return;
+      case 0x48: this.io[reg] = val; if (!this.isCGBCart) this.applyDMGCompatPalette(0x48, val); return;
+      case 0x49: this.io[reg] = val; if (!this.isCGBCart) this.applyDMGCompatPalette(0x49, val); return;
       case 0x4D: this.speedSwitchArmed = !!(val & 0x01); return; // KEY1: only bit0 (armed) is writable
       case 0x4F: this.vbk = val & 0x01; return;
       case 0x51: this.hdmaSrc = (this.hdmaSrc & 0x00FF) | (val << 8); return;               // HDMA1 (src hi)
@@ -481,6 +511,32 @@ class CGBMMU {
     // 5-bit -> 8-bit: replicate the top 3 bits into the low bits, same technique used
     // throughout graphics hardware/emulation for a perceptually even spread across 0-255.
     return [(r5 << 3) | (r5 >> 2), (g5 << 3) | (g5 >> 2), (b5 << 3) | (b5 >> 2)];
+  }
+
+  // ---- DMG compatibility palette (only used when isCGBCart is false) ----
+  // A cartridge without the CGB flag has no idea BCPS/BCPD (0xFF68-0xFF6B) exist - it only
+  // ever writes the classic DMG palette registers BGP (0xFF47), OBP0 (0xFF48), OBP1 (0xFF49).
+  // Real CGB hardware handles this by running such carts in "DMG compatibility mode": the
+  // PPU still renders from its normal color palette RAM internally, but the boot ROM/hardware
+  // keeps that RAM in sync with whatever the game writes to BGP/OBP0/OBP1, translating each
+  // 2-bit shade through a fixed ramp. We do the same, reusing the DMG core's own Game Boy
+  // Pocket grayscale table (EMU_CORE_CONFIG.PALETTE_GBP) as that ramp - a reasonable,
+  // documented simplification of the real boot ROM's per-game tinted compatibility palettes.
+  // BGP always maps to BG palette 0; OBP0/OBP1 map to OBJ palettes 0/1 respectively, matching
+  // which OAM attribute bit a DMG game actually sets (see getSpriteCandidatesForLine in
+  // CGBPPU, which reads that same bit instead of the full CGB 3-bit palette-index field).
+  applyDMGCompatPalette(reg, val) {
+    const SHADES = EMU_CORE_CONFIG.PALETTE_GBP;
+    const isObj = reg !== 0x47;
+    const paletteIndex = reg === 0x49 ? 1 : 0;
+    const ram = isObj ? this.objPaletteRAM : this.bgPaletteRAM;
+    for (let colorNum = 0; colorNum < 4; colorNum++) {
+      const [r, g, b] = SHADES[(val >> (colorNum * 2)) & 0x03];
+      const word = (r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10);
+      const base = paletteIndex * 8 + colorNum * 2;
+      ram[base] = word & 0xFF;
+      ram[base + 1] = (word >> 8) & 0xFF;
+    }
   }
 
   doDMA(val) {
@@ -829,7 +885,10 @@ class CGBPPU {
     for (const s of candidates) {
       if (s.spriteX <= -8 || s.spriteX >= EMU_CORE_CONFIG.SCREEN.WIDTH) continue;
       const behindBG = !!(s.attrs & 0x80);
-      const paletteNum = s.attrs & 0x07;
+      // CGB carts: full 3-bit OBJ palette index. Non-CGB carts only ever set attribute bit4
+      // (the DMG OBP0/OBP1 select bit) - bits0-2 stay 0, so reading them here would collapse
+      // every sprite onto OBJ palette 0 regardless of which DMG palette the game asked for.
+      const paletteNum = this.mmu.isCGBCart ? (s.attrs & 0x07) : ((s.attrs & 0x10) ? 1 : 0);
       const { lo, hi, xFlip } = this.getSpriteRowBits(s, y, spriteHeight);
 
       for (let px = 0; px < 8; px++) {

@@ -48,7 +48,21 @@
     margin: 0 2px;
   }
 
-  .navbar .nav-title { font-size: 1.15rem; font-weight: 600; letter-spacing: 1px; color: #eee; flex-shrink: 0; }
+  .navbar .nav-title {
+    font-size: 1.15rem;
+    font-weight: 600;
+    letter-spacing: 1px;
+    color: #fff;
+    flex-shrink: 0;
+    background: #000;
+    padding: 4px 12px;
+    border-radius: 999px;
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent; /* no flash feedback on mobile tap */
+  }
+  /* Deliberately no :hover/:active/:focus style rules for .nav-title - the badge must not
+     visibly react to being clicked (see the click-combo handler in emu-gb-debug.js). */
   /* Push every control after the title to the right edge of the navbar, so the title stays
      pinned left and all the mode/toggle switches + the clear-config button cluster together
      on the right (rather than trailing left-aligned right after the title). */
@@ -96,6 +110,7 @@
   }
   .switch input:checked + .toggle-track { background: var(--accent); }
   .switch input:checked + .toggle-track .toggle-thumb { transform: translateX(16px); }
+  .switch input:disabled + .toggle-track { opacity: 0.4; cursor: not-allowed; }
 
   /* visibility (not display) keeps each sidebar's flex slot reserved, so toggling
      debug mode hides/shows their content without reflowing the other columns */
@@ -1260,7 +1275,7 @@
 <body>
 
 <nav class="navbar">
-  <span class="nav-title">GB Emu</span>
+  <span class="nav-title" id="navTitle">GB Emu</span>
 
   <!-- Step / breakpoint controls: shared across the disassembler + trace tabs -->
   <div class="cpu-debug-controls" id="cpuDebugControls">

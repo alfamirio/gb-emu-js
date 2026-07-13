@@ -2102,6 +2102,10 @@ class Emulator {
     this.imageData = this.ctx.createImageData(EMU_CORE_CONFIG.SCREEN.WIDTH, EMU_CORE_CONFIG.SCREEN.HEIGHT);
 
     this.running = false;
+    // Fired (with the new boolean) whenever _setRunning() actually flips this.running - the
+    // single place UI code should hook to react to play/pause transitions instead of polling
+    // emulator.running on a timer. See _setRunning() below for the only place that sets it.
+    this.onRunStateChange = null;
     this.frameReady = false;
     this._rafId = null;
     this.markCurrentLine = false;
@@ -2381,7 +2385,7 @@ class Emulator {
   // Pauses the emulator and records why, so a breakpoint hit looks the same in the UI as
   // pressing Pause by hand.
   triggerBreakpoint(reason) {
-    this.running = false;
+    this._setRunning(false);
     if (this._rafId) cancelAnimationFrame(this._rafId);
     this.apu.suspend();
     this.breakHitReason = reason;
@@ -2403,7 +2407,7 @@ class Emulator {
   // pinned at 0 while LCDC bit 7 is clear, so it would otherwise never change).
   stepLine() {
     if (this.running) this.pause();
-    this.running = true;
+    this._setRunning(true);
     const startLy = this.ppu.ly;
     let cyclesSpent = 0;
     while (this.ppu.ly === startLy && cyclesSpent < Emulator.CYCLES_PER_FRAME) {
@@ -2411,7 +2415,7 @@ class Emulator {
       if (!this.running) break; // a breakpoint fired mid-step
       cyclesSpent += cycles;
     }
-    this.running = false;
+    this._setRunning(false);
     this.draw();
     refreshDebugTools();
   }
@@ -2420,9 +2424,9 @@ class Emulator {
   // play), then redraws - a "step frame" for the paused debugger.
   stepFrame() {
     if (this.running) this.pause();
-    this.running = true; // runFrame() bails out early if this flips false mid-frame (breakpoint hit)
+    this._setRunning(true); // runFrame() bails out early if this flips false mid-frame (breakpoint hit)
     this.runFrame();
-    this.running = false;
+    this._setRunning(false);
     this.draw();
     refreshDebugTools();
   }
@@ -2433,12 +2437,12 @@ class Emulator {
   // exactly the frames this call just ran, so every one of them becomes browsable afterwards.
   stepOneSecond() {
     if (this.running) this.pause();
-    this.running = true; // runFrame() bails out early if this flips false mid-frame (breakpoint hit)
+    this._setRunning(true); // runFrame() bails out early if this flips false mid-frame (breakpoint hit)
     for (let i = 0; i < 60; i++) {
       this.runFrame();
       if (!this.running) break; // a breakpoint fired mid-frame; stop immediately
     }
-    this.running = false;
+    this._setRunning(false);
     this.draw();
     refreshDebugTools();
   }
@@ -2507,16 +2511,25 @@ class Emulator {
     return entries;
   }
 
+  // Single choke point for flipping this.running. Fires onRunStateChange only on an actual
+  // transition (not on redundant same-value sets), so UI code can hook play/pause boundaries
+  // exactly once per transition instead of polling emulator.running on a timer.
+  _setRunning(running) {
+    if (this.running === running) return;
+    this.running = running;
+    if (this.onRunStateChange) this.onRunStateChange(running);
+  }
+
   start() {
     if (this.running) return;
-    this.running = true;
+    this._setRunning(true);
     this._lastTime = null;
     this._frameAcc = 0;
     this.apu.initAudio(); // must happen inside a user gesture (click/drop), which start() is always called from
     this.apu.resume();
     this.loop(performance.now());
   }
-  pause() { this.running = false; if (this._rafId) cancelAnimationFrame(this._rafId); this.apu.suspend(); }
+  pause() { this._setRunning(false); if (this._rafId) cancelAnimationFrame(this._rafId); this.apu.suspend(); }
 
   // Paces emulated frames against real elapsed time, scaled by this.speed (1 = normal speed,
   // 0.1 = 10%, etc). Using an accumulator instead of just "run one frame per rAF tick" means

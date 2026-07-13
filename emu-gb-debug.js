@@ -848,7 +848,9 @@ if (typeof savedUIConfig.gbp === 'boolean') modelToggle.checked = savedUIConfig.
 
 modelToggle.addEventListener('change', applyScreenModel);
 
-/* ---- navbar toggle: overlay a line on the GB screen at the PPU's current scanline (LY) ---- */
+/* ---- navbar toggle: overlay a line on the GB screen at the PPU's current scanline (LY) ----
+   Deliberately NOT persisted to saved UI config - always starts off on load/refresh, unlike
+   the other navbar toggles. */
 const scanlineMarkToggle = document.getElementById('scanlineMarkToggle');
 const scanlineMarkLabelOn = document.getElementById('scanlineMarkLabelOn');
 
@@ -856,14 +858,24 @@ function applyScanlineMark() {
   const on = scanlineMarkToggle.checked;
   emulator.markCurrentLine = on;
   scanlineMarkLabelOn.classList.toggle('active', on);
-  saveUIConfig({ markCurrentLine: on });
   // Repaint immediately so toggling is visible even while paused/no frame is running.
   if (emulator.mmu.rom && emulator.mmu.rom.length) emulator.draw();
 }
 
-if (typeof savedUIConfig.markCurrentLine === 'boolean') scanlineMarkToggle.checked = savedUIConfig.markCurrentLine;
-
 scanlineMarkToggle.addEventListener('change', applyScanlineMark);
+
+// The "Line" toggle is a debug aid (where's the PPU right now?) that only makes sense to
+// flip while paused - changing it mid-play would just be invisible until the next pause
+// anyway. Lock it while the emulator is actually running, unlock it the instant it isn't.
+// Driven entirely by emulator.onRunStateChange (fired only on real start()/pause()
+// transitions, see _setRunning() in emu-gb-core.js) - no polling of emulator.running needed.
+const scanlineMarkToggleWrap = scanlineMarkToggle.closest('.scanline-mark-toggle');
+function setScanlineMarkToggleLocked(running) {
+  scanlineMarkToggle.disabled = running;
+  scanlineMarkToggleWrap.title = running ? 'Pause the emulator to change this (debug-only)' : '';
+}
+setScanlineMarkToggleLocked(emulator.running);
+emulator.onRunStateChange = setScanlineMarkToggleLocked;
 
 /* ---- navbar toggle: wash each PPU layer (background / window "tiles" / sprites) with its
    own tint color, so overlapping layers are easy to tell apart on the GB screen ---- */
@@ -899,6 +911,32 @@ function applyDotMatrix() {
 if (typeof savedUIConfig.dotMatrix === 'boolean') dotMatrixToggle.checked = savedUIConfig.dotMatrix;
 
 dotMatrixToggle.addEventListener('change', applyDotMatrix);
+
+/* ---- hidden click-combo for enableEmuDevUnlock() ----
+   Alternate path into the same dev unlock flag documented at the top of emu-gb-app.js
+   (normally set via enableEmuDevUnlock() in the devtools console). Here, clicking the
+   "GB Emu" navbar badge 11 times while the Layers toggle, the Shader toggle, and the
+   model toggle (in its "GB" position, i.e. unchecked) are all in place flips it instead.
+   The badge intentionally has no hover/active/focus styling and no click feedback (see the
+   CSS in index.html), so there's nothing visually marking this as interactive. Click count
+   resets whenever any of those three conditions isn't met, so all three must already be in
+   place for the whole sequence of 11 clicks. Like the console path, this only sets the
+   localStorage flag - isDevUnlocked() is read once at load, so a page reload is still
+   needed for it to take effect. */
+const navTitle = document.getElementById('navTitle');
+const DEV_UNLOCK_CLICKS_NEEDED = 23;
+let devUnlockClickCount = 0;
+navTitle.addEventListener('click', () => {
+  if (!(layerTintToggle.checked && dotMatrixToggle.checked && !modelToggle.checked)) {
+    devUnlockClickCount = 0;
+    return;
+  }
+  devUnlockClickCount++;
+  if (devUnlockClickCount >= DEV_UNLOCK_CLICKS_NEEDED) {
+    devUnlockClickCount = 0;
+    enableEmuDevUnlock();
+  }
+});
 
 /* ---- navbar toggles: independently show/hide the Debugging Tools sidebar, the
    Visualization Tools sidebar, and the Frame Activity panel. Each one is a simple

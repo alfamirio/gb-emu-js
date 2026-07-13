@@ -622,7 +622,7 @@ window.addEventListener('drop', (e) => { if (e.dataTransfer.files[0]) handleROMF
 btnPause.addEventListener('click', () => {
   if (emulator.running) {
     emulator.pause();
-    btnPause.textContent = '▶ Resume';
+    btnPause.textContent = '▶ Start';
     bpStatus.textContent = 'Paused.';
   } else {
     emulator.start();
@@ -666,7 +666,7 @@ setInterval(updateRewindButton, 250); // buffer grows in the background while pl
 btnRewind.addEventListener('click', () => {
   const ok = emulator.rewind();
   if (ok) {
-    btnPause.textContent = '▶ Resume';
+    btnPause.textContent = '▶ Start';
     bpStatus.textContent = `Rewound ${emulator.REWIND_SNAPSHOT_INTERVAL_SECONDS}s — PC=${hex16(emulator.cpu.PC)}`;
     refreshDebugTools();
   }
@@ -675,35 +675,35 @@ btnRewind.addEventListener('click', () => {
 
 /* ---- step / breakpoint debugger ---- */
 emulator.onBreakpointHit = (reason) => {
-  btnPause.textContent = '▶ Resume';
+  btnPause.textContent = '▶ Start';
   bpStatus.textContent = `⏹ Stopped — ${reason}`;
   refreshDebugTools();
 };
 
 btnStep.addEventListener('click', () => {
   emulator.stepOne();
-  btnPause.textContent = '▶ Resume';
+  btnPause.textContent = '▶ Start';
   bpStatus.textContent = `Stepped — now at PC=${hex16(emulator.cpu.PC)}`;
   refreshDebugTools();
 });
 
 btnStepLine.addEventListener('click', () => {
   emulator.stepLine();
-  btnPause.textContent = '▶ Resume';
+  btnPause.textContent = '▶ Start';
   bpStatus.textContent = `Stepped to line LY=${emulator.ppu.ly} — PC=${hex16(emulator.cpu.PC)}`;
   refreshDebugTools();
 });
 
 btnStepFrame.addEventListener('click', () => {
   emulator.stepFrame();
-  btnPause.textContent = '▶ Resume';
+  btnPause.textContent = '▶ Start';
   bpStatus.textContent = `Stepped one frame — PC=${hex16(emulator.cpu.PC)}`;
   refreshDebugTools();
 });
 
 btnStep1s.addEventListener('click', () => {
   emulator.stepOneSecond();
-  btnPause.textContent = '▶ Resume';
+  btnPause.textContent = '▶ Start';
   bpStatus.textContent = `Stepped 1s (60 frames) — PC=${hex16(emulator.cpu.PC)}`;
   selectedFrameStatsIndex = null; // let Frame Activity follow the 60 frames just stepped
   refreshDebugTools();

@@ -1171,7 +1171,7 @@
 <body>
 
 <nav class="navbar">
-  <span class="nav-title">JS GB Emulator</span>
+  <span class="nav-title">GB Emu</span>
 
   <!-- Step / breakpoint controls: shared across the disassembler + trace tabs -->
   <div class="cpu-debug-controls" id="cpuDebugControls">
@@ -1184,7 +1184,6 @@
     <div class="cdc-status" id="bpStatus"></div>
   </div>
   <div class="mode-toggle scanline-mark-toggle">
-    <span class="mode-label" id="scanlineMarkLabelOff">Off</span>
     <label class="switch">
       <input type="checkbox" id="scanlineMarkToggle">
       <span class="toggle-track"><span class="toggle-thumb"></span></span>
@@ -1192,7 +1191,6 @@
     <span class="mode-label" id="scanlineMarkLabelOn">Line</span>
   </div>
   <div class="mode-toggle layer-tint-toggle">
-    <span class="mode-label" id="layerTintLabelOff">Off</span>
     <label class="switch">
       <input type="checkbox" id="layerTintToggle">
       <span class="toggle-track"><span class="toggle-thumb"></span></span>
@@ -1203,12 +1201,11 @@
   <span class="nav-divider"></span>
 
   <div class="mode-toggle dot-matrix-toggle">
-    <span class="mode-label" id="dotMatrixLabelOff">Off</span>
     <label class="switch">
       <input type="checkbox" id="dotMatrixToggle">
       <span class="toggle-track"><span class="toggle-thumb"></span></span>
     </label>
-    <span class="mode-label" id="dotMatrixLabelOn">Dot Matrix</span>
+    <span class="mode-label" id="dotMatrixLabelOn">Shader</span>
   </div>
   <div class="model-toggle">
     <span class="model-label" id="modelLabelGB">GB</span>
@@ -1227,21 +1224,21 @@
         <input type="checkbox" id="debugToolsVisToggle" checked>
         <span class="toggle-track"><span class="toggle-thumb"></span></span>
       </label>
-      <span class="mode-label active" id="debugToolsVisLabel">Debug Tools</span>
+      <span class="mode-label active" id="debugToolsVisLabel">Debug</span>
     </div>
     <div class="mode-toggle panel-vis-toggle" title="Show/hide the Visual Tools panel">
       <label class="switch">
         <input type="checkbox" id="visualToolsVisToggle" checked>
         <span class="toggle-track"><span class="toggle-thumb"></span></span>
       </label>
-      <span class="mode-label active" id="visualToolsVisLabel">Visual Tools</span>
+      <span class="mode-label active" id="visualToolsVisLabel">Visual</span>
     </div>
     <div class="mode-toggle panel-vis-toggle" title="Show/hide the Frame Activity panel">
       <label class="switch">
         <input type="checkbox" id="frameActivityVisToggle">
         <span class="toggle-track"><span class="toggle-thumb"></span></span>
       </label>
-      <span class="mode-label" id="frameActivityVisLabel">Frame Act</span>
+      <span class="mode-label" id="frameActivityVisLabel">Frame</span>
     </div>
   </div>
 

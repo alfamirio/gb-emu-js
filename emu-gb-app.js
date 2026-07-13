@@ -53,6 +53,49 @@ const btnReset = document.getElementById('btnReset');
 const btnRewind = document.getElementById('btnRewind');
 const rewindInfo = document.getElementById('rewindInfo');
 
+/* ---- hidden dev/debug override ----
+   Not exposed anywhere in the UI - there is no button or setting for this. It exists purely
+   so a developer/instructor can test the app (commercial-ROM compatibility, long play
+   sessions, etc.) without the classroom guardrails getting in the way, while every student
+   still gets the guardrails at their normal defaults.
+
+   To enable for yourself: open the browser console on this page and run enableEmuDevUnlock(),
+   then reload. To go back to normal, run disableEmuDevUnlock() (also reload after) - or just
+   clear site data. Change DEV_UNLOCK_VALUE below to your own secret before deploying; the
+   point of checking a specific string (rather than just the key's presence) is that a student
+   poking around in devtools and finding the key name isn't enough on its own to flip it.
+   localStorage is per-browser-profile and never leaves the machine (unlike a cookie, it's
+   never sent to any server), so this can't leak through network logs. */
+const DEV_UNLOCK_KEY = 'emuDevUnlock';
+const DEV_UNLOCK_VALUE = 'you shall not pass!';
+function isDevUnlocked() {
+  try {
+    return localStorage.getItem(DEV_UNLOCK_KEY) === DEV_UNLOCK_VALUE;
+  } catch {
+    return false; // e.g. localStorage blocked (private mode edge cases) - fail safe, guardrails stay on
+  }
+}
+// Console helpers - not called anywhere in the app itself, just for a dev to invoke by hand
+// from devtools (e.g. `enableEmuDevUnlock()`). Guardrails are read once at load time (see the
+// PLAY_TIME_GUARDRAIL/GAME_FILTER_ENABLED consts below), so either one requires a reload to
+// actually take effect - both log a reminder of that rather than silently doing nothing.
+function enableEmuDevUnlock() {
+  try {
+    localStorage.setItem(DEV_UNLOCK_KEY, DEV_UNLOCK_VALUE);
+    console.log('Dev unlock enabled. Reload the page for it to take effect.');
+  } catch (err) {
+    console.warn('Could not enable dev unlock:', err.message);
+  }
+}
+function disableEmuDevUnlock() {
+  try {
+    localStorage.removeItem(DEV_UNLOCK_KEY);
+    console.log('Dev unlock disabled. Reload the page for it to take effect.');
+  } catch (err) {
+    console.warn('Could not disable dev unlock:', err.message);
+  }
+}
+
 /* ---- play-time guardrail config ----
    Classroom/lab guardrail: caps how long the emulator can run continuously, so this stays a
    debugging tool rather than a way to just play through the game. Everything is built from
@@ -72,8 +115,10 @@ const rewindInfo = document.getElementById('rewindInfo');
 
    PLAY_TIME_GUARDRAIL is the master on/off switch for the whole system - flip it to false to
    disable the cap, warning alert, and badge coloring entirely (e.g. for a build that isn't
-   running in a classroom/lab context). Defaults to true. */
-const PLAY_TIME_GUARDRAIL = true; // master switch - set to false to disable the guardrail entirely
+   running in a classroom/lab context). Defaults to true, except when isDevUnlocked() is true
+   (see the hidden dev/debug override above), in which case it's forced off regardless of the
+   line below - that override is per-browser via localStorage, so it never affects students. */
+const PLAY_TIME_GUARDRAIL = isDevUnlocked() ? false : true; // master switch - set to false to disable the guardrail entirely
 const PLAY_TIME_BASE_UNIT = 60; // seconds per unit; set to 1 for fast manual testing
 const PLAY_TIME_TOTAL_LIMIT = 20 * PLAY_TIME_BASE_UNIT; // hard cap, referenced to PLAY_TIME_BASE_UNIT
 const PLAY_TIME_LIMIT_CONFIG = {
@@ -241,6 +286,89 @@ function applyCoreToggle() {
 if (typeof savedUIConfig.gbcCore === 'boolean') coreToggle.checked = savedUIConfig.gbcCore;
 applyCoreToggle();
 coreToggle.addEventListener('change', applyCoreToggle);
+
+// BloomFilter to exlude games.
+class BloomFilter {
+    constructor(arrayBuffer) {
+        // 1. Read the 5-byte header values from the buffer
+        const dataView = new DataView(arrayBuffer, 0, 5);
+        this.m = dataView.getUint32(0, true); // Read 32-bit M_BITS (Little Endian)
+        this.k = dataView.getUint8(4);        // Read 8-bit K_FUNCTIONS
+
+        // 2. Slice the rest of the buffer into the bit array (starting at byte index 5)
+        this.bitArray = new Uint8Array(arrayBuffer, 5);
+        
+        console.log(`Configured from header -> Bits (m): ${this.m}, Hashes (k): ${this.k}`);
+    }
+
+    _hash(item, i) {
+        const salted = `${i}:${item.toLowerCase()}`;
+        let hash = 0x811c9dc5;
+        for (let j = 0; j < salted.length; j++) {
+            hash ^= salted.charCodeAt(j);
+            hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+        }
+        return Math.abs(hash) % this.m; // Dynamically uses loaded 'm'
+    }
+
+    isCommercial(crc32) {
+        for (let i = 0; i < this.k; i++) { // Dynamically uses loaded 'k'
+            const bitPosition = this._hash(crc32, i);
+            const byteIndex = Math.floor(bitPosition / 8);
+            const bitIndex = bitPosition % 8;
+
+            if ((this.bitArray[byteIndex] & (1 << bitIndex)) === 0) {
+                return false; 
+            }
+        }
+        return true; 
+    }
+}
+
+/* ---- No-Intro commercial-ROM bloom filter ----------------------------------------------
+   Blocks ROMs that match a prebuilt No-Intro bloom filter (produced by
+   bloom_filter_builder.html from a No-Intro .dat file) so this stays limited to homebrew/
+   non-commercial ROMs, in keeping with the "educational purposes" framing above.
+
+   There are two separate filters - one built from the GB .dat, one from the GBC .dat -
+   since No-Intro keeps those as separate datasets with separate CRC32 lists. A ROM is
+   checked against both, regardless of which core it's about to run on (coreToggle forces
+   a core independently of the ROM's own CGB header flag, so a commercial ROM could easily
+   end up running on either core's filter list) - a match on *either* filter blocks the ROM.
+
+   GAME_FILTER_ENABLED is the master on/off switch - set to false to skip loading both
+   filters and skip the check entirely (every ROM loads, same as before this feature
+   existed). Defaults to true, except when isDevUnlocked() is true (see the hidden dev/debug
+   override above), in which case it's forced off regardless of the line below, so commercial
+   ROMs can be loaded for testing - that override is per-browser via localStorage, so it never
+   affects students.
+
+   GAME_FILTER_URLS points at the one .js file downloaded from bloom_filter_builder.html;
+   it is fetched once at startup relative to index.html. If either is missing, fails to
+   fetch, or fails to parse, the check is silently skipped *for that core only* for this
+   session (a missing filter file should never prevent the emulator itself from working) -
+   a warning is logged to the console.
+*/
+
+const GAME_FILTER_ENABLED = isDevUnlocked() ? false : true; // master switch - set to false to disable the commercial-ROM check entirely
+
+let commercialRomFilters = { gb: null, gbc: null }; // each becomes a BloomFilter instance once decoded; stays null if disabled, missing, or unparsable
+
+function loadCommercialRomFilter(coreKey) {
+  try {
+    const b64 = window.GAME_FILTER_DATA && window.GAME_FILTER_DATA[coreKey];
+    if (!b64) throw new Error('no data for this core in GAME_FILTER_DATA - is filters/game-filter-data.js included in index.html before this file?');
+    const buf = base64ToU8(b64).buffer;
+    commercialRomFilters[coreKey] = new BloomFilter(buf);
+    console.log(`Commercial-ROM filter (${coreKey.toUpperCase()}) loaded (${(buf.byteLength / 1024).toFixed(1)} KB, m=${commercialRomFilters[coreKey].m}, k=${commercialRomFilters[coreKey].k}).`);
+  } catch (err) {
+    console.warn(`Commercial-ROM filter (${coreKey.toUpperCase()}) not loaded (${err.message}) - commercial-ROM check is disabled for ${coreKey.toUpperCase()} ROMs this session.`);
+  }
+}
+if (GAME_FILTER_ENABLED) {
+  loadCommercialRomFilter('gb');
+  loadCommercialRomFilter('gbc');
+}
 
 
 function getROMTitle(bytes) {
@@ -454,6 +582,22 @@ function renderChecksumBadges(checksums) {
 // .gb/.gbc/.bin path and the zip-extraction path below, so neither has to duplicate the
 // "wire it into the emulator and UI" bookkeeping.
 async function loadROMBytes(bytes) {
+  // Commercial-ROM check: computed up front, before touching emulator/UI state at all, so a
+  // blocked ROM leaves whatever was previously loaded untouched. Checked against both the GB
+  // and GBC filters regardless of core - coreToggle forces a core independently of the ROM's
+  // own CGB flag, so either filter could be the one that actually recognizes it - and a match
+  // on either blocks the ROM. A filter that's null (GAME_FILTER_ENABLED false, or that .bin
+  // failed to load) is simply skipped, so this degrades gracefully if only one .bin is present.
+  const gateCrc32 = crc32(bytes).toString(16).toUpperCase().padStart(8, '0');
+  const gateMatch = (commercialRomFilters.gb && commercialRomFilters.gb.isCommercial(gateCrc32))
+    || (commercialRomFilters.gbc && commercialRomFilters.gbc.isCommercial(gateCrc32));
+  if (gateMatch) {
+    romInfo.innerHTML = `<span style="color:#e8794b">⚠ This ROM (CRC32 0x${gateCrc32}) matches the No-Intro commercial-game database and can't be loaded here.</span>` +
+      `<br><span style="color:#9aa0a6">ℹ This emulator only supports homebrew/non-commercial ROMs.</span>`;
+    checksumBadges.innerHTML = '';
+    return;
+  }
+
   lastROMBytes = bytes;
   ensureEmulatorMatchesCoreToggle();
   emulator.loadROM(bytes);

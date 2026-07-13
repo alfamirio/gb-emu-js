@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ROM Bloom Filter Generator</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 650px;
+            margin: 40px auto;
+            padding: 0 20px;
+            line-height: 1.6;
+            background-color: #121214;
+            color: #e1e1e6;
+        }
+        .card {
+            background: #202024;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            margin-bottom: 20px;
+            border: 1px solid #29292e;
+        }
+        h2 { margin-top: 0; color: #fff; border-bottom: 1px solid #29292e; padding-bottom: 8px; }
+        .config-row {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        .config-group {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        label {
+            font-size: 0.85em;
+            color: #a8a8b3;
+            margin-bottom: 4px;
+        }
+        input[type="text"], input[type="number"], select {
+            background: #121214;
+            color: #fff;
+            padding: 10px;
+            border: 1px solid #29292e;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        input:focus, select:focus {
+            outline: 2px solid #4ea8de;
+        }
+        
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+            background: #121214;
+            padding: 12px;
+            border-radius: 4px;
+            border: 1px solid #29292e;
+        }
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 44px;
+            height: 24px;
+            flex-shrink: 0;
+        }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #3a3a42;
+            transition: .2s;
+            border-radius: 24px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .2s;
+            border-radius: 50%;
+        }
+        input:checked + .slider { background-color: #4ea8de; }
+        input:checked + .slider:before { transform: translateX(20px); }
+        .toggle-label { font-size: 0.9em; color: #fff; cursor: pointer; }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 15px;
+            font-size: 0.9em;
+        }
+        .stat-box {
+            background: #121214;
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid #29292e;
+        }
+        .stat-box span {
+            color: #4ea8de;
+            font-weight: bold;
+        }
+        .btn-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .btn-row {
+            display: flex;
+            gap: 10px;
+        }
+        button {
+            background: #4ea8de;
+            color: #121214;
+            border: none;
+            padding: 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            cursor: pointer;
+            flex: 1;
+            font-size: 1em;
+        }
+        button:hover { background: #3a8ebd; }
+        button.secondary {
+            background: #29292e;
+            color: #e1e1e6;
+            border: 1px solid #3a3a42;
+        }
+        button.secondary:hover { background: #3a3a42; }
+        button.js-btn {
+            background: #ff79c6;
+            color: #121214;
+        }
+        button.js-btn:hover { background: #ff55bb; }
+        #result {
+            margin-top: 15px;
+            font-weight: bold;
+            padding: 12px;
+            border-radius: 4px;
+            display: none;
+        }
+        .match { background-color: #1b4332; color: #b7e4c7; border: 1px solid #2d6a4f; }
+        .no-match { background-color: #4c1d1d; color: #f8d7da; border: 1px solid #6b2d2d; }
+        .file-list {
+            margin-top: 10px;
+            font-size: 0.85em;
+            color: #a8a8b3;
+            max-height: 100px;
+            overflow-y: auto;
+            background: #121214;
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid #29292e;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Bloom Filter Generator</h1>
+    <p>Configure parameters, then load one or more No-Intro <code>.dat</code> files to build optimized frameworks.</p>
+
+    <div class="card">
+        <h2>1. Configure & Load</h2>
+        <div class="config-row">
+            <div class="config-group">
+                <label for="fpRateInput">False Positive Rate</label>
+                <select id="fpRateInput">
+                    <option value="0.01">1%</option>
+                    <option value="0.001">0.1%</option>
+                    <option value="0.0001" selected>0.01%</option>
+                    <option value="0.00001">0.001%</option>
+                </select>
+            </div>
+            <div class="config-group">
+                <label for="overrideCount">Override Games Count (Optional)</label>
+                <input type="number" id="overrideCount" placeholder="Auto-detect from file" min="1" />
+            </div>
+        </div>
+
+        <div class="toggle-container">
+            <label class="switch">
+                <input type="checkbox" id="combineToggle">
+                <span class="slider"></span>
+            </label>
+            <label for="combineToggle" class="toggle-label">Combine into a single bundle filter (global single key)</label>
+        </div>
+        
+        <div class="config-group" style="margin-bottom: 20px;">
+            <label for="datFile">Select No-Intro DAT File(s)</label>
+            <input type="file" id="datFile" accept=".dat" multiple />
+            <div id="fileListDisplay" class="file-list"></div>
+        </div>
+        
+        <div class="stat-grid">
+            <div class="stat-box">Total DATs Loaded: <span id="statFiles">0</span></div>
+            <div class="stat-box">Total Games Inserted: <span id="statCount">0</span></div>
+            <div class="stat-box">Total Allocated Memory: <span id="statSize">0 bytes</span></div>
+            <div class="stat-box">Last Active Optimal Hashes: <span id="statHashes">0</span></div>
+        </div>
+
+        <div class="btn-container">
+            <div class="btn-row">
+                <button id="downloadBtn" style="display: none;">Download Active (.bin)</button>
+                <button id="downloadB64Btn" class="secondary" style="display: none;">Download Active Base64 (.txt)</button>
+            </div>
+            <button id="downloadJsBtn" class="js-btn" style="display: none;">Download Bundle (bloom-filters-data.js)</button>
+        </div>
+    </div>
+
+    <div class="card" id="lookupCard" style="opacity: 0.3; pointer-events: none; transition: opacity 0.2s ease;">
+        <h2>2. Live Verification Engine</h2>
+        <p style="font-size:0.85em; margin-top:-5px; color:#a8a8b3;">Tests against the generated structure.</p>
+        <div class="config-group">
+            <label for="crcInput">Enter Target CRC32 Hash (8-character Hexadecimal):</label>
+            <input type="text" id="crcInput" placeholder="e.g., c5e40e24" maxlength="8" />
+        </div>
+        <div id="result"></div>
+    </div>
+
+    <script>
+        class BloomFilter {
+            constructor(expectedElements, falsePositiveRate) {
+                this.n = expectedElements;
+                this.fpRate = falsePositiveRate;
+                this.m = Math.ceil((-this.n * Math.log(this.fpRate)) / (Math.log(2) ** 2));
+                this.k = Math.ceil((this.m / this.n) * Math.log(2));
+                this.bitArray = new Uint8Array(Math.ceil(this.m / 8));
+            }
+
+            _hash(item, i) {
+                const salted = `${i}:${item.toLowerCase()}`;
+                let hash = 0x811c9dc5;
+                for (let j = 0; j < salted.length; j++) {
+                    hash ^= salted.charCodeAt(j);
+                    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+                }
+                return Math.abs(hash) % this.m;
+            }
+
+            add(item) {
+                for (let i = 0; i < this.k; i++) {
+                    const bitPosition = this._hash(item, i);
+                    this.bitArray[Math.floor(bitPosition / 8)] |= (1 << (bitPosition % 8));
+                }
+            }
+
+            contains(item) {
+                for (let i = 0; i < this.k; i++) {
+                    const bitPosition = this._hash(item, i);
+                    if ((this.bitArray[Math.floor(bitPosition / 8)] & (1 << (bitPosition % 8))) === 0) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+        }
+
+        let rawFilesCache = []; 
+        let loadedFilters = [];  
+        let activeFilter = null;
+        let activeBaseName = "bloom-filter";
+
+        function parseCleanKey(filename) {
+            const match = filename.match(/^[^([\.]+/);
+            if (match && match[0]) {
+                // Reemplaza espacios, guiones y caracteres especiales por guiones bajos (_)
+                let cleanName = match[0].trim().toLowerCase().replace(/[\s\-_]+/g, '_');
+                cleanName = cleanName.replace(/_+$/, ''); // Limpia guiones bajos sueltos al final
+                return cleanName || "rom";
+            }
+            return "rom";
+        }
+
+        function buildFilterInstance(crcList, selectedFpRate, userCountOverride) {
+            const capacityTarget = isNaN(userCountOverride) || userCountOverride <= 0 ? crcList.length : userCountOverride;
+            const newFilter = new BloomFilter(capacityTarget, selectedFpRate);
+            crcList.forEach(crc => newFilter.add(crc));
+            return newFilter;
+        }
+
+        function refreshGlobalUI() {
+            if (loadedFilters.length === 0) return;
+
+            let totalGames = 0;
+            let totalBytes = 0;
+            
+            loadedFilters.forEach(f => {
+                totalGames += f.totalGames;
+                totalBytes += f.filterInstance.bitArray.byteLength + 5; 
+            });
+
+            document.getElementById('statFiles').textContent = rawFilesCache.length;
+            document.getElementById('statCount').textContent = totalGames.toLocaleString();
+            document.getElementById('statSize').textContent = `${(totalBytes / 1024).toFixed(2)} KB (${totalBytes} bytes)`;
+            
+            if (activeFilter) {
+                document.getElementById('statHashes').textContent = activeFilter.k;
+            }
+
+            const crcInput = document.getElementById('crcInput');
+            if (crcInput.value.trim().length === 8) {
+                crcInput.dispatchEvent(new Event('input'));
+            }
+        }
+
+        function processCachedData() {
+            if (rawFilesCache.length === 0) return;
+
+            const selectedFpRate = parseFloat(document.getElementById('fpRateInput').value);
+            const userCountOverride = parseInt(document.getElementById('overrideCount').value, 10);
+            const shouldCombine = document.getElementById('combineToggle').checked;
+
+            loadedFilters = [];
+
+            if (shouldCombine) {
+                let masterCrcList = [];
+                rawFilesCache.forEach(file => {
+                    masterCrcList = masterCrcList.concat(file.crcs);
+                });
+
+                if (masterCrcList.length > 0) {
+                    const combinedFilter = buildFilterInstance(masterCrcList, selectedFpRate, userCountOverride);
+                    loadedFilters.push({
+                        keyName: "combined",
+                        totalGames: masterCrcList.length,
+                        filterInstance: combinedFilter
+                    });
+                }
+            } else {
+                rawFilesCache.forEach(file => {
+                    const key = parseCleanKey(file.filename);
+                    const fileFilter = buildFilterInstance(file.crcs, selectedFpRate, userCountOverride);
+                    loadedFilters.push({
+                        keyName: key,
+                        totalGames: file.crcs.length,
+                        filterInstance: fileFilter
+                    });
+                });
+            }
+
+            if (loadedFilters.length > 0) {
+                const lastEntry = loadedFilters[loadedFilters.length - 1];
+                activeFilter = lastEntry.filterInstance;
+                activeBaseName = shouldCombine ? "combined_bloom_filter" : `${lastEntry.keyName}_bloom_filter`;
+            }
+
+            refreshGlobalUI();
+        }
+
+        document.getElementById('fpRateInput').addEventListener('change', processCachedData);
+        document.getElementById('overrideCount').addEventListener('input', processCachedData);
+        document.getElementById('combineToggle').addEventListener('change', processCachedData);
+
+        document.getElementById('datFile').addEventListener('change', async function(e) {
+            const files = e.target.files;
+            if (files.length === 0) return;
+
+            rawFilesCache = []; 
+            const fileListDisplay = document.getElementById('fileListDisplay');
+            fileListDisplay.innerHTML = "";
+            fileListDisplay.style.display = "block";
+
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const text = await file.text();
+                
+                const crcRegex = /crc="([0-9A-Fa-f]{8})"/gi;
+                let match;
+                let crcList = [];
+
+                while ((match = crcRegex.exec(text)) !== null) {
+                    crcList.push(match[1]);
+                }
+
+                if (crcList.length > 0) {
+                    rawFilesCache.push({
+                        filename: file.name,
+                        crcs: crcList
+                    });
+
+                    const fileBadge = document.createElement('div');
+                    fileBadge.textContent = `✓ Loaded: ${file.name} (${crcList.length.toLocaleString()} codes)`;
+                    fileListDisplay.appendChild(fileBadge);
+                }
+            }
+
+            if (rawFilesCache.length === 0) {
+                alert("No valid CRC32 attributes located.");
+                return;
+            }
+
+            processCachedData();
+
+            const lookupCard = document.getElementById('lookupCard');
+            lookupCard.style.opacity = "1";
+            lookupCard.style.pointerEvents = "auto";
+            
+            document.getElementById('downloadBtn').style.display = "block";
+            document.getElementById('downloadB64Btn').style.display = "block";
+            document.getElementById('downloadJsBtn').style.display = "block";
+            document.getElementById('crcInput').value = '';
+            document.getElementById('result').style.display = "none";
+        });
+
+        document.getElementById('crcInput').addEventListener('input', function(e) {
+            if (!activeFilter) return;
+            
+            const val = e.target.value.trim();
+            const resultDiv = document.getElementById('result');
+
+            if (val.length < 8) {
+                resultDiv.style.display = "none";
+                return;
+            }
+
+            resultDiv.style.display = "block";
+            const isCommercial = activeFilter.contains(val);
+
+            if (isCommercial) {
+                resultDiv.className = "match";
+                resultDiv.textContent = `Match Verified: Hash structure matches active filter constraints.`;
+            } else {
+                resultDiv.className = "no-match";
+                resultDiv.textContent = `Absolute Negation: Hash strictly identified as non-commercial or missing.`;
+            }
+        });
+
+        function generateCombinedBuffer(targetFilter) {
+            const headerBuffer = new ArrayBuffer(5);
+            const dataView = new DataView(headerBuffer);
+            dataView.setUint32(0, targetFilter.m, true); 
+            dataView.setUint8(4, targetFilter.k);
+
+            const combinedBuffer = new Uint8Array(headerBuffer.byteLength + targetFilter.bitArray.byteLength);
+            combinedBuffer.set(new Uint8Array(headerBuffer), 0);
+            combinedBuffer.set(targetFilter.bitArray, headerBuffer.byteLength);
+            return combinedBuffer;
+        }
+
+        function bufferToBase64(uint8Arr) {
+            let binaryString = "";
+            for (let i = 0; i < uint8Arr.length; i++) {
+                binaryString += String.fromCharCode(uint8Arr[i]);
+            }
+            return btoa(binaryString);
+        }
+
+        document.getElementById('downloadBtn').addEventListener('click', function() {
+            if (!activeFilter) return;
+
+            const packedData = generateCombinedBuffer(activeFilter);
+            const blob = new Blob([packedData], { type: "application/octet-stream" });
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${activeBaseName}.bin`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+
+        document.getElementById('downloadB64Btn').addEventListener('click', function() {
+            if (!activeFilter) return;
+
+            const packedData = generateCombinedBuffer(activeFilter);
+            const b64String = bufferToBase64(packedData);
+
+            const blob = new Blob([b64String], { type: "text/plain" });
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${activeBaseName}_b64.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+
+        document.getElementById('downloadJsBtn').addEventListener('click', function() {
+            if (loadedFilters.length === 0) return;
+
+            let jsLines = [
+                "// AUTO-GENERATED by browser bloom engine tool - do not edit by hand.",
+                "// Refresh this file after resetting parameters or loading updated source DAT configurations.",
+                "window.GAME_FILTER_DATA = {"
+            ];
+
+            loadedFilters.forEach(item => {
+                const packed = generateCombinedBuffer(item.filterInstance);
+                const b64 = bufferToBase64(packed);
+                jsLines.push(`  ${item.keyName}: "${b64}",`);
+            });
+
+            jsLines.push("};");
+
+            const finalJsText = jsLines.join("\n") + "\n";
+            const blob = new Blob([finalJsText], { type: "application/javascript" });
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = "game-filters-data.js";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+    </script>
+</body>
+</html>

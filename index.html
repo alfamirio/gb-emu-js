@@ -1630,12 +1630,12 @@
 
     <div class="tool-panel hidden" id="panel-tiles">
       <p class="tool-desc">
-        Raw contents of tile data in VRAM (0x8000–0x97FF), decoded as 384 individual 8×8 tiles in
-        the order they sit in VRAM, one grid cell each. Always shown palette-agnostic/grayscale,
+        Raw contents of tile data in VRAM (0x8000–0x97FF), decoded as 384 8×8 tiles in
+        the order in VRAM. Always shown palette-agnostic/grayscale,
         on both GB and GBC, since a tile has no fixed color until it's placed in a map or OAM
-        entry. Hover a tile to see its index and address.
+        entry.
         <span id="tvBankRow" style="display:none">
-          <br>GBC has two independent tile banks - pick which one to view:
+          <br>GBC has two tile banks:
           <label><input type="radio" name="tvBank" value="0" checked> Bank 0</label>
           <label><input type="radio" name="tvBank" value="1"> Bank 1</label>
         </span>
@@ -1684,11 +1684,8 @@
       <p class="tool-desc">
         All on-screen sprites composited together at their real coordinates, using the same
         per-scanline rendering (10-sprites-per-line cap, X-then-OAM-index priority) as the
-        Layers &gt; Sprites panel, plus the same 40 OAM entries as a table with a decoded
-        preview, position, tile index, and attribute flags. Each sprite is colored with its own
-        palette - OBP0/OBP1 on GB, one of 8 OBJ palettes (plus its VRAM bank) on GBC. Off-screen
-        entries are dimmed in the table. Hover the composited view to read off a sprite's
-        position.
+        Layers &gt; Sprites panel, plus the same 40 OAM entries as a table. Each sprite is colored with its own
+        palette.
       </p>
       <div class="oam-comp-wrap" id="oamCompWrap">
         <canvas id="oamCompCanvas" width="160" height="144"></canvas>

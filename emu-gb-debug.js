@@ -894,9 +894,48 @@ const applyFrameActivityVisibility = makePanelVisToggle(
   () => { drawFrameActivity(); drawFrameAnatomy(); drawLineAnatomy(); }
 );
 
-/* ---- 1. VRAM tile viewer: every tile in 0x8000-0x97FF, raw, no palette ---- */
+/* ---- CGB-aware color helpers, shared by every visualization panel below. DMG has one flat
+   BGP/OBP0/OBP1 register per layer; CGB instead resolves color per-tile (BG/window) or
+   per-sprite (OBJ) from one of 8 palettes in CGB palette RAM. Centralizing the branch here
+   means each panel just asks "what color is this pixel", the same way the real CGBPPU/PPU
+   renderers do, instead of re-deriving DMG-vs-CGB logic in every draw function. ---- */
+function isCGBRun() { return emulator.ppu instanceof CGBPPU; }
+
+// Raw VRAM bank access: CGB has two banks (vramBanks[0/1]); DMG has one, exposed as `vram`.
+function vramBank(mmu, bank) { return mmu.vramBanks ? mmu.vramBanks[bank & 1] : mmu.vram; }
+
+// BG/window pixel color at tile-map pixel-space (mapX, mapY) under the given map base
+// (0x9800/0x9C00). On CGB this resolves the tile's own bank/flip/palette attributes (stored
+// in VRAM bank 1) via the real getBGWindowPixel() the hardware renderer uses; on DMG it's
+// just the flat BGP register.
+function bgWindowPixelRGB(ppu, tileMapBase, mapX, mapY) {
+  if (ppu instanceof CGBPPU) {
+    const { colorIndex, paletteNum } = ppu.getBGWindowPixel(tileMapBase, mapX, mapY);
+    return ppu.mmu.getPaletteRGB(false, paletteNum, colorIndex);
+  }
+  const { tileDataBase, signedIndex } = ppu.bgWindowTileDataConfig();
+  const colorNum = ppu.getTileColorIndex(tileMapBase, tileDataBase, signedIndex, mapX, mapY);
+  return ppu.applyPalette(colorNum, ppu.bgp);
+}
+
+// Sprite pixel color given the sprite's OAM attribute byte and an already-decoded 0-3 color
+// number. CGB picks one of 8 OBJ palettes from attrs bits 0-2; DMG picks OBP0 or OBP1 from
+// attrs bit 4.
+function spritePixelRGB(ppu, attrs, colorNum) {
+  if (ppu instanceof CGBPPU) return ppu.mmu.getPaletteRGB(true, attrs & 0x07, colorNum);
+  return ppu.applyPalette(colorNum, (attrs & 0x10) ? ppu.obp1 : ppu.obp0);
+}
+
+/* ---- 1. VRAM tile viewer: every tile in a VRAM bank, raw, no palette. Palette-agnostic by
+   design on both systems - a tile has no fixed color until it's placed in a BG/window map or
+   OAM entry, which is what picks its palette - so this stays greyscale even on CGB. What DOES
+   differ on CGB is that there are two independent 384-tile banks instead of one, so a bank
+   selector (wired up below, shown only for CGB ROMs) picks which one is displayed. ---- */
+let tileViewerBank = 0;
 function drawTileViewer() {
-  const vram = emulator.mmu.vram;
+  const cgb = isCGBRun();
+  tvBankRow.style.display = cgb ? 'inline' : 'none';
+  const vram = cgb ? vramBank(emulator.mmu, tileViewerBank) : emulator.mmu.vram;
   const data = tileViewerImageData.data;
 
   // Fill the whole canvas with the grid-line color first; tile pixels get painted over the
@@ -927,6 +966,11 @@ function drawTileViewer() {
   }
   tileViewerCtx.putImageData(tileViewerImageData, 0, 0);
 }
+
+const tvBankRow = document.getElementById('tvBankRow');
+document.querySelectorAll('input[name="tvBank"]').forEach(r => {
+  r.addEventListener('change', () => { tileViewerBank = parseInt(r.value, 10); drawTileViewer(); });
+});
 
 /* ---- 1b. Sprite Sheet hover: highlight the cell under the cursor and show its tile index +
    VRAM address in a small floating tooltip. Uses percentage-based positioning for the highlight
@@ -976,24 +1020,18 @@ function setMapPixel(data, x, y, r, g, b) {
 
 function drawTileMap() {
   const ppu = emulator.ppu;
-  const vram = emulator.mmu.vram;
   const mapBase = tileMapSelect === '9800' ? 0x9800 : 0x9C00;
-  const signedIndex = !(ppu.lcdc & 0x10);
-  const tileDataBase = signedIndex ? 0x9000 : 0x8000;
   const data = tileMapImageData.data;
 
+  // bgWindowPixelRGB() does the full tile lookup itself (index, bank, flip, palette) - on
+  // CGB via the same getBGWindowPixel() the real renderer uses, so bank-1 tile data,
+  // X/Y-flip, and per-tile palette selection (0-7) all show up correctly here instead of
+  // being silently read as bank-0/no-flip/palette-0 like the old DMG-only version did.
   for (let ty = 0; ty < 32; ty++) {
     for (let tx = 0; tx < 32; tx++) {
-      const tileIndexRaw = vram[(mapBase + ty * 32 + tx) - 0x8000];
-      const tileIndex = signedIndex ? ppu.toSigned8(tileIndexRaw) : tileIndexRaw;
-      const tileAddr = tileDataBase + tileIndex * 16;
       for (let py = 0; py < 8; py++) {
-        const lo = vram[(tileAddr - 0x8000) + py * 2];
-        const hi = vram[(tileAddr - 0x8000) + py * 2 + 1];
         for (let px = 0; px < 8; px++) {
-          const bit = 7 - px;
-          const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
-          const [r, g, b] = ppu.applyPalette(colorNum, ppu.bgp);
+          const [r, g, b] = bgWindowPixelRGB(ppu, mapBase, tx * 8 + px, ty * 8 + py);
           const idx = ((ty * 8 + py) * 256 + (tx * 8 + px)) * 4;
           data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
         }
@@ -1121,7 +1159,6 @@ function renderSpriteLayerPixels(data, W, H) {
 
     for (const s of candidates) {
       if (s.spriteX <= -8 || s.spriteX >= W) continue;
-      const palette = (s.attrs & 0x10) ? ppu.obp1 : ppu.obp0;
       const { lo, hi, xFlip } = ppu.getSpriteRowBits(s, y, spriteHeight);
 
       for (let px = 0; px < 8; px++) {
@@ -1129,7 +1166,7 @@ function renderSpriteLayerPixels(data, W, H) {
         if (sx < 0 || sx >= W) continue;
         const colorNum = PPU.spriteRowColorIndex(lo, hi, xFlip, px);
         if (colorNum === 0) continue; // color 0 is always transparent for sprites
-        const [r, g, b] = ppu.applyPalette(colorNum, palette);
+        const [r, g, b] = spritePixelRGB(ppu, s.attrs, colorNum);
         const idx = (y * W + sx) * 4;
         data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
       }
@@ -1149,11 +1186,12 @@ function drawLayers() {
   if (!bgOn) {
     fillLayerImage(layerImageDataBG, 255, 255, 255); // matches real hardware: BG off = blank white
   } else {
+    const bgTileMapBase = (ppu.lcdc & 0x08) ? 0x9C00 : 0x9800;
     const data = layerImageDataBG.data;
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
-        const colorNum = ppu.getBackgroundColorIndex(x, y);
-        const [r, g, b] = ppu.applyPalette(colorNum, ppu.bgp);
+        const bgX = (x + ppu.scx) & 0xFF, bgY = (y + ppu.scy) & 0xFF;
+        const [r, g, b] = bgWindowPixelRGB(ppu, bgTileMapBase, bgX, bgY);
         const idx = (y * W + x) * 4;
         data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
       }
@@ -1172,12 +1210,12 @@ function drawLayers() {
   if (winOn) {
     const wx = ppu.wx - 7, wy = ppu.wy;
     if (wx <= W - 1) {
+      const winTileMapBase = (ppu.lcdc & 0x40) ? 0x9C00 : 0x9800;
       const data = layerImageDataWindow.data;
       for (let y = Math.max(wy, 0); y < H; y++) {
         const winY = y - wy;
         for (let x = Math.max(wx, 0); x < W; x++) {
-          const colorNum = ppu.getWindowColorIndex(x - wx, winY);
-          const [r, g, b] = ppu.applyPalette(colorNum, ppu.bgp);
+          const [r, g, b] = bgWindowPixelRGB(ppu, winTileMapBase, x - wx, winY);
           const idx = (y * W + x) * 4;
           data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
         }
@@ -1292,7 +1330,8 @@ function drawOAMTable() {
     const attrs = mmu.oam[base + 3];
     const offscreen = spriteX <= -8 || spriteX >= EMU_CORE_CONFIG.SCREEN.WIDTH || spriteY <= -16 || spriteY >= EMU_CORE_CONFIG.SCREEN.HEIGHT;
     const xFlip = !!(attrs & 0x20), yFlip = !!(attrs & 0x40), behindBG = !!(attrs & 0x80);
-    const paletteByte = (attrs & 0x10) ? ppu.obp1 : ppu.obp0;
+    const cgb = isCGBRun();
+    const vram = cgb ? vramBank(mmu, (attrs & 0x08) ? 1 : 0) : mmu.vram;
 
     let idxTile = tileIndex;
     if (spriteHeight === 16) idxTile &= 0xFE;
@@ -1305,13 +1344,13 @@ function drawOAMTable() {
       let r2 = yFlip ? spriteHeight - 1 - row : row;
       let tileOffset = idxTile * 16;
       if (r2 >= 8) { tileOffset += 16; r2 -= 8; }
-      const lo = mmu.vram[tileOffset + r2 * 2], hi = mmu.vram[tileOffset + r2 * 2 + 1];
+      const lo = vram[tileOffset + r2 * 2], hi = vram[tileOffset + r2 * 2 + 1];
       for (let px = 0; px < 8; px++) {
         const bit = xFlip ? px : 7 - px;
         const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
         const pidx = (row * 8 + px) * 4;
         if (colorNum === 0) { imgData.data[pidx + 3] = 0; continue; } // transparent
-        const [r3, g3, b3] = ppu.applyPalette(colorNum, paletteByte);
+        const [r3, g3, b3] = spritePixelRGB(ppu, attrs, colorNum);
         imgData.data[pidx] = r3; imgData.data[pidx + 1] = g3; imgData.data[pidx + 2] = b3; imgData.data[pidx + 3] = 255;
       }
     }
@@ -1326,29 +1365,29 @@ function drawOAMTable() {
     tr.appendChild(makeTd(spriteX));
     tr.appendChild(makeTd(spriteY));
     tr.appendChild(makeTd(hex8(tileIndex)));
-    tr.appendChild(makeTd((attrs & 0x10) ? 'OBP1' : 'OBP0'));
+    tr.appendChild(makeTd(cgb ? `OBJ${attrs & 0x07} Bank${(attrs & 0x08) ? 1 : 0}` : ((attrs & 0x10) ? 'OBP1' : 'OBP0')));
     tr.appendChild(makeTd(`${behindBG ? 'BG' : 'OBJ'} ${yFlip ? 'Y' : '-'}${xFlip ? 'X' : '-'}`));
     oamTableBody.appendChild(tr);
   }
 }
 
-/* ---- 4. Palette viewer: BGP / OBP0 / OBP1 as swatches ---- */
+/* ---- 4. Palette viewer: BGP/OBP0/OBP1 swatches on DMG; all 8 BG + 8 OBJ CGB palettes
+   (real color straight from palette RAM, via mmu.getPaletteRGB) on CGB. ---- */
 function drawPalettes() {
   const ppu = emulator.ppu;
-  const regs = [['BGP', ppu.bgp], ['OBP0', ppu.obp0], ['OBP1', ppu.obp1]];
   paletteGrid.innerHTML = '';
 
-  for (const [name, val] of regs) {
+  function addBlock(col, name, valLabel, colorFn) {
     const block = document.createElement('div');
     block.className = 'palette-block';
 
     const h3 = document.createElement('h3'); h3.textContent = name;
-    const regVal = document.createElement('div'); regVal.className = 'reg-val'; regVal.textContent = hex8(val);
+    const regVal = document.createElement('div'); regVal.className = 'reg-val'; regVal.textContent = valLabel;
     block.appendChild(h3); block.appendChild(regVal);
 
     const row = document.createElement('div'); row.className = 'swatch-row';
     for (let c = 0; c < 4; c++) {
-      const [r, g, b] = ppu.applyPalette(c, val);
+      const [r, g, b] = colorFn(c);
       const sw = document.createElement('div'); sw.className = 'swatch';
       const chip = document.createElement('div'); chip.className = 'chip'; chip.style.background = `rgb(${r},${g},${b})`;
       const label = document.createElement('div'); label.className = 'label'; label.textContent = c;
@@ -1356,7 +1395,30 @@ function drawPalettes() {
       row.appendChild(sw);
     }
     block.appendChild(row);
-    paletteGrid.appendChild(block);
+    col.appendChild(block);
+  }
+
+  function addColumn(title) {
+    const col = document.createElement('div'); col.className = 'palette-col';
+    const h4 = document.createElement('h4'); h4.className = 'palette-col-title'; h4.textContent = title;
+    col.appendChild(h4);
+    paletteGrid.appendChild(col);
+    return col;
+  }
+
+  // Two columns side by side either way - Background palette(s) on the left, Object/sprite
+  // palette(s) on the right - so DMG (1 BG + 2 OBJ registers) and CGB (8 BG + 8 OBJ palettes)
+  // share the same layout and are easy to compare at a glance.
+  const bgCol = addColumn('Background');
+  const objCol = addColumn('Objects (Sprites)');
+
+  if (isCGBRun()) {
+    for (let p = 0; p < 8; p++) addBlock(bgCol, `BG ${p}`, '', (c) => ppu.mmu.getPaletteRGB(false, p, c));
+    for (let p = 0; p < 8; p++) addBlock(objCol, `OBJ ${p}`, '', (c) => ppu.mmu.getPaletteRGB(true, p, c));
+  } else {
+    addBlock(bgCol, 'BGP', hex8(ppu.bgp), (c) => ppu.applyPalette(c, ppu.bgp));
+    addBlock(objCol, 'OBP0', hex8(ppu.obp0), (c) => ppu.applyPalette(c, ppu.obp0));
+    addBlock(objCol, 'OBP1', hex8(ppu.obp1), (c) => ppu.applyPalette(c, ppu.obp1));
   }
 }
 

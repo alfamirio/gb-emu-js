@@ -20,9 +20,34 @@
 
 /* ======================================= UI wiring ======================================= */
 
-/* ---- screen canvas + emulator instance ---- */
+/* ---- screen canvas + emulator instance ----
+   `emulator` is deliberately `let`, not `const`: loadROMBytes() below swaps it between a
+   GBEmulator (original DMG core) and CGBEmulator (Game Boy Color core, emu-gbc-core.js)
+   depending on what the loaded ROM's header declares. Every other function in this file and
+   in emu-gb-debug.js reads `emulator` (and `emulator.mmu`/`.cpu`/`.ppu`/etc) fresh each time
+   it's called rather than caching a reference at load time, so the swap is transparent to
+   the rest of the app - see pickEmulatorClass()/ensureEmulatorForROM() below. */
 const canvas = document.getElementById('screen');
-const emulator = new Emulator(canvas);
+let emulator = new GBEmulator(canvas);
+
+// Which Emulator subclass a ROM needs, based on the cartridge header's CGB flag (0x143):
+// 0xC0 = CGB-only, 0x80 = CGB-enhanced but DMG-compatible. Both get the CGB core now that
+// one exists - a 0x80 cart run through the CGB core gets its intended color palettes
+// instead of the DMG green/grey approximation, and still plays identically otherwise.
+function pickEmulatorClass(bytes) {
+  const flag = bytes[0x143];
+  return (flag === 0x80 || flag === 0xC0) ? CGBEmulator : GBEmulator;
+}
+
+// Swaps `emulator` to the right subclass for the ROM about to be loaded, if it isn't
+// already. Pauses (and lets go of) the old instance first so its rAF loop/audio context
+// don't linger; loadROMBytes() calls emulator.start() again right after loadROM() below.
+function ensureEmulatorForROM(bytes) {
+  const NeededClass = pickEmulatorClass(bytes);
+  if (emulator instanceof NeededClass) return;
+  emulator.pause();
+  emulator = new NeededClass(canvas);
+}
 
 /* ---- ROM loading panel refs (file picker, drag-drop zone, ROM header info) ---- */
 const fileInput = document.getElementById('fileInput');
@@ -178,21 +203,16 @@ function getCartRAMByteSize(bytes) {
 
 // The cartridge header's CGB flag (offset 0x143) tells us whether a ROM requires Game Boy
 // Color hardware to run at all (0xC0), or merely takes advantage of it when present while
-// staying playable on original DMG hardware (0x80). This emulator only implements the
-// original DMG PPU/palette pipeline, so a GBC-only cart is a hard "won't run correctly"
-// case, while a GBC-enhanced cart should still boot and play fine in plain-DMG mode.
+// staying playable on original DMG hardware (0x80). Both are now routed to the CGB core
+// (see pickEmulatorClass() above) - these two helpers just surface an informational note
+// about which mode a ROM is running in, not a compatibility warning anymore.
 function getGBCCompatibilityWarning(bytes) {
-  const flag = bytes[0x143];
-  if (flag === 0xC0) {
-    return "This is a Game Boy Color-only game. This emulator only supports original Game Boy hardware, so it will likely show a garbled screen or fail to boot.";
-  }
-  return null;
+  return null; // both CGB flag values now run on the CGB core - see getGBCInfoNote() below
 }
 function getGBCInfoNote(bytes) {
   const flag = bytes[0x143];
-  if (flag === 0x80) {
-    return "This game has optional Game Boy Color enhancements, which this emulator doesn't render - it will still run in original Game Boy mode.";
-  }
+  if (flag === 0xC0) return 'Game Boy Color-only game - running on the Game Boy Color core.';
+  if (flag === 0x80) return 'Game Boy Color-enhanced game - running on the Game Boy Color core for its full color palettes.';
   return null;
 }
 
@@ -315,6 +335,7 @@ function renderChecksumBadges(checksums) {
 // "wire it into the emulator and UI" bookkeeping.
 async function loadROMBytes(bytes) {
   lastROMBytes = bytes;
+  ensureEmulatorForROM(bytes);
   emulator.loadROM(bytes);
   const checksums = await computeChecksums(bytes);
   const mbcWarning = getMBCCompatibilityWarning(bytes);
@@ -339,6 +360,12 @@ async function loadROMBytes(bytes) {
   updateRewindButton();
   bpStatus.textContent = 'Ready.';
   updateStateButtons();
+  if (typeof modelToggle !== 'undefined') {
+    modelToggle.disabled = emulator instanceof CGBEmulator;
+    modelToggle.title = modelToggle.disabled
+      ? 'Not applicable in Game Boy Color mode - colors come from the cartridge\'s own CGB palettes.'
+      : '';
+  }
   emulator.start();
 }
 

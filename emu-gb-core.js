@@ -688,6 +688,13 @@ class CPU {
 
   checkCond(cc) { switch (cc) { case 0: return !this.flagZ; case 1: return this.flagZ; case 2: return !this.flagC; case 3: return this.flagC; } }
 
+  // STOP (0x10) on real DMG hardware halts the CPU and LCD until a button is pressed - a
+  // deep low-power mode this emulator doesn't model (no game this emulator targets relies on
+  // actually pausing here). Pulled into its own method (rather than inlined in execute()'s
+  // switch) purely so CGBCPU can override just this one behavior for the CGB speed-switch
+  // (KEY1) without needing to reimplement the whole opcode dispatch table.
+  handleStop() { this.PC = (this.PC + 1) & 0xFFFF; this.tick(4); }
+
   /* ---- main fetch/execute step. Returns the number of T-cycles the instruction used. ---- */
   step() {
     if (this.eiDelay > 0) { this.eiDelay--; if (this.eiDelay === 0) this.IME = true; }
@@ -784,7 +791,7 @@ class CPU {
       case 0x0B: this.setBC((this.getBC() - 1) & 0xFFFF); this.tick(8); break;
       case 0x0F: this.A = this.rrc(this.A); this.flagZ = false; this.tick(4); break;
 
-      case 0x10: this.PC = (this.PC + 1) & 0xFFFF; this.tick(4); break; // STOP (2-byte opcode; simplified - see footer note)
+      case 0x10: this.handleStop(); break; // STOP (2-byte opcode; simplified - see footer note)
       case 0x11: this.setDE(this.fetch16()); this.tick(12); break;
       case 0x12: this.mmu.write8(this.getDE(), this.A); this.tick(8); break;
       case 0x13: this.setDE((this.getDE() + 1) & 0xFFFF); this.tick(8); break;
@@ -2338,9 +2345,7 @@ class Emulator {
     }
 
     const cycles = this.cpu.step();
-    this.ppu.step(cycles);
-    this.timer.step(cycles);
-    this.apu.step(cycles);
+    const budgetCycles = this.stepHardware(cycles);
 
     if (!wasHalted && tracking) {
       this.traceDiff[traceIndex] = this.diffRegs(regsBefore, this.snapshotRegs());
@@ -2349,6 +2354,20 @@ class Emulator {
     if (!wasHalted && this.breakpointOpcode !== null && opcode === this.breakpointOpcode) {
       this.triggerBreakpoint(`opcode ${hex8(this.breakpointOpcode)} executed at ${hex16(pcBefore)}`);
     }
+    return budgetCycles;
+  }
+
+  // Feeds the T-cycles one CPU step just took to the PPU/timer/APU, and returns how many
+  // cycles that step should count against the per-frame cycle budget runFrame() uses (see
+  // Emulator.CYCLES_PER_FRAME). On DMG these are always the same number - split into its own
+  // method purely so CGBEmulator can override it: in CGB double-speed mode the CPU consumes
+  // T-cycles twice as fast, so the PPU/APU (whose real-time behavior must NOT speed up, or
+  // the screen/audio would run at double rate) need half as many cycles fed to them, while
+  // the frame-budget count must follow the PPU's pace, not the CPU's - see CGBEmulator.
+  stepHardware(cycles) {
+    this.ppu.step(cycles);
+    this.timer.step(cycles);
+    this.apu.step(cycles);
     return cycles;
   }
 

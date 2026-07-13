@@ -562,8 +562,10 @@
     border-radius: 2px;
     display: block;
   }
-  .palette-grid { display: flex; gap: 20px; flex-wrap: wrap; }
-  .palette-block { background: #1b1b22; border-radius: 8px; padding: 12px 14px; min-width: 170px; }
+  .palette-grid { display: flex; gap: 24px; align-items: flex-start; }
+  .palette-col { display: flex; flex-direction: column; gap: 14px; flex: 1 1 0; min-width: 0; }
+  .palette-col-title { margin: 0 0 2px; font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; color: #777; }
+  .palette-block { background: #1b1b22; border-radius: 8px; padding: 12px 14px; min-width: 0; }
   .palette-block h3 { margin: 0 0 6px; font-size: 0.82rem; color: #eee; }
   .palette-block .reg-val { color: #888; font-size: 0.7rem; margin-bottom: 10px; font-family: 'Consolas', monospace; }
 
@@ -1613,7 +1615,14 @@
     <div class="tool-panel hidden" id="panel-tiles">
       <p class="tool-desc">
         Raw contents of tile data in VRAM (0x8000–0x97FF), decoded as 384 individual 8×8 tiles in
-        the order they sit in VRAM, one grid cell each. Hover a tile to see its index and address.
+        the order they sit in VRAM, one grid cell each. Always shown palette-agnostic/grayscale,
+        on both GB and GBC, since a tile has no fixed color until it's placed in a map or OAM
+        entry. Hover a tile to see its index and address.
+        <span id="tvBankRow" style="display:none">
+          <br>GBC has two independent tile banks - pick which one to view:
+          <label><input type="radio" name="tvBank" value="0" checked> Bank 0</label>
+          <label><input type="radio" name="tvBank" value="1"> Bank 1</label>
+        </span>
       </p>
       <div class="tileviewer-wrap" id="tileViewerWrap">
         <canvas id="tileViewerCanvas" width="273" height="409"></canvas>
@@ -1627,8 +1636,10 @@
       <p class="tool-desc">
         <label><input type="radio" name="tmSelect" value="9800" checked> Map 0x9800</label>
         <label><input type="radio" name="tmSelect" value="9C00"> Map 0x9C00</label>
-        In VRAM. The full 32×32 tile (256×256 pixel) map, rendered with the current BG palette. The
-        yellow box is the current 160×144 viewport as defined by SCX/SCY, wrapping at the map edges.
+        In VRAM. The full 32×32 tile (256×256 pixel) map. On GB, rendered with the current BGP
+        register. On GBC, each tile is decoded with its own bank, flip, and one of 8 BG
+        palettes, exactly as the tile's attribute byte (VRAM bank 1) defines it. The yellow box
+        is the current 160×144 viewport as defined by SCX/SCY, wrapping at the map edges.
       </p>
       <div class="tilemap-scroll">
         <canvas id="tileMapCanvas" width="256" height="256"></canvas>
@@ -1638,8 +1649,10 @@
     <div class="tool-panel hidden" id="panel-tileinspect">
       <p class="tool-desc">
         Type any 16-bit address and decode the 16 bytes there as a single 8&times;8 2bpp tile -
-        raw/grayscale, palette-agnostic, same decoding as the Sprite Sheet tab. Not limited to
-        VRAM: point it at ROM or WRAM to preview graphics data before it's ever copied to VRAM.
+        raw/grayscale, palette-agnostic on both GB and GBC, same decoding as the Sprite Sheet
+        tab. Not limited to VRAM: point it at ROM or WRAM to preview graphics data before it's
+        ever copied to VRAM. On GBC, a VRAM address reads whichever of the two banks is
+        currently switched in via VBK.
       </p>
       <div class="tileinspect-row">
         <button type="button" class="ui-btn small ghost" id="tileInspectPrev" title="Previous tile (address - 16)">◀ Prev</button>
@@ -1656,8 +1669,10 @@
         All on-screen sprites composited together at their real coordinates, using the same
         per-scanline rendering (10-sprites-per-line cap, X-then-OAM-index priority) as the
         Layers &gt; Sprites panel, plus the same 40 OAM entries as a table with a decoded
-        preview, position, tile index, and attribute flags. Off-screen entries are dimmed in the
-        table. Hover the composited view to read off a sprite's position.
+        preview, position, tile index, and attribute flags. Each sprite is colored with its own
+        palette - OBP0/OBP1 on GB, one of 8 OBJ palettes (plus its VRAM bank) on GBC. Off-screen
+        entries are dimmed in the table. Hover the composited view to read off a sprite's
+        position.
       </p>
       <div class="oam-comp-wrap" id="oamCompWrap">
         <canvas id="oamCompCanvas" width="160" height="144"></canvas>
@@ -1673,7 +1688,11 @@
     </div>
 
     <div class="tool-panel hidden" id="panel-palettes">
-      <p class="tool-desc">The current BGP / OBP0 / OBP1 register values, decoded into the four shades they map to.</p>
+      <p class="tool-desc">
+        On GB: the current BGP/OBP0/OBP1 register values, decoded into the four shades they map
+        to. On GBC: all 8 BG and 8 OBJ palettes, read straight from CGB palette RAM. Background
+        palette(s) on the left, object/sprite palette(s) on the right.
+      </p>
       <div id="paletteGrid" class="palette-grid"></div>
     </div>
 
@@ -1681,7 +1700,8 @@
       <p class="tool-desc">
         The three sources the PPU composites on screen, rendered separately at full
         resolution. Background always fills the frame; Window shows only where WX/WY
-        place it; Sprites shows every on-screen OAM entry.
+        place it; Sprites shows every on-screen OAM entry. Color comes from BGP/OBP0/OBP1 on
+        GB, or from each tile's/sprite's own one-of-8 palette on GBC.
       </p>
       <div class="layers-grid">
         <div class="layer-block">
@@ -1835,6 +1855,7 @@
 </div>
 
 <script src="emu-gb-core.js"></script>
+<script src="emu-gbc-core.js"></script>
 <script src="emu-gb-app.js"></script>
 <script src="emu-gb-debug.js"></script>
 <script>

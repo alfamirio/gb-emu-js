@@ -57,7 +57,7 @@ function isDevUnlocked() {
 function enableEmuDevUnlock() {
   try {
     localStorage.setItem(DEV_UNLOCK_KEY, DEV_UNLOCK_VALUE);
-    console.log('Dev unlock enabled. Reload the page for it to take effect.');
+    console.log('You are a wizard. Dev unlock enabled. Reload the page for it to take effect.');
   } catch (err) {
     console.warn('Could not enable dev unlock:', err.message);
   }
@@ -65,7 +65,7 @@ function enableEmuDevUnlock() {
 function disableEmuDevUnlock() {
   try {
     localStorage.removeItem(DEV_UNLOCK_KEY);
-    console.log('Dev unlock disabled. Reload the page for it to take effect.');
+    console.log('You put away your wand. Dev unlock disabled. Reload the page for it to take effect.');
   } catch (err) {
     console.warn('Could not disable dev unlock:', err.message);
   }

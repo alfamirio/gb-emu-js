@@ -53,6 +53,44 @@ const btnReset = document.getElementById('btnReset');
 const btnRewind = document.getElementById('btnRewind');
 const rewindInfo = document.getElementById('rewindInfo');
 
+/* ---- play-time timer (badge on the same line as the "Load ROM" title) ----
+   Tracks real wall-clock time the currently loaded ROM has spent actually running (i.e.
+   while emulator.running is true) - time before a ROM is loaded, paused time, and
+   debugger single-stepping don't count. Resets to 0 on every new ROM load and on Reset.
+   Implemented as a poll (like updateRewindButton() below) rather than hooking every
+   play/pause/step/rewind/breakpoint call site, so it stays correct no matter how playback
+   was started or stopped, and survives the GB/GBC core swap transparently. */
+const playTimeLabel = document.getElementById('playTime');
+let playTimeSeconds = 0;
+let playTimeLastTick = null; // performance.now() at the last tick emulator was running, or null if not running
+
+function formatPlayTime(totalSeconds) {
+  const s = Math.floor(totalSeconds);
+  const hh = Math.floor(s / 3600);
+  const mm = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${pad(mm)}:${pad(ss)}`;
+}
+
+function resetPlayTime() {
+  playTimeSeconds = 0;
+  playTimeLastTick = emulator.running ? performance.now() : null;
+  playTimeLabel.textContent = formatPlayTime(0);
+}
+
+function tickPlayTime() {
+  const now = performance.now();
+  if (emulator.running) {
+    if (playTimeLastTick !== null) playTimeSeconds += (now - playTimeLastTick) / 1000;
+    playTimeLastTick = now;
+  } else {
+    playTimeLastTick = null;
+  }
+  playTimeLabel.textContent = formatPlayTime(playTimeSeconds);
+}
+setInterval(tickPlayTime, 500);
+
 /* ---- step/breakpoint debugging controls refs ---- */
 const btnStep = document.getElementById('btnStep');
 const btnStepLine = document.getElementById('btnStepLine');
@@ -385,6 +423,7 @@ async function loadROMBytes(bytes) {
       : '';
   }
   emulator.start();
+  resetPlayTime();
 }
 
 /* ---- zipped ROM support ----
@@ -503,6 +542,7 @@ btnReset.addEventListener('click', () => {
     btnPause.textContent = '⏸ Pause';
     bpStatus.textContent = 'Reset.';
     updateRewindButton(); // Reset starts a fresh run, so any rewind history from before is gone too
+    resetPlayTime();
   }
 });
 

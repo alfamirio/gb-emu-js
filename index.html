@@ -192,7 +192,25 @@
     padding: 18px;
     box-shadow: 0 6px 18px rgba(0,0,0,.4);
   }
-  .control-panel h2 { font-size: 1rem; margin: 0 0 10px; color: #ddd; }
+  .control-panel h2 {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 1rem;
+    margin: 0 0 10px;
+    color: #ddd;
+  }
+  .control-panel h2 .badge {
+    font-size: 0.68rem;
+    color: #999;
+    font-weight: normal;
+    background: #1b1b22;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-family: 'Consolas', monospace;
+    white-space: nowrap;
+  }
   .file-drop {
     /* The label wraps its text onto two lines via <br>. As an inline element (the
        default for <label>), a border on content that spans multiple lines gets drawn
@@ -1491,7 +1509,7 @@
 
       <!-- Control panel -->
       <div class="control-panel" id="control-panel">
-        <h2>Load ROM</h2>
+        <h2>Load ROM <span class="badge" id="playTime" title="Time the current game has spent running">00:00</span></h2>
         <label class="file-drop" id="dropZone">
           <input type="file" id="fileInput" accept=".gb,.gbc,.bin,.zip">
           Pick or drag a ROM file

@@ -21,28 +21,21 @@
 /* ======================================= UI wiring ======================================= */
 
 /* ---- screen canvas + emulator instance ----
-   `emulator` is deliberately `let`, not `const`: loadROMBytes() below swaps it between a
+   `emulator` is deliberately `let`, not `const`: coreToggle below swaps it between a
    GBEmulator (original DMG core) and CGBEmulator (Game Boy Color core, emu-gbc-core.js)
-   depending on what the loaded ROM's header declares. Every other function in this file and
+   depending on which core the person has selected. Every other function in this file and
    in emu-gb-debug.js reads `emulator` (and `emulator.mmu`/`.cpu`/`.ppu`/etc) fresh each time
    it's called rather than caching a reference at load time, so the swap is transparent to
-   the rest of the app - see pickEmulatorClass()/ensureEmulatorForROM() below. */
+   the rest of the app - see ensureEmulatorMatchesCoreToggle() below. */
 const canvas = document.getElementById('screen');
+const coreToggle = document.getElementById('coreToggle'); // unchecked = GB core, checked = GBC core
 let emulator = new GBEmulator(canvas);
 
-// Which Emulator subclass a ROM needs, based on the cartridge header's CGB flag (0x143):
-// 0xC0 = CGB-only, 0x80 = CGB-enhanced but DMG-compatible. Both run on the CGB core, which
-// gives 0x80 carts their intended color palettes instead of the DMG green/grey approximation.
-function pickEmulatorClass(bytes) {
-  const flag = bytes[0x143];
-  return (flag === 0x80 || flag === 0xC0) ? CGBEmulator : GBEmulator;
-}
-
-// Swaps `emulator` to the right subclass for the ROM about to be loaded, if it isn't
-// already. Pauses (and lets go of) the old instance first so its rAF loop/audio context
-// don't linger; loadROMBytes() calls emulator.start() again right after loadROM() below.
-function ensureEmulatorForROM(bytes) {
-  const NeededClass = pickEmulatorClass(bytes);
+// Swaps `emulator` to match the GB/GBC core toggle, if it doesn't already. Pauses (and lets
+// go of) the old instance first so its rAF loop/audio context don't linger; callers that just
+// loaded a ROM call emulator.start() again right after loadROM() runs.
+function ensureEmulatorMatchesCoreToggle() {
+  const NeededClass = coreToggle.checked ? CGBEmulator : GBEmulator;
   if (emulator instanceof NeededClass) return;
   emulator.pause();
   emulator = new NeededClass(canvas);
@@ -128,6 +121,25 @@ function saveUIConfig(partial) { uiConfigStore.save(partial); }
 
 const savedUIConfig = loadUIConfig();
 
+/* ---- GB/GBC core toggle: unchecked = GB (DMG) core (default), checked = GBC core. Forces
+   which core every ROM loads into, overriding the cartridge header's own CGB flag. ---- */
+const coreLabelGB = document.getElementById('coreLabelGB');
+const coreLabelGBC = document.getElementById('coreLabelGBC');
+
+function applyCoreToggle() {
+  const wantGBC = coreToggle.checked;
+  coreLabelGBC.classList.toggle('active', wantGBC);
+  coreLabelGB.classList.toggle('active', !wantGBC);
+  saveUIConfig({ gbcCore: wantGBC });
+  if (lastROMBytes) loadROMBytes(lastROMBytes); // re-run the currently loaded ROM through the newly forced core
+  else ensureEmulatorMatchesCoreToggle();
+}
+
+// Restore the saved core choice before the first render so the UI doesn't flash the default.
+if (typeof savedUIConfig.gbcCore === 'boolean') coreToggle.checked = savedUIConfig.gbcCore;
+applyCoreToggle();
+coreToggle.addEventListener('change', applyCoreToggle);
+
 
 function getROMTitle(bytes) {
   let title = '';
@@ -200,16 +212,25 @@ function getCartRAMByteSize(bytes) {
 
 // The cartridge header's CGB flag (offset 0x143) tells us whether a ROM requires Game Boy
 // Color hardware to run at all (0xC0), or merely takes advantage of it when present while
-// staying playable on original DMG hardware (0x80). Both are routed to the CGB core (see
-// pickEmulatorClass() above); these two helpers just surface an informational note about
-// which mode a ROM is running in.
+// staying playable on original DMG hardware (0x80). The GB/GBC core toggle overrides this and
+// always forces one specific core, so these two helpers warn when that forced choice
+// conflicts with the header, and otherwise just note which core is actually running the ROM.
 function getGBCCompatibilityWarning(bytes) {
-  return null; // both CGB flag values run on the CGB core - see getGBCInfoNote() below
+  const flag = bytes[0x143];
+  if (flag === 0xC0 && !coreToggle.checked) {
+    return 'Game Boy Color-only game forced onto the Game Boy core - it will likely fail to run correctly.';
+  }
+  return null;
 }
 function getGBCInfoNote(bytes) {
   const flag = bytes[0x143];
-  if (flag === 0xC0) return 'Game Boy Color-only game - running on the Game Boy Color core.';
-  if (flag === 0x80) return 'Game Boy Color-enhanced game - running on the Game Boy Color core for its full color palettes.';
+  const runningGBC = coreToggle.checked;
+  if (flag === 0xC0) return runningGBC ? 'Game Boy Color-only game - running on the Game Boy Color core.' : null;
+  if (flag === 0x80) {
+    return runningGBC
+      ? 'Game Boy Color-enhanced game - running on the Game Boy Color core for its full color palettes.'
+      : 'Game Boy Color-enhanced game forced onto the Game Boy core - runs, but without its color palettes.';
+  }
   return null;
 }
 
@@ -332,7 +353,7 @@ function renderChecksumBadges(checksums) {
 // "wire it into the emulator and UI" bookkeeping.
 async function loadROMBytes(bytes) {
   lastROMBytes = bytes;
-  ensureEmulatorForROM(bytes);
+  ensureEmulatorMatchesCoreToggle();
   emulator.loadROM(bytes);
   const checksums = await computeChecksums(bytes);
   const mbcWarning = getMBCCompatibilityWarning(bytes);

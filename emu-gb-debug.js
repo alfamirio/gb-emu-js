@@ -850,10 +850,10 @@ dotMatrixToggle.addEventListener('change', applyDotMatrix);
    layerTint + dotMatrix are on and model is set to GB. Sets the same localStorage flag as
    the console path; requires a page reload to take effect. ---- */
 const navTitle = document.getElementById('navTitle');
-const DEV_UNLOCK_CLICKS_NEEDED = 23;
+const DEV_UNLOCK_CLICKS_NEEDED = 13;
 let devUnlockClickCount = 0;
 navTitle.addEventListener('click', () => {
-  if (!(layerTintToggle.checked && dotMatrixToggle.checked && !modelToggle.checked)) {
+  if (!(dotMatrixToggle.checked && !modelToggle.checked)) {
     devUnlockClickCount = 0;
     return;
   }

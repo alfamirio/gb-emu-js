@@ -53,16 +53,54 @@ const btnReset = document.getElementById('btnReset');
 const btnRewind = document.getElementById('btnRewind');
 const rewindInfo = document.getElementById('rewindInfo');
 
+/* ---- play-time guardrail config ----
+   Classroom/lab guardrail: caps how long the emulator can run continuously, so this stays a
+   debugging tool rather than a way to just play through the game. Everything is built from
+   PLAY_TIME_BASE_UNIT (seconds per unit - drop it to 1 for fast manual testing instead of
+   waiting out real minutes) and PLAY_TIME_TOTAL_LIMIT, with the badge/alert thresholds
+   expressed as fractions of the total limit rather than separate hardcoded durations, so
+   moving the total automatically moves the rest of the schedule with it. Compared directly
+   against playTimeSeconds below. "Continuous" here means this specific playTimeSeconds run -
+   see the note on resetPlayTime() for what resets it.
+
+   PLAY_TIME_BASE_UNIT and PLAY_TIME_TOTAL_LIMIT have to be defined outside the config object,
+   not as its own properties: object literals don't let other properties reference sibling
+   properties by name mid-literal - `AMBER_AT: 0.5 * PLAY_TIME_TOTAL_LIMIT` inside the object
+   would have no PLAY_TIME_TOTAL_LIMIT in scope to read, since a property key isn't a variable
+   binding. Pulling both out into their own consts first, then using those consts in the
+   literal, is what actually lets this work.
+
+   PLAY_TIME_GUARDRAIL is the master on/off switch for the whole system - flip it to false to
+   disable the cap, warning alert, and badge coloring entirely (e.g. for a build that isn't
+   running in a classroom/lab context). Defaults to true. */
+const PLAY_TIME_GUARDRAIL = true; // master switch - set to false to disable the guardrail entirely
+const PLAY_TIME_BASE_UNIT = 60; // seconds per unit; set to 1 for fast manual testing
+const PLAY_TIME_TOTAL_LIMIT = 20 * PLAY_TIME_BASE_UNIT; // hard cap, referenced to PLAY_TIME_BASE_UNIT
+const PLAY_TIME_LIMIT_CONFIG = {
+  TOTAL_LIMIT: PLAY_TIME_TOTAL_LIMIT,          // hard cap - page reloads automatically once this is reached
+  AMBER_AT: 0.5 * PLAY_TIME_TOTAL_LIMIT,       // playTime badge switches from green to amber at this point
+  RED_AT: 0.8 * PLAY_TIME_TOTAL_LIMIT,         // playTime badge switches from amber to red at this point
+  WARNING_ALERT: 0.8 * PLAY_TIME_TOTAL_LIMIT,  // a one-time alert() fires when this many seconds is reached
+};
+
 /* ---- play-time timer (badge on the same line as the "Load ROM" title) ----
    Tracks real wall-clock time the currently loaded ROM has spent actually running (i.e.
    while emulator.running is true) - time before a ROM is loaded, paused time, and
    debugger single-stepping don't count. Resets to 0 on every new ROM load and on Reset.
    Implemented as a poll (like updateRewindButton() below) rather than hooking every
    play/pause/step/rewind/breakpoint call site, so it stays correct no matter how playback
-   was started or stopped, and survives the GB/GBC core swap transparently. */
+   was started or stopped, and survives the GB/GBC core swap transparently.
+
+   This is also the counter the play-time guardrail (PLAY_TIME_LIMIT_CONFIG above) enforces
+   against directly, badge color and all - deliberately not a separate "session" counter, so
+   loading a fresh ROM or hitting Reset does give a clean slate. That's an intentional
+   trade-off for a first pass at this guardrail: it stops long, unbroken play sessions, not a
+   student who deliberately hits Reset every 29 minutes to dodge it. */
 const playTimeLabel = document.getElementById('playTime');
 let playTimeSeconds = 0;
 let playTimeLastTick = null; // performance.now() at the last tick emulator was running, or null if not running
+let playTimeWarningShown = false; // guards the WARNING_ALERT_MINUTES alert() to fire only once per run
+let playTimeLimitReached = false; // guards location.reload() so it's only requested once
 
 function formatPlayTime(totalSeconds) {
   const s = Math.floor(totalSeconds);
@@ -76,10 +114,16 @@ function formatPlayTime(totalSeconds) {
 function resetPlayTime() {
   playTimeSeconds = 0;
   playTimeLastTick = emulator.running ? performance.now() : null;
+  playTimeWarningShown = false;
+  playTimeLimitReached = false;
   playTimeLabel.textContent = formatPlayTime(0);
+  playTimeLabel.classList.remove('playtime-green', 'playtime-amber', 'playtime-red');
 }
 
 function tickPlayTime() {
+  // The timer itself (tracking + the visible badge text) always runs, guardrail or not.
+  // PLAY_TIME_GUARDRAIL only gates the enforcement layer below: badge coloring, the one-time
+  // warning alert, and the auto-reload. Disabled just means "time is shown, nothing happens".
   const now = performance.now();
   if (emulator.running) {
     if (playTimeLastTick !== null) playTimeSeconds += (now - playTimeLastTick) / 1000;
@@ -88,6 +132,26 @@ function tickPlayTime() {
     playTimeLastTick = null;
   }
   playTimeLabel.textContent = formatPlayTime(playTimeSeconds);
+
+  if (!PLAY_TIME_GUARDRAIL) return;
+
+  const { TOTAL_LIMIT, AMBER_AT, RED_AT, WARNING_ALERT } = PLAY_TIME_LIMIT_CONFIG;
+
+  playTimeLabel.classList.toggle('playtime-red', playTimeSeconds >= RED_AT);
+  playTimeLabel.classList.toggle('playtime-amber', playTimeSeconds >= AMBER_AT && playTimeSeconds < RED_AT);
+  playTimeLabel.classList.toggle('playtime-green', playTimeSeconds < AMBER_AT);
+
+  if (!playTimeWarningShown && playTimeSeconds >= WARNING_ALERT) {
+    playTimeWarningShown = true;
+    alert(`This emulator is for educational purposes and isn't intended for playing games. ` +
+          `This session has been running for ${formatPlayTime(WARNING_ALERT)}. ` +
+          `It'll auto-reload at ${formatPlayTime(TOTAL_LIMIT)} of continuous use.`);
+  }
+
+  if (!playTimeLimitReached && playTimeSeconds >= TOTAL_LIMIT) {
+    playTimeLimitReached = true;
+    location.reload();
+  }
 }
 setInterval(tickPlayTime, 500);
 

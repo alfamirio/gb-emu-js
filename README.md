@@ -153,6 +153,13 @@ Examples:
 3. Drag and drop any compatible legal `.gb`/`.gbc` ROM into the interface.
 4. Use the CPU/PPU debug panel and the memory-map / MBC banking visualizers to watch the emulator's internals in real time.
 
+## Play-time guardrail
+
+Caps continuous emulator use to discourage playing rather than debugging: the `playTime`
+badge turns green → amber → red as the session progresses, a one-time alert fires as a
+warning, and the page auto-reloads at the hard limit.
+All thresholds are configurable via in `emu-gb-app.js`.
+
 ## Disclaimer
 
 This project is an independently developed Game Boy emulator written entirely in JavaScript for educational purposes. It is not affiliated with, endorsed, sponsored, or approved by Nintendo or any of its subsidiaries.

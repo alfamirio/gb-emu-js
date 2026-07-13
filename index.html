@@ -211,6 +211,12 @@
     font-family: 'Consolas', monospace;
     white-space: nowrap;
   }
+  /* Play-time guardrail color states (see PLAY_TIME_LIMIT_CONFIG in emu-gb-app.js) - default
+     (no class) is the plain badge styling above; these override it as the session approaches
+     the continuous-use limit. */
+  #playTime.playtime-green { color: #6fcf7a; background: #16261a; }
+  #playTime.playtime-amber { color: #e0b23a; background: #2a2312; }
+  #playTime.playtime-red { color: #fff; background: #b93a3a; font-weight: 600; }
   .file-drop {
     /* The label wraps its text onto two lines via <br>. As an inline element (the
        default for <label>), a border on content that spans multiple lines gets drawn

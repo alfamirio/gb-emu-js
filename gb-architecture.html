@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>How a Computer Works: The Game Boy Hardware Architecture</title>
+    <style>
+        :root {
+            --bg-color: #f4f6f9;
+            --card-bg: #ffffff;
+            --text-color: #333333;
+            --accent-color: #306230;
+            --gb-screen: #8bac0f;
+            --gb-screen-dark: #0f380f;
+            --border-radius: 8px;
+            --code-bg: #1a202c;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background-color: var(--bg-color);
+            margin: 0;
+            padding: 0;
+        }
+
+        /* Top navigation bar style - sticky */
+        .top-nav {
+            background-color: #204220;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 2rem;
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .top-nav a {
+            color: #ffffff;
+            text-decoration: none;
+            font-size: 0.95rem;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            opacity: 0.9;
+            transition: opacity 0.2s;
+        }
+
+        .top-nav a:hover {
+            opacity: 1;
+            text-decoration: underline;
+        }
+
+        header {
+            background-color: var(--accent-color);
+            color: white;
+            padding: 2.5rem 1rem;
+            text-align: center;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 2.2rem;
+        }
+
+        header p {
+            margin: 0.5rem 0 0;
+            opacity: 0.9;
+            font-size: 1.1rem;
+        }
+
+        main {
+            max-width: 950px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+
+        .intro, .classroom-note {
+            background: var(--card-bg);
+            padding: 1.5rem;
+            border-radius: var(--border-radius);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            margin-bottom: 2rem;
+        }
+
+        .classroom-note {
+            border-left: 5px solid #3182ce;
+            background: #ebf8ff;
+        }
+
+        .step-container {
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+            margin-bottom: 3rem;
+        }
+
+        .step {
+            background: var(--card-bg);
+            border-left: 5px solid var(--accent-color);
+            border-radius: 0 var(--border-radius) var(--border-radius) 0;
+            padding: 1.5rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .step h2 {
+            margin-top: 0;
+            color: var(--accent-color);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .step-number {
+            background: var(--accent-color);
+            color: white;
+            border-radius: 50%;
+            width: 28px;
+            height: 28px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.9rem;
+            font-weight: bold;
+            flex-shrink: 0;
+        }
+
+        .hardware-badge {
+            background: #e2e8f0;
+            color: #4a5568;
+            padding: 0.2rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-family: monospace;
+            font-weight: bold;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+            font-size: 0.95rem;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 0.75rem;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        th {
+            background-color: #edf2f7;
+            color: #2d3748;
+        }
+
+        .grid-2col {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .audio-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .audio-card, .info-card {
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            padding: 1rem;
+            border-radius: 6px;
+        }
+
+        .audio-card h4, .info-card h4 {
+            margin: 0 0 0.5rem 0;
+            color: var(--accent-color);
+        }
+
+        .diagram-box {
+            background: var(--code-bg);
+            color: #a0aec0;
+            font-family: monospace;
+            padding: 1rem;
+            border-radius: 6px;
+            overflow-x: auto;
+            white-space: pre;
+            margin: 1rem 0;
+        }
+
+        .diagram-accent {
+            color: #63b3ed;
+        }
+
+        .sim-box {
+            background: #2d3748;
+            color: white;
+            padding: 1.5rem;
+            border-radius: var(--border-radius);
+            margin-top: 3rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .sim-title {
+            color: var(--gb-screen);
+            margin-top: 0;
+            font-family: monospace;
+            font-size: 1.4rem;
+        }
+
+        .sandbox-layout {
+            display: grid;
+            grid-template-columns: 1fr 300px;
+            gap: 1.5rem;
+        }
+
+        @media (max-width: 768px) {
+            .sandbox-layout { grid-template-columns: 1fr; }
+            .top-nav { padding: 0.75rem 1rem; }
+        }
+
+        .sim-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .sim-card {
+            background: var(--code-bg);
+            padding: 1rem;
+            border-radius: 6px;
+            border: 1px solid #4a5568;
+        }
+
+        .sim-card h4 {
+            margin: 0 0 0.5rem 0;
+            color: #a0aec0;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .sim-value {
+            font-family: monospace;
+            font-size: 1.2rem;
+            color: #fff;
+        }
+
+        .bus-line {
+            background: #1a202c;
+            padding: 0.75rem;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 0.85rem;
+            margin: 1rem 0;
+            border-left: 4px solid #4299e1;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .bus-active {
+            color: #63b3ed;
+            animation: pulse 1s infinite alternate;
+        }
+
+        .joypad-interactive {
+            background: #1a202c;
+            padding: 1rem;
+            border-radius: 6px;
+            border: 1px solid #4a5568;
+            text-align: center;
+        }
+
+        .joy-row-select {
+            font-size: 0.8rem;
+            color: #a0aec0;
+            margin-bottom: 0.5rem;
+            font-family: monospace;
+        }
+
+        .btn-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 0.4rem;
+        }
+
+        .joy-btn {
+            background: #4a5568;
+            font-size: 0.75rem;
+            padding: 0.4rem 0.2rem;
+            border-radius: 3px;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+
+        .joy-btn.pressed {
+            background: #e53e3e;
+            color: white;
+        }
+
+        .gb-screen-mock {
+            background-color: var(--gb-screen);
+            color: var(--gb-screen-dark);
+            height: 140px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: monospace;
+            font-weight: bold;
+            font-size: 1.1rem;
+            border: 6px solid var(--code-bg);
+            text-align: center;
+            padding: 0 1rem;
+            box-sizing: border-box;
+            line-height: 1.4;
+        }
+
+        .controls {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        button.action-trigger {
+            background: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 0.95rem;
+            transition: background 0.2s;
+        }
+
+        button.action-trigger:hover {
+            opacity: 0.9;
+        }
+
+        button.action-trigger:disabled {
+            background: #4a5568;
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
+        footer {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: #718096;
+            font-size: 0.9rem;
+            background: #edf2f7;
+            margin-top: 4rem;
+        }
+
+        code {
+            font-family: monospace;
+            background: #edf2f7;
+            padding: 0.1rem 0.3rem;
+            border-radius: 3px;
+            color: #c53030;
+        }
+
+        .sim-card code {
+            background: transparent;
+            color: #fc8181;
+            padding: 0;
+        }
+
+        @keyframes pulse {
+            from { opacity: 0.6; }
+            to { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Added top navbar containing emulator and repository links -->
+    <nav class="top-nav">
+        <a href="index.html" title="Go to GB Emulator">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M19 12H5M12 19l-7-7 7-7"></path>
+            </svg>
+            Back to Emulator
+        </a>
+        <a href="https://github.com/alfamirio/gb-emu-js" target="_blank" rel="noopener noreferrer" title="View Source on GitHub">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
+            </svg>
+            GitHub Repository
+        </a>
+    </nav>
+
+    <header>
+        <h1>How a Computer Works</h1>
+        <p>Learning Hardware Systems Architecture Through the Nintendo Game Boy</p>
+    </header>
+
+    <main>
+        <section class="intro">
+            <h3>Why Study the Game Boy?</h3>
+            <p>Modern computers run billions of operations per second across layers of abstract operating systems, making it difficult for students to visualize real hardware behavior. The original 1989 Game Boy (DMG-01) operates exactly like a modern machine but at an accessible, human scale. It features a CPU, explicit memory domains, standard buses, and registers that can be fully map-analyzed in a single classroom lab loop.</p>
+        </section>
+
+        <section class="step-container">
+            
+            <!-- Step 1: CPU -->
+            <div class="step">
+                <h2><span class="step-number">1</span> The Brain: The CPU <span class="hardware-badge">Sharp LR35902</span></h2>
+                <p>The Central Processing Unit (CPU) is the logical engine driving the computer. Running at <strong>4.19 MHz</strong>, its internal quartz crystal oscillates 4.19 million times per second. It fetches low-level assembly instruction symbols, decodes them, and coordinates physical operations across registers.</p>
+                
+                <div class="grid-2col">
+                    <div class="info-card">
+                        <h4>Registers</h4>
+                        <p>Eight 8-bit registers can be paired into 16-bit configurations for specific address operations:</p>
+                        <ul>
+                            <li><strong>Accumulator (A)</strong>: Holds results for arithmetic and logical operations.</li>
+                            <li><strong>Flags (F)</strong>: Tracks CPU state flags.</li>
+                            <li><strong>BC, DE, HL</strong>: General purpose pairs. HL points directly to memory addresses.</li>
+                            <li><strong>SP & PC</strong>: 16-bit Stack Pointer and Program Counter.</li>
+                        </ul>
+                    </div>
+                    <div class="info-card">
+                        <h4>Flags Register (F)</h4>
+                        <p>The lower 4 bits stay at zero. The top 4 bits signal execution status:</p>
+                        <ul>
+                            <li><strong>Bit 7 - Zero (Z)</strong>: Set if an operation result equals 0.</li>
+                            <li><strong>Bit 6 - Subtraction (N)</strong>: Set if the previous operation was a subtraction.</li>
+                            <li><strong>Bit 5 - Half Carry (H)</strong>: Set if a lower nibble arithmetic overflow occurs.</li>
+                            <li><strong>Bit 4 - Carry (C)</strong>: Set if an operation overflows bit 7 or borrows past 0.</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="info-card" style="margin-top: 1rem;">
+                    <h4>Instruction Set Groups</h4>
+                    <ul>
+                        <li><strong>Loads</strong>: Move data between registers or memory (<code>LD A, B</code>, <code>LD ($C000), A</code>).</li>
+                        <li><strong>Arithmetic/Logic</strong>: Compute values inside the ALU (<code>ADD A, B</code>, <code>XOR A</code>).</li>
+                        <li><strong>Bit Ops</strong>: Test, set, or clear specific register bits (<code>BIT 7, H</code>, <code>SET 3, L</code>).</li>
+                        <li><strong>Rotates/Shifts</strong>: Shift bits left or right for fast binary multiplication (<code>RLA</code>).</li>
+                        <li><strong>Control Flow</strong>: Jump or call subroutines conditionally (<code>JP NZ, $0150</code>, <code>CALL $2000</code>).</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Step 2: Buses & Memory Mapping -->
+            <div class="step">
+                <h2><span class="step-number">2</span> The Router: The MMU & Memory Map <span class="hardware-badge">16-bit Address Bus</span></h2>
+                <p>The system features a 16-bit wide address bus line, allowing the CPU to point directly to exactly 65,536 unique storage locations ($2^{16} = \text{64 KB}$). To manage everything with limited wiring, the Game Boy uses <strong>Memory-Mapped I/O</strong>: everything from game cartridges to controller button matrices shares this single linear map zone.</p>
+                
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Address Range</th>
+                            <th>Hardware Allocation Component</th>
+                            <th>Functional Mechanics</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>0x0000 - 0x7FFF</code></td>
+                            <td><strong>Cartridge ROM</strong></td>
+                            <td>Static game storage code. Fixed area + bank switching window.</td>
+                        </tr>
+                        <tr>
+                            <td><code>0x8000 - 0x9FFF</code></td>
+                            <td><strong>Video RAM (VRAM)</strong></td>
+                            <td>Dedicated block for graphical background tile arrays.</td>
+                        </tr>
+                        <tr>
+                            <td><code>0xA000 - 0xBFFF</code></td>
+                            <td><strong>External Cartridge RAM</strong></td>
+                            <td>Optional volatile workspace, often battery-backed for saves.</td>
+                        </tr>
+                        <tr>
+                            <td><code>0xC000 - 0xDFFF</code></td>
+                            <td><strong>Work RAM (WRAM)</strong></td>
+                            <td>The main volatile scratchpad memory for game state arithmetic variables.</td>
+                        </tr>
+                        <tr>
+                            <td><code>0xFE00 - 0xFE9F</code></td>
+                            <td><strong>Object Attribute Memory (OAM)</strong></td>
+                            <td>Fast access tracking table storing coordinates for up to 40 sprites.</td>
+                        </tr>
+                        <tr>
+                            <td><code>0xFF00 - 0xFF7F</code></td>
+                            <td><strong>I/O Hardware Registers</strong></td>
+                            <td>Direct logic ports linking memory access to peripheral chips.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Step 3: MBC Systems -->
+            <div class="step">
+                <h2><span class="step-number">3</span> Bank Switching: Memory Bank Controllers <span class="hardware-badge">MBC Chipsets</span></h2>
+                <p>Since many games are larger than 32 KB, cartridges contain an integrated chip called an <strong>MBC (Memory Bank Controller)</strong>. When the CPU needs data from a distant part of the cartridge, it writes a bank index number to an external register, switching the layout visibility instantly.</p>
+                
+                <div class="grid-2col">
+                    <div class="info-card">
+                        <h4>ROM ONLY</h4>
+                        <p>Up to 32 KB ROM capacity. Maps directly into the system bus layout. Does not support bank switching registers or external RAM chips.</p>
+                    </div>
+                    <div class="info-card">
+                        <h4>MBC1</h4>
+                        <p>Up to 2 MB ROM and 32 KB RAM. Splitting fixed bank 0 and a switchable bank window. Writing to <code>0x2000-0x3FFF</code> toggles the active ROM bank index.</p>
+                    </div>
+                    <div class="info-card">
+                        <h4>MBC2</h4>
+                        <p>Up to 256 KB ROM. Contains a built-in internal RAM workspace consisting of exactly 512 half-bytes (4-bit nibbles). No external RAM chip support.</p>
+                    </div>
+                    <div class="info-card">
+                        <h4>MBC3</h4>
+                        <p>Up to 2 MB ROM and 64 KB RAM. Adds hardware support for an integrated Real-Time Clock (RTC) chip to latch tracking times directly via the memory bus layout.</p>
+                    </div>
+                    <div class="info-card">
+                        <h4>MBC5</h4>
+                    <p>Up to 8 MB ROM and 128 KB RAM. Resolves mapping design quirks found in MBC1 by allowing bank 0 to map cleanly into the switchable slot. Uses two split configuration registers to achieve full 9-bit bank selection addresses.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 4: VRAM & PPU -->
+            <div class="step">
+                <h2><span class="step-number">4</span> The Painter: Graphics VRAM & PPU <span class="hardware-badge">Picture Processing Unit</span></h2>
+                <p>The Game Boy does not use a modern layout frame-buffer where pixels are written to a grid matching the screen resolution. Instead, the PPU parses structural tile matrices located inside the VRAM range (<code>0x8000 - 0x9FFF</code>) and maps them dynamically onto the LCD panel synchronized with physical horizontal and vertical scanline loops.</p>
+                
+                <div class="grid-2col">
+                    <div class="info-card">
+                        <h4>VRAM Data Layout</h4>
+                        <ul>
+                            <li><strong>Tile Data (<code>0x8000 - 0x97FF</code>)</strong>: Stores the raw 8x8 pixel tile bitmaps. Every pixel uses 2 bits to achieve a 4-shade grayscale palette. Each tile line consumes exactly 2 bytes (interleaved "2bpp" format).</li>
+                            <li><strong>Background Maps (<code>0x9800 - 0x9FFF</code>)</strong>: Contains two 32x32 index arrays. These arrays reference the tile blocks above to assemble a massive 256x256 pixel virtual background plane.</li>
+                        </ul>
+                    </div>
+                    <div class="info-card">
+                        <h4>PPU Hardware Modes</h4>
+                        <p>As the PPU draws the active screen resolution (160x144 pixels), it steps through four sequential micro-operation loops tracked inside register <code>0xFF41 (STAT)</code>:</p>
+                        <ul>
+                            <li><strong>Mode 2 (OAM Search)</strong>: Cycles 0-80. The PPU scans the Object Attribute Memory to find up to 10 sprites matching the current horizontal scanline.</li>
+                            <li><strong>Mode 3 (Pixel Transfer)</strong>: Cycles 81-252+. The PPU pulls layout bitmap details from VRAM and streams pixels directly to the display logic.</li>
+                            <li><strong>Mode 0 (H-Blank)</strong>: Remaining cycles of the line. Temporary idle period after drawing a row. The CPU regains full read/write permissions to VRAM/OAM.</li>
+                            <li><strong>Mode 1 (V-Blank)</strong>: Triggered once all 144 rows are drawn. Lasts for 10 structural scanlines. Fires a high-priority hardware interrupt for frame logic resets.</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <p><strong>Classroom Connection:</strong> This tile-based rendering design maximizes graphics processing output with minimal physical system memory footprint. By modifying metadata attributes inside the fast-access <strong>OAM table (<code>0xFE00 - 0xFE9F</code>)</strong>—such as X/Y positions, tile indexes, layering priority, or flip flags—programmers can move complex hardware sprites across coordinates instantly without losing cycles redrawing or erasing individual background pixel fields.</p>
+            </div>
+
+            <!-- Step 5: APU -->
+            <div class="step">
+                <h2><span class="step-number">5</span> The Synthesizer: Sound APU <span class="hardware-badge">Audio Processing Unit</span></h2>
+                <p>The Game Boy does not play high-definition audio files. It is a true hardware audio synthesizer. It reads register inputs from the <code>0xFF10</code> memory block to oscillate electrical signals directly into 4 distinct physical audio channels:</p>
+                
+                <div class="audio-grid">
+                    <div class="audio-card">
+                        <h4>Pulse 1</h4>
+                        <p>Square wave generator featuring sweep hardware. Used for dynamic movement sound effects.</p>
+                    </div>
+                    <div class="audio-card">
+                        <h4>Pulse 2</h4>
+                        <p>Standard square wave channel. Used for primary melodic composition sequences.</p>
+                    </div>
+                    <div class="audio-card">
+                        <h4>Wave Ch.</h4>
+                        <p>Reads a tiny 32-sample custom buffer array. Used to produce synthesized basslines.</p>
+                    </div>
+                    <div class="audio-card">
+                        <h4>Noise Ch.</h4>
+                        <p>Generates pseudo-random binary white noise sequences. Handles explosions and percussion beats.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 6: Timers & Interrupts -->
+            <div class="step">
+                <h2><span class="step-number">6</span> The Clockwork: Hardware Timer & Interrupts <span class="hardware-badge">TIMA Register</span></h2>
+                <p>Computer loops require stable timing mechanisms to ensure identical performance across variable frame conditions. The Game Boy features a hardware divider network counting down to zero. By configuring memory register <code>0xFF05 (TIMA)</code>, systems run background processing independently from display operations.</p>
+                <p><strong>Classroom Connection:</strong> When the timer counter rolls over from its maximum capacity value (<code>255</code> to <code>0</code>), it triggers a <strong>Hardware Interrupt Request (IRQ)</strong>. The CPU immediately halts its current function thread, stores its register states, executes the timing module, and resumes operations without drop frames.</p>
+            </div>
+
+            <!-- Step 7: Joypad Matrix -->
+            <div class="step">
+                <h2><span class="step-number">7</span> The Gateway: Joypad Matrix Input <span class="hardware-badge">Register 0xFF00</span></h2>
+                <p>To reduce trace lines and save physical pins on the main circuit board, the 8 button paths are mapped into a single $2 \times 4$ logic matrix array managed at address <code>0xFF00</code>.</p>
+
+                <div class="diagram-box">
+               <span class="diagram-accent">[CPU Line Selection Out]</span>
+                     /                  \
+       <span class="diagram-accent">Bit 4 Low: Directions</span>     <span class="diagram-accent">Bit 5 Low: Action Keys</span>
+                 |                         |
+           ➔ Bit 3: Down             ➔ Bit 3: Start
+           ➔ Bit 2: Up               ➔ Bit 2: Select
+           ➔ Bit 1: Left             ➔ Bit 1: Button B
+           ➔ Bit 0: Right            ➔ Bit 0: Button A
+                </div>
+
+                <p><strong>Classroom Connection:</strong> To read user input, the game loop switches bit states inside register <code>0xFF00</code> to select either the direction or action row, then reads the lower 4 data bits back to compute movement matrices via standard <strong>bitwise AND masks</strong>.</p>
+            </div>
+
+        </section>
+
+    </main>
+
+    <footer>
+        <p>Built for foundational computer systems engineering curriculum labs.</p>
+    </footer>
+
+</body>
+</html>

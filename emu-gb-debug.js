@@ -59,9 +59,9 @@ const tileViewerCtx = tileViewerCanvas.getContext('2d');
 // that supersample, and the canvas is never CSS-scaled on top of its native size (no
 // style.width/height, no aspect-ratio trick, no ResizeObserver). That means TV_GAP stays
 // exactly 1 real screen pixel no matter how zoomed the art is, instead of being stretched into
-// 2px/3px/5px along with everything else. TV_W/TV_H (the canvas's native pixel size - now also
-// its displayed size, since there's no CSS scaling) are fixed by TV_SCALE, so the viewer is the
-// same size regardless of which sidebar is open or hidden.
+// 2px/3px/5px along with everything else. TV_W/TV_H (the canvas's native pixel size, and thus
+// its displayed size since there's no CSS scaling) are fixed by TV_SCALE, so the viewer is
+// the same size regardless of which sidebar is open or hidden.
 const TV_COLS = 16, TV_ROWS = 24, TV_SCALE = 3, TV_CELL = 8 * TV_SCALE, TV_GAP = 1;
 const TV_PITCH = TV_CELL + TV_GAP;
 const TV_W = TV_COLS * TV_PITCH + TV_GAP;  // 401
@@ -142,9 +142,8 @@ const bankingLog = document.getElementById('bankingLog');
 
 // Static region layout for the 0x0000-0xFFFF strip. `weight` drives proportional width via
 // flex-grow; `minPx` is a floor so tiny regions (OAM/IO/HRAM/IE) don't disappear entirely.
-// `purpose` is a one-line explanation of what the block is for/used by, surfaced as a hover
-// tooltip on both the Mem Map strip below and the RAM Editor's region tabs (see
-// buildRamEditRegionTabs(), which reads it back out via ramEditRegionMeta()).
+// `purpose` is a one-line explanation surfaced as a hover tooltip on the Mem Map strip and
+// the RAM Editor's region tabs (see buildRamEditRegionTabs()/ramEditRegionMeta()).
 const MEM_REGIONS = [
   { key: 'ROM0',   label: 'ROM Bank 0',    range: '0x0000–0x3FFF', color: '#5a9bd8', weight: 0x4000, minPx: 46,
     purpose: 'Fixed 16KB ROM bank - always mapped, never bank-switched. Holds the entry point, interrupt vectors, and whatever code/data the cartridge keeps permanently resident.' },
@@ -713,12 +712,10 @@ function updateCpuControlsVisibility(tool) {
 }
 
 // MMU.noteAccess() (Mem Map/Banking) and the CPU's per-instruction trace snapshot/diff
-// (Execution Trace) are the two hottest pieces of debug instrumentation - each runs on
-// every memory access or every instruction respectively. Both are wasted work unless the
-// one specific tab that consumes them is actually the open tab, so keep emulator.trackMemMap
-// / emulator.trackTrace synced to (debug mode on) AND (that tab is active), rather than just
-// mirroring the play/debug toggle the way the coarser emulator.trackAccess does. Called both
-// on tab switches and from applyMode() (play/debug toggle) so either kind of change is caught.
+// (Execution Trace) are the two hottest pieces of debug instrumentation. Both are wasted work
+// unless the specific tab that consumes them is the open one, so keep emulator.trackMemMap /
+// emulator.trackTrace synced to (debug mode on) AND (that tab active) - called on tab
+// switches and from applyMode() so either kind of change is caught.
 function syncAccessTracking(activeDebugTool) {
   const debugging = !document.body.classList.contains('playing-mode');
   emulator.trackMemMap = debugging && (activeDebugTool === 'memmap' || activeDebugTool === 'banking');

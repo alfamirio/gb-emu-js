@@ -711,15 +711,12 @@ class CGBPPU {
 
   // ---- DMG-PPU-compatible shims for emu-gb-debug.js ----
   // The debug/layer-viewer module was written against the DMG PPU's API: a plain
-  // getBackgroundColorIndex(x,y)/getWindowColorIndex(winX,winY) returning a single
-  // color number (0-3), plus applyPalette(colorNum, paletteByte) turning that into an
-  // [r,g,b] shade via one flat palette register (BGP/OBP0/OBP1). CGB has neither a
-  // single BG/window palette register nor a flat colorNum-only pixel model (color depends
-  // on which of 8 BG or 8 OBJ palettes the tile/sprite selects), so these can't be exact
-  // equivalents. They exist purely so the debug view doesn't throw on CGB ROMs; they
-  // resolve color using BG palette 0 (or, for applyPalette, whatever OBJ mapping the
-  // caller already resolved a colorNum for), which matches real output for games that only
-  // use one BG palette and is a reasonable approximation otherwise.
+  // getBackgroundColorIndex(x,y)/getWindowColorIndex(winX,winY) returning a single color
+  // number (0-3), plus applyPalette(colorNum, paletteByte) turning that into [r,g,b] via one
+  // flat palette register. CGB has no such flat colorNum-only model (color depends on which
+  // of 8 BG or 8 OBJ palettes the tile/sprite selects), so these are approximations: they
+  // resolve color using BG palette 0, which matches real output for games using only one
+  // BG palette and is reasonable otherwise.
   getBackgroundColorIndex(x, y) {
     const tileMapBase = (this.lcdc & 0x08) ? 0x9C00 : 0x9800;
     const bgX = (x + this.scx) & 0xFF, bgY = (y + this.scy) & 0xFF;
@@ -874,12 +871,10 @@ class CGBEmulator extends Emulator {
   }
 
   // Double-speed cycle accounting: the CPU consumes T-cycles twice as fast in double-speed
-  // mode, but the PPU/APU must keep running at the same real-time rate (the screen still
-  // refreshes at ~59.73fps, audio still plays at the same pitch) - so they're fed half as
-  // many cycles. DIV/TIMA, by contrast, really are driven directly off the faster clock, so
-  // the Timer gets the full, un-halved cycle count. The frame-cycle-budget value returned
-  // (and therefore what runFrame() accumulates against Emulator.CYCLES_PER_FRAME) follows
-  // the PPU's pace, so a "frame" still means one real PPU frame regardless of CPU speed.
+  // mode, but the PPU/APU must keep running at the same real-time rate, so they're fed half
+  // as many cycles. DIV/TIMA are driven directly off the faster clock, so the Timer gets the
+  // full, un-halved count. The returned frame-cycle-budget follows the PPU's pace, so a
+  // "frame" still means one real PPU frame regardless of CPU speed.
   stepHardware(cycles) {
     const speedDiv = this.cpu.doubleSpeed ? 2 : 1;
     const ppuCycles = cycles / speedDiv;

@@ -31,9 +31,8 @@ const canvas = document.getElementById('screen');
 let emulator = new GBEmulator(canvas);
 
 // Which Emulator subclass a ROM needs, based on the cartridge header's CGB flag (0x143):
-// 0xC0 = CGB-only, 0x80 = CGB-enhanced but DMG-compatible. Both get the CGB core now that
-// one exists - a 0x80 cart run through the CGB core gets its intended color palettes
-// instead of the DMG green/grey approximation, and still plays identically otherwise.
+// 0xC0 = CGB-only, 0x80 = CGB-enhanced but DMG-compatible. Both run on the CGB core, which
+// gives 0x80 carts their intended color palettes instead of the DMG green/grey approximation.
 function pickEmulatorClass(bytes) {
   const flag = bytes[0x143];
   return (flag === 0x80 || flag === 0xC0) ? CGBEmulator : GBEmulator;
@@ -189,11 +188,9 @@ function hasBatteryBackedRAM(bytes) {
   const t = bytes[0x147];
   return t === 0x03 || t === 0x06 || t === 0x0F || t === 0x10 || t === 0x13 || t === 0x1B || t === 0x1E;
 }
-// How many bytes of cart RAM this ROM's header declares (offset 0x149), in the standard
-// .sav layout other emulators use - so a save exported here can be shared with (or a save
-// from) real emulators/hardware flash carts. MBC2 is a fixed-size special case: its 512
-// built-in 4-bit nibbles are conventionally saved as 512 bytes (one nibble per byte, high
-// bits zeroed), matching how this emulator already stores them in cartRAM.
+// How many bytes of cart RAM this ROM's header declares (offset 0x149), in the standard .sav
+// layout other emulators/hardware flash carts use. MBC2 is a fixed-size special case: its
+// 512 built-in 4-bit nibbles are conventionally saved as 512 bytes, one nibble per byte.
 function getCartRAMByteSize(bytes) {
   const t = bytes[0x147];
   if (t === 0x05 || t === 0x06) return 0x200;
@@ -203,11 +200,11 @@ function getCartRAMByteSize(bytes) {
 
 // The cartridge header's CGB flag (offset 0x143) tells us whether a ROM requires Game Boy
 // Color hardware to run at all (0xC0), or merely takes advantage of it when present while
-// staying playable on original DMG hardware (0x80). Both are now routed to the CGB core
-// (see pickEmulatorClass() above) - these two helpers just surface an informational note
-// about which mode a ROM is running in, not a compatibility warning anymore.
+// staying playable on original DMG hardware (0x80). Both are routed to the CGB core (see
+// pickEmulatorClass() above); these two helpers just surface an informational note about
+// which mode a ROM is running in.
 function getGBCCompatibilityWarning(bytes) {
-  return null; // both CGB flag values now run on the CGB core - see getGBCInfoNote() below
+  return null; // both CGB flag values run on the CGB core - see getGBCInfoNote() below
 }
 function getGBCInfoNote(bytes) {
   const flag = bytes[0x143];
@@ -569,8 +566,7 @@ soundControls.volumeSlider.max = APP_CONFIG.VOLUME_MAX;
 soundControls.volumeSlider.step = APP_CONFIG.VOLUME_STEP;
 soundControls.volumeSlider.value = APP_CONFIG.VOLUME_DEFAULT;
 
-// Snaps a percentage onto the configured step (e.g. a value saved before VOLUME_STEP
-// existed, or from editing config by hand) so the slider and label are never out of sync
+// Snaps a percentage onto the configured step, so the slider and label stay in sync
 // with what dragging/arrow-keys can actually produce.
 function snapToVolumeStep(pct) {
   return Math.round(pct / APP_CONFIG.VOLUME_STEP) * APP_CONFIG.VOLUME_STEP;

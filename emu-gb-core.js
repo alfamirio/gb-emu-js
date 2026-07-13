@@ -39,10 +39,8 @@
 /* ============================== 0. Emulation core config =============================== */
 // Every hardware-defined constant the core relies on lives here: clock speed, frame/PPU
 // timing, memory-map layout and region sizes, timer periods, sprite limits, palettes, and
-// the register/IO state the real boot ROM leaves behind. The classes below (MMU/CPU/PPU/
-// Timer/APU/Emulator) read from this object instead of hardcoding these numbers inline, so
-// the "what a Game Boy is" values are separate from the "how we emulate it" code, and the
-// debug/visualizer UI can reuse the exact same numbers instead of keeping its own copies.
+// boot-state register/IO values. Keeps "what a Game Boy is" separate from "how we emulate
+// it", and lets the debug/visualizer UI reuse the same numbers instead of its own copies.
 const EMU_CORE_CONFIG = {
   CLOCK_HZ: 4194304, // GB system clock speed, in T-cycles/second
 
@@ -123,10 +121,8 @@ const EMU_CORE_CONFIG = {
 /* ============================== 1. MMU (Memory Management Unit) ======================= */
 
 // Small-int ids for the Memory Map / Banking visualizer's region buckets. Used as the array
-// index into MMU.regionLastTouch (a Uint32Array) so the hottest path in the emulator - a
-// bookkeeping write on every single memory access - never touches a string-keyed object.
-// REGION_NAMES maps back to the string labels the debug UI (and MEM_REGIONS in
-// emu-gb-debug.js) expects.
+// index into MMU.regionLastTouch (a Uint32Array) so the hot memory-access path never touches
+// a string-keyed object. REGION_NAMES maps back to the string labels the debug UI expects.
 const REGION_ROM0 = 0, REGION_ROMX = 1, REGION_VRAM = 2, REGION_ERAM = 3, REGION_WRAM = 4,
       REGION_OAM = 5, REGION_UNUSED = 6, REGION_IO = 7, REGION_HRAM = 8, REGION_IE = 9;
 const REGION_COUNT = 10;
@@ -291,12 +287,9 @@ class MMU {
     return this.peek8(addr);
   }
 
-  // Same address decoding/mapping as read8 (ROM banking, echo RAM, RTC-mapped registers,
-  // I/O side-reads, everything) but WITHOUT recording the access via noteAccess(). Reading
-  // a byte just to paint it on a debug panel isn't something the CPU/game actually did, so
-  // routing that through read8 would falsely attribute it to CPU activity and spam the
-  // Memory Map visualizer's "last access" flash. Used by the RAM Editor's live refresh and
-  // available to any other inspector that needs a read8-equivalent without that side effect.
+  // Same address decoding as read8, but WITHOUT recording the access via noteAccess() -
+  // for inspection reads (RAM Editor refresh, etc.) that shouldn't be misattributed to
+  // CPU activity or spam the Memory Map visualizer's "last access" flash.
   peek8(addr) {
     addr &= 0xFFFF;
     const MEM = EMU_CORE_CONFIG.MEMORY;
@@ -688,11 +681,9 @@ class CPU {
 
   checkCond(cc) { switch (cc) { case 0: return !this.flagZ; case 1: return this.flagZ; case 2: return !this.flagC; case 3: return this.flagC; } }
 
-  // STOP (0x10) on real DMG hardware halts the CPU and LCD until a button is pressed - a
-  // deep low-power mode this emulator doesn't model (no game this emulator targets relies on
-  // actually pausing here). Pulled into its own method (rather than inlined in execute()'s
-  // switch) purely so CGBCPU can override just this one behavior for the CGB speed-switch
-  // (KEY1) without needing to reimplement the whole opcode dispatch table.
+  // STOP (0x10) on real DMG hardware halts the CPU and LCD until a button is pressed, a
+  // deep low-power mode this emulator doesn't model. Its own method so CGBCPU can override
+  // just this one behavior for the CGB speed-switch (KEY1).
   handleStop() { this.PC = (this.PC + 1) & 0xFFFF; this.tick(4); }
 
   /* ---- main fetch/execute step. Returns the number of T-cycles the instruction used. ---- */
@@ -700,15 +691,10 @@ class CPU {
     if (this.eiDelay > 0) { this.eiDelay--; if (this.eiDelay === 0) this.IME = true; }
     this.cycles = 0;
 
-    // Interrupt dispatch must be checked *here* - immediately after the eiDelay
-    // transition above, before this step's opcode is fetched - not only at the end of
-    // the step. EI takes effect after the next instruction, so the moment IME flips
-    // true is exactly the boundary real hardware dispatches on. If the very next
-    // opcode happens to be DI (a common "wait for a flag, then disable interrupts
-    // again" idiom: DI / BIT flag / JR NZ / HALT / EI / JR loop), checking only after
-    // that opcode runs means IME is already false again by the time we look - the
-    // interrupt is silently missed and the flag it would have set never gets set,
-    // hanging the CPU in that loop forever.
+    // Must check right after the eiDelay transition, before this step's opcode is fetched:
+    // EI takes effect after the next instruction, so IME flips true exactly on this boundary.
+    // Checking only at the end of the step could let a following DI mask the interrupt before
+    // it's ever dispatched, hanging the CPU in a DI/wait/EI loop.
     if (this.tryDispatchInterrupt()) return this.cycles;
 
     if (this.halted) {
@@ -1331,10 +1317,9 @@ class PPU {
   }
 
   // Sprite candidates for scanline y: OAM entries whose Y range covers this line, capped at
-  // the hardware's 10-per-line limit and sorted lowest-priority-first (drawing them in this
+  // the hardware's 10-per-line limit and sorted lowest-priority-first, so drawing them in
   // order and letting later draws win overlap reproduces the real X-then-OAM-index priority
-  // rule). Pure - doesn't touch frameStats - so both the real renderer and the debug layer
-  // viewer can safely call it.
+  // rule. Pure - doesn't touch frameStats - so the debug layer viewer can also call it.
   getSpriteCandidatesForLine(y, spriteHeight) {
     const SPR = EMU_CORE_CONFIG.SPRITES;
     const candidates = this._spriteCandidates;
@@ -1643,16 +1628,11 @@ class APU {
 
     // Running sum accumulators used to *average* (rather than just instantaneously snapshot)
     // each channel's DAC output over every raw cycle since the last output sample was emitted.
-    // This matters once the speed slider is away from 1x: at e.g. 4x, ~380 raw GB cycles pass
-    // per output sample instead of ~95, and a single instantaneous snapshot only "sees" the
-    // state at that one instant while silently ignoring the other ~285 cycles of activity in
-    // between. Because the sped-up channels also genuinely oscillate faster in real time (their
-    // freqTimer is driven by raw, unscaled cycles), naive point-sampling badly *undersamples*
-    // that faster waveform - a classic aliasing bug - and the resulting pitch comes out wrong
-    // (sometimes wildly so) instead of merely "a bit rough". Integrating (summing amplitude*cycles)
-    // over the whole interval and dividing by the elapsed cycles on emission acts as a simple
-    // box-filter low-pass, which tames that aliasing at 2x-4x while leaving 1x/slow-motion
-    // (where the interval between samples is already small) effectively unchanged.
+    // This matters at speed > 1x, where many more raw cycles pass per output sample and the
+    // sped-up channels genuinely oscillate faster in real time - point-sampling would badly
+    // undersample that waveform (aliasing into wrong-sounding pitches). Integrating amplitude
+    // over the interval acts as a simple box-filter low-pass that tames the aliasing at
+    // 2x-4x while leaving 1x/slow-motion effectively unchanged.
     this.accL = 0; this.accR = 0; this.accCycles = 0;
 
     // Per-channel raw DAC output history, purely for the oscilloscope UI - separate from the
@@ -1880,14 +1860,11 @@ class APU {
     this.write(0xFF20, 0xFF); this.write(0xFF21, 0x00); this.write(0xFF22, 0x00); this.write(0xFF23, 0xBF);
     this.write(0xFF24, 0x77); this.write(0xFF25, 0xF3);
 
-    // The NR14/NR19/NR1E/NR23 writes above set each channel's trigger bit (bit 7) to match
-    // the register *bytes* real hardware leaves behind post-boot - but routing them through
-    // write() also actually triggers those channels, same as a game would. Channel 1's DAC is
-    // on (NR12 = 0xF3), so that trigger is audible: a stray beep the instant playback starts,
-    // on every ROM load and reset. Real hardware's equivalent is the tail of the boot ROM's
-    // chime, already decayed to silence by the time a game's own code runs; since this snapshot
-    // doesn't replay that whole chime, silence what the trigger just started so only the
-    // (harmless) register values carry over, not an audible reprise.
+    // The NR14/NR19/NR1E/NR23 writes above set each channel's trigger bit to match the register
+    // bytes real hardware leaves post-boot, but routing them through write() also triggers those
+    // channels for real - audibly, since channel 1's DAC is on (NR12 = 0xF3). Real hardware's
+    // equivalent (the boot chime's tail) has already decayed to silence by the time a game runs,
+    // so silence what the trigger just started, keeping only the harmless register values.
     this.ch1.enabled = false;
     this.ch2.enabled = false;
     this.ch3.enabled = false;
@@ -2033,14 +2010,10 @@ class APU {
     const fillRatio = this.available / this.RING_SIZE;
     const correction = 1 + (fillRatio - 0.5) * 0.02;
 
-    // this.cyclesPerSample assumes emulated cycles arrive at the real Game Boy clock rate
-    // (one real second = 4194304 cycles). The speed slider breaks that assumption: at e.g.
-    // 10% speed, only ~419430 cycles happen per real second, so if we kept using the normal
-    // cyclesPerSample the ring buffer would fill 10x slower than the audio callback drains
-    // it (constant underrun -> crackling/silence). Scaling the target down by the same
-    // speed factor keeps sample *production* paced to real time again, matching what the
-    // audio hardware *consumes* - which also naturally pitches audio down during slow motion,
-    // just like real hardware running underclocked.
+    // this.cyclesPerSample assumes cycles arrive at the real Game Boy clock rate. The speed
+    // slider breaks that: at 10% speed the ring buffer would fill 10x slower than the audio
+    // callback drains it (constant underrun). Scaling the target by this.emulator.speed keeps
+    // sample production paced to real time, which also naturally pitches audio down in slow motion.
     const targetCyclesPerSample = this.cyclesPerSample * correction * this.emulator.speed;
 
     this.sampleCounter += cycles;
@@ -2088,12 +2061,9 @@ class APU {
   }
 
   // Emits one output sample: the *average* mixed level over every cycle since the last emitted
-  // sample (rather than just whatever the state instantaneously happened to be), then resets the
-  // accumulators for the next interval. Averaging acts as a simple anti-aliasing low-pass, which
-  // matters most at speed > 1x where each output sample now spans many more raw cycles than the
-  // audio hardware's natural ~95-cycles-per-sample - without it, that gap between samples let the
-  // faster-oscillating (speed-scaled) waveform slip through un-sampled, aliasing into garbled or
-  // outright wrong-sounding pitches instead of a clean sped-up tone.
+  // sample, then resets the accumulators for the next interval. Averaging acts as a simple
+  // anti-aliasing low-pass, which matters most at speed > 1x where each sample spans many more
+  // raw cycles - without it the faster-oscillating waveform aliases into wrong-sounding pitches.
   emitSample() {
     const left = this.accCycles > 0 ? this.accL / this.accCycles : 0;
     const right = this.accCycles > 0 ? this.accR / this.accCycles : 0;
@@ -2138,17 +2108,12 @@ class Emulator {
     // Gates the frame-activity/interrupt-log style bookkeeping that's cheap enough to leave
     // running for any debug tab (see requestInterrupt() etc below) - the UI layer
     // (emu-gb-debug.js's applyMode()) flips this to match the play/debug mode toggle.
-    // Defaults to true since debug mode is the default UI state (see applyMode()).
     this.trackAccess = true;
 
-    // Finer-grained gates for the two hottest pieces of debug instrumentation, each of which
-    // runs on every single memory access or every single instruction. Unlike trackAccess
-    // above, these track whether the *specific* tab that consumes them is actually the open
-    // one - not just whether debug mode as a whole is on - since paying their cost while,
-    // say, the Tile Viewer or Trace tab is open (for trackMemMap) is pure waste. Both default
-    // to false even though debug mode defaults to on, because the default active debug tab
-    // is Registers, not Mem Map/Banking/Trace. Kept in sync by emu-gb-debug.js's tab-
-    // switching code and applyMode().
+    // Finer-grained gates for the two hottest pieces of debug instrumentation (run on every
+    // memory access / every instruction). Unlike trackAccess, these track whether the
+    // *specific* tab that consumes them is open, since paying their cost for a tab that
+    // isn't visible is pure waste. Kept in sync by emu-gb-debug.js's tab-switching code.
     this.trackMemMap = false; // Memory Map or MBC Banking tab is the active debug tab
     this.trackTrace = false;  // Execution Trace tab is the active debug tab
 
@@ -2157,14 +2122,10 @@ class Emulator {
     this._frameAcc = 0;      // accumulated (speed-scaled) ms available to spend on emulated frames
 
     // Rendering (canvas draw + debug panel refresh) is paced against *real* elapsed time,
-    // separately from _frameAcc above. _frameAcc is deliberately scaled by this.speed (that's
-    // what makes 2x/3x/4x actually run the game faster), but that means at speed > 1 it crosses
-    // the "one emulated frame is ready" threshold more often per real second than a display's
-    // refresh interval would otherwise allow - e.g. a 144Hz screen throttles draws to ~59.73/s
-    // at 1x (each draw needs ~16.74ms of real time to accumulate), but at 4x only ~4.2ms of real
-    // time is needed per draw, so draws can fire close to the display's native 144Hz instead.
-    // _lastRenderTime/RENDER_INTERVAL_MS below gate draw()/refreshDebugTools() to ~60/s no
-    // matter how fast emulation itself is running or how high the display's refresh rate is.
+    // separately from _frameAcc above. _frameAcc is scaled by this.speed (making 2x/3x/4x run
+    // faster), but that means at speed > 1 draws could fire close to a high-refresh display's
+    // native rate instead of the intended ~60/s. _lastRenderTime/RENDER_INTERVAL_MS below gate
+    // draw()/refreshDebugTools() to ~60/s regardless of emulation speed or display refresh rate.
     this._lastRenderTime = 0;
 
     this._fpsFrames = 0;
@@ -2323,12 +2284,10 @@ class Emulator {
 
     const pcBefore = this.cpu.PC;
     const wasHalted = this.cpu.halted;
-    // snapshotRegs/pushTrace/diffRegs below exist purely to feed the Execution Trace debug
-    // panel, but without this gate they used to run on *every instruction* (~1M times/sec):
-    // a fresh register-snapshot object plus a diff string allocated every single step,
-    // whether or not the Trace panel was even the visible tab. trackTrace mirrors whether
-    // the Execution Trace tab is actually open (see emu-gb-debug.js's tab-switching code),
-    // not just whether debug mode as a whole is on.
+    // Gates snapshotRegs/pushTrace/diffRegs below, which exist purely to feed the Execution
+    // Trace debug panel - without it they'd allocate a snapshot + diff string on every single
+    // instruction (~1M times/sec) even while that tab isn't open. trackTrace mirrors whether
+    // the Execution Trace tab is actually the active one (see emu-gb-debug.js's tab-switching).
     const tracking = this.trackTrace;
     let opcode = null;
     let traceIndex = -1;
@@ -2359,11 +2318,9 @@ class Emulator {
 
   // Feeds the T-cycles one CPU step just took to the PPU/timer/APU, and returns how many
   // cycles that step should count against the per-frame cycle budget runFrame() uses (see
-  // Emulator.CYCLES_PER_FRAME). On DMG these are always the same number - split into its own
-  // method purely so CGBEmulator can override it: in CGB double-speed mode the CPU consumes
-  // T-cycles twice as fast, so the PPU/APU (whose real-time behavior must NOT speed up, or
-  // the screen/audio would run at double rate) need half as many cycles fed to them, while
-  // the frame-budget count must follow the PPU's pace, not the CPU's - see CGBEmulator.
+  // Emulator.CYCLES_PER_FRAME). Split into its own method so CGBEmulator can override it: in
+  // CGB double-speed mode the CPU consumes T-cycles twice as fast, but the PPU/APU's real-time
+  // behavior must not speed up, so they need half as many cycles fed to them.
   stepHardware(cycles) {
     this.ppu.step(cycles);
     this.timer.step(cycles);
@@ -2535,10 +2492,9 @@ class Emulator {
   }
 
   // Returns trace entries oldest-first, most-recently-executed last. Each entry includes the
-  // ring buffer's physical `idx` (0..TRACE_SIZE-1) it was read from, so a caller like
-  // drawTrace() can cache per-slot decoded/explained text instead of recomputing it every
-  // redraw - the same idx tends to hold the same instruction bytes across consecutive frames
-  // whenever the game is spinning in a loop.
+  // ring buffer's physical `idx` it was read from, so a caller like drawTrace() can cache
+  // per-slot decoded text instead of recomputing it every redraw - the same idx tends to hold
+  // the same instruction bytes across consecutive frames when the game is spinning in a loop.
   getTraceEntries() {
     const entries = [];
     const oldest = this.traceFilled < this.TRACE_SIZE ? 0 : this.traceWritePos;
@@ -2585,11 +2541,9 @@ class Emulator {
     if (framesRun > 0) {
       // Cap actual rendering (canvas draw + debug panel refresh) to ~60/s using a plain
       // real-time gate, independent of _frameAcc. Without this, _frameAcc's threshold gets
-      // crossed more often per real second at speed > 1 (it's speed-scaled on purpose, so
-      // 2x/3x/4x really do run the game faster), which on a >60Hz display let draws fire at
-      // close to the panel's native refresh rate instead of staying capped near 60 - wasted
-      // work with no visible smoothness benefit since the game itself only produces a new
-      // frame every ~16.74ms of emulated time regardless of how fast that time passes.
+      // crossed more often per real second at speed > 1, letting draws fire close to a
+      // >60Hz display's native refresh rate - wasted work, since the game itself only
+      // produces a new frame every ~16.74ms of emulated time regardless of speed.
       const RENDER_MS = 1000 / 60;
       if (now - this._lastRenderTime >= RENDER_MS - 1) { // -1ms slack absorbs rAF jitter
         this._lastRenderTime = now;

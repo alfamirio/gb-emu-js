@@ -1,6 +1,6 @@
 # JS GB Emulator
 
-A from-scratch, single-file DMG (original Game Boy) emulator written in plain JavaScript. Built as an educational reference demonstrating how the LR35902 CPU, PPU, and memory map work together to turn a ROM file into a running game.
+A DMG (original Game Boy) emulator written in plain JavaScript. Built as an educational reference demonstrating how the LR35902 CPU, PPU, and memory map work together to turn a ROM file into a running game.
 
 **This project is intended for educational use** — for learning how a real CPU/PPU/memory bus fits together, not as a polished player. 
 Alongside normal emulation, it exposes the machine's internals as you go:
@@ -20,13 +20,9 @@ Alongside normal emulation, it exposes the machine's internals as you go:
 
 ## Scope limitations
 
-Intentionally omitted to keep the source readable for students:
-* Game Boy Color (GBC).
-* Sub-instruction cycle-exact PPU/timer/APU edge cases.
-
 It does implement the full DMG CPU, background/window/sprite rendering, timers, joypad input, all 4 sound channels, and several types of cartridges — enough to run many games.
 
-Read the heavily commented source (view page source) for implementation details.
+Read the heavily commented source for implementation details.
 
 ## How it fits together
 
@@ -83,7 +79,7 @@ At power-on this emulator skips the real boot ROM and initializes registers dire
 | **Tile / Tilemap** | 8×8 pixel graphic block; 32×32 grid of tile indices forming a layer. |
 
 ## MBC reference: every known Game Boy mapper
-**Only GB. no GBC implemented.**
+**Only GB and GBC cores implemented.** No GBA or further (and will not be implemented, out of scope of this project).
 
 Only **ROM ONLY**, **MBC1**, **MBC2**, **MBC3** and **MBC5** are implemented here (percentages are rough estimates):
 
@@ -102,6 +98,7 @@ Notes: MBC1 and MBC5 together dominate the library (adoption flipped to MBC5 onc
 **[Pan Docs](https://gbdev.io/pandocs/)** is the definitive community-maintained Game Boy hardware reference this emulator is based on. You can use rgbds and [rgbds-live](https://github.com/gbdev/rgbds-live) to compile your own games. A small snake demo game is included in this repository, compiled from asm and c code also included.
 
 You can find GB homebrew games at [itch.io](https://itch.io/games/free/tag-gameboy). Check also itch.io [gbjam](https://itch.io/jam/gbjam-13).
+It is recommended to use GB roms (no GBC) for simplicity.
 
 Examples:
 - [birb](https://lazydevs.itch.io/birb). H platf.

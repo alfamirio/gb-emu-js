@@ -102,19 +102,17 @@ Known CGB-specific simplifications (consistent with the DMG core's own documente
 | **HDMA / GDMA** | CGB bulk VRAM transfer, either instant (general-purpose) or one block per H-Blank. |
 
 ## MBC reference: every known Game Boy mapper
-**Only GB and GBC cores implemented.** No GBA or further (and will not be implemented, out of scope of this project).
+**Only GB and GBC cores implemented.** No GBA or beyond (and will not implement, out of scope of this project).
 
-Only **ROM ONLY**, **MBC1**, **MBC2**, **MBC3** and **MBC5** are implemented here (percentages are rough estimates):
+Only **ROM ONLY**, **MBC1**, **MBC2**, **MBC3** and **MBC5** are implemented here. Other MBC or custom solutions not worth implementing.
 
-| Mapper | Implemented? | Max ROM | Max RAM | RTC | Rumble | ~% of library | Example games |
+| Mapper | Impl? | Max ROM | Max RAM | RTC | Rumble | ~% of library | Example games |
 |---|---|---|---|---|---|---|---|
-| **ROM ONLY** | ✅ | 32 KB | 8 KB (optional) | No | No | ~2-3% | *Tetris*, *Alleyway* |
-| **MBC1** | ✅ | 2 MB (125 usable banks) | 32 KB | No | No | ~35-40% | *Pokémon Red/Blue*, *Zelda: Link's Awakening* |
-| **MBC2** | ✅ | 256 KB | 512×4 bit, on-chip | No | No | ~2-3% | *Kirby's Pinball Land*, *Final Fantasy Legend* |
-| **MBC3** | ✅ | 2 MB | 32 KB (64 KB Crystal/MBC30) | ✅ | No | ~15-20% | *Pokémon Gold/Silver/Crystal* |
-| **MBC5** | ✅ | 8 MB | 128 KB | No | ✅ optional | ~35-40% | *Pokémon Yellow*, *Wario Land 2* |
-
-Notes: MBC1 and MBC5 together dominate the library (adoption flipped to MBC5 once GBC launched, since it's the only mapper guaranteed correct in CGB double-speed mode). MBC3 is the only one here with a built-in RTC (used by *Pokémon Gold/Silver/Crystal* for day/night and berry growth). Other MBC or custom solutions not worth implementing.
+| **ROM ONLY** | ✅ | 32 KB | 8 KB opt | ❌ | ❌ | ~2-3% | *Tetris*, *SML1* |
+| **MBC1** | ✅ | 2 MB | 32 KB | ❌ | ❌ | ~35-40% | *Pok Red*, *Zelda LA*, *SML2*, *WL1* |
+| **MBC2** | ✅ | 256 KB | 512×4 bit, on-chip | ❌ | ❌ | ~2-3% | *Kirby PL* |
+| **MBC3** | ✅ | 2 MB | 32 KB (64 KB MBC30) | ✅ | ❌ | ~15-20% | *Pok Gold* |
+| **MBC5** | ✅ | 8 MB | 128 KB | ❌ | ✅ opt | ~35-40% | *Pok Yellow*, *Zelda OoS*, *WL3* |
 
 ## Further reading
 

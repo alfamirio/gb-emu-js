@@ -870,15 +870,27 @@ function makePanelVisToggle(toggleId, labelId, bodyClass, configKey, onShow) {
   const toggle = document.getElementById(toggleId);
   const label = document.getElementById(labelId);
 
-  function apply() {
+  // Just reflects toggle.checked into the DOM (body class + label) - no persistence, no
+  // onShow. Split out from apply() so setup below can sync the panel's actual visibility to
+  // whatever the checkbox starts at (HTML default or restored from saved config) without
+  // firing onShow before this panel's own canvases/elements are declared later in the file.
+  function syncVisualState() {
     const visible = toggle.checked;
     document.body.classList.toggle(bodyClass, !visible);
     label.classList.toggle('active', visible);
-    saveUIConfig({ [configKey]: visible });
-    if (visible && typeof onShow === 'function') onShow();
+  }
+
+  function apply() {
+    syncVisualState();
+    saveUIConfig({ [configKey]: toggle.checked });
+    if (toggle.checked && typeof onShow === 'function') onShow();
   }
 
   if (typeof savedUIConfig[configKey] === 'boolean') toggle.checked = savedUIConfig[configKey];
+  // Without this, a panel that should start hidden (no saved config yet, or saved as hidden)
+  // stayed visible - the 'hide-*' body class was previously only ever added inside apply(),
+  // which only ran once the user interacted with the toggle.
+  syncVisualState();
   toggle.addEventListener('change', apply);
   return apply;
 }

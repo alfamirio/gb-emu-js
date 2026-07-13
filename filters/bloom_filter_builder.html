@@ -3,104 +3,193 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ROM Bloom Filter Generator</title>
+    <title>Universal Multi-Schema Bloom Filter Tool</title>
+    <!-- JSZip included to handle multi-file export arrays asynchronously -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
         body {
             font-family: system-ui, -apple-system, sans-serif;
-            max-width: 650px;
-            margin: 40px auto;
-            padding: 0 20px;
-            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+            line-height: 1.4;
             background-color: #121214;
             color: #e1e1e6;
         }
-        .card {
-            background: #202024;
-            padding: 25px;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-            margin-bottom: 20px;
-            border: 1px solid #29292e;
-        }
-        h2 { margin-top: 0; color: #fff; border-bottom: 1px solid #29292e; padding-bottom: 8px; }
-        .config-row {
+        .navbar {
+            background-color: #202024;
+            border-bottom: 1px solid #29292e;
+            padding: 8px 20px;
             display: flex;
-            gap: 15px;
+            justify-content: space-between;
+            align-items: center;
+            box-sizing: border-box;
+            width: 100%;
+        }
+        .navbar-brand {
+            font-weight: bold;
+            color: #fff;
+            font-size: 1.1em;
+        }
+        .main-container {
+            max-width: 900px;
+            margin: 15px auto;
+            padding: 0 15px;
+        }
+        .intro-section {
             margin-bottom: 15px;
         }
-        .config-group {
+        .intro-section p {
+            margin: 4px 0 0 0;
+            font-size: 0.9em;
+            color: #a8a8b3;
+        }
+        .main-layout {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            align-items: stretch;
+        }
+        .column {
+            display: flex;
+            flex-direction: column;
+        }
+        .card {
+            background: #202024;
+            padding: 15px;
+            border-radius: 6px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            border: 1px solid #29292e;
+            box-sizing: border-box;
             flex: 1;
             display: flex;
             flex-direction: column;
         }
-        label {
-            font-size: 0.85em;
-            color: #a8a8b3;
-            margin-bottom: 4px;
+        h1 {
+            font-size: 1.4em;
+            margin: 0;
         }
-        input[type="text"], input[type="number"], select {
-            background: #121214;
-            color: #fff;
-            padding: 10px;
-            border: 1px solid #29292e;
-            border-radius: 4px;
-            box-sizing: border-box;
-        }
-        input:focus, select:focus {
-            outline: 2px solid #4ea8de;
+        h2 { 
+            font-size: 1.1em;
+            margin-top: 0; 
+            color: #fff; 
+            border-bottom: 1px solid #29292e; 
+            padding-bottom: 5px; 
+            margin-bottom: 12px; 
         }
         
+        .drop-zone {
+            background: #121214;
+            border: 2px dashed #3a3a42;
+            border-radius: 6px;
+            padding: 15px 10px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s, background-color 0.2s;
+            margin-bottom: 12px;
+        }
+        .drop-zone.dragover {
+            border-color: #4ea8de;
+            background: #1a242d;
+        }
+        .drop-zone p {
+            margin: 0;
+            font-size: 0.85em;
+            color: #a8a8b3;
+        }
+        .drop-zone strong {
+            color: #4ea8de;
+        }
+
+        /* Toggle Slider Switch CSS */
         .toggle-container {
             display: flex;
             align-items: center;
-            gap: 10px;
-            margin-bottom: 20px;
+            justify-content: space-between;
             background: #121214;
-            padding: 12px;
+            padding: 8px 12px;
             border-radius: 4px;
             border: 1px solid #29292e;
+            margin-bottom: 12px;
+        }
+        .toggle-label {
+            font-size: 0.85em;
+            font-weight: bold;
+            color: #e1e1e6;
         }
         .switch {
             position: relative;
             display: inline-block;
-            width: 44px;
-            height: 24px;
-            flex-shrink: 0;
+            width: 36px;
+            height: 20px;
         }
-        .switch input { opacity: 0; width: 0; height: 0; }
+        .switch input { 
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
         .slider {
             position: absolute;
             cursor: pointer;
             top: 0; left: 0; right: 0; bottom: 0;
             background-color: #3a3a42;
             transition: .2s;
-            border-radius: 24px;
+            border-radius: 20px;
         }
         .slider:before {
             position: absolute;
             content: "";
-            height: 16px;
-            width: 16px;
-            left: 4px;
-            bottom: 4px;
+            height: 14px; width: 14px;
+            left: 3px; bottom: 3px;
             background-color: white;
             transition: .2s;
             border-radius: 50%;
         }
-        input:checked + .slider { background-color: #4ea8de; }
-        input:checked + .slider:before { transform: translateX(20px); }
-        .toggle-label { font-size: 0.9em; color: #fff; cursor: pointer; }
+        input:checked + .slider {
+            background-color: #4ea8de;
+        }
+        input:checked + .slider:before {
+            transform: translateX(16px);
+        }
 
+        .config-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 0;
+        }
+        .config-group {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            margin-bottom: 12px;
+        }
+        label {
+            font-size: 0.8em;
+            color: #a8a8b3;
+            margin-bottom: 3px;
+        }
+        input[type="text"], input[type="number"], select {
+            background: #121214;
+            color: #fff;
+            padding: 6px 10px;
+            border: 1px solid #29292e;
+            border-radius: 4px;
+            box-sizing: border-box;
+            width: 100%;
+            font-size: 0.9em;
+        }
+        input:focus, select:focus {
+            outline: 2px solid #4ea8de;
+        }
         .stat-grid {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
-            gap: 10px;
-            margin-top: 15px;
-            font-size: 0.9em;
+            gap: 8px;
+            margin-bottom: 12px;
+            font-size: 0.85em;
         }
         .stat-box {
             background: #121214;
-            padding: 10px;
+            padding: 6px 10px;
             border-radius: 4px;
             border: 1px solid #29292e;
         }
@@ -108,137 +197,221 @@
             color: #4ea8de;
             font-weight: bold;
         }
-        .btn-container {
+        
+        .btn-row-inline {
             display: flex;
-            flex-direction: column;
-            gap: 10px;
-            margin-top: 15px;
-        }
-        .btn-row {
-            display: flex;
-            gap: 10px;
+            gap: 8px;
+            margin-top: auto;
         }
         button {
-            background: #4ea8de;
-            color: #121214;
             border: none;
-            padding: 12px;
+            padding: 8px 4px;
             border-radius: 4px;
             font-weight: bold;
             cursor: pointer;
             flex: 1;
-            font-size: 1em;
+            font-size: 0.8em;
+            text-align: center;
+            transition: background-color 0.15s ease, transform 0.1s ease;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
-        button:hover { background: #3a8ebd; }
-        button.secondary {
+        button:active {
+            transform: scale(0.98);
+        }
+        button.primary-bin {
+            background: #4ea8de;
+            color: #121214;
+        }
+        button.primary-bin:hover { background: #3a8ebd; }
+        
+        button.secondary-b64 {
             background: #29292e;
             color: #e1e1e6;
             border: 1px solid #3a3a42;
         }
-        button.secondary:hover { background: #3a3a42; }
-        button.js-btn {
-            background: #ff79c6;
+        button.secondary-b64:hover { background: #3a3a42; border-color: #4ea8de; }
+        
+        button.js-bundle {
+            background: #04d361;
             color: #121214;
         }
-        button.js-btn:hover { background: #ff55bb; }
+        button.js-bundle:hover { background: #029944; }
+
         #result {
-            margin-top: 15px;
+            margin-top: 10px;
             font-weight: bold;
-            padding: 12px;
+            padding: 8px 12px;
             border-radius: 4px;
             display: none;
+            font-size: 0.85em;
         }
         .match { background-color: #1b4332; color: #b7e4c7; border: 1px solid #2d6a4f; }
         .no-match { background-color: #4c1d1d; color: #f8d7da; border: 1px solid #6b2d2d; }
+        .schema-selector-box {
+            background: #1a1a1e;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px dashed #4ea8de;
+            margin-bottom: 12px;
+        }
         .file-list {
-            margin-top: 10px;
-            font-size: 0.85em;
+            margin-top: 6px;
+            font-size: 0.8em;
             color: #a8a8b3;
-            max-height: 100px;
+            max-height: 80px;
             overflow-y: auto;
             background: #121214;
-            padding: 8px;
+            padding: 6px;
             border-radius: 4px;
             border: 1px solid #29292e;
             display: none;
         }
+        .divider-text {
+            text-align: center;
+            font-size: 0.75em;
+            color: #a8a8b3;
+            margin: 8px 0;
+            position: relative;
+        }
+        .divider-text::before, .divider-text::after {
+            content: "";
+            position: absolute;
+            top: 50%;
+            width: 32%;
+            height: 1px;
+            background: #29292e;
+        }
+        .divider-text::before { left: 0; }
+        .divider-text::after { right: 0; }
     </style>
 </head>
 <body>
 
-    <h1>Bloom Filter Generator</h1>
-    <p>Configure parameters, then load one or more No-Intro <code>.dat</code> files to build optimized frameworks.</p>
+    <nav class="navbar">
+        <div class="navbar-brand">Filters Engine</div>
+        <div style="font-size: 0.85em; color: #a8a8b3;">Universal Side-by-Side Framework</div>
+    </nav>
 
-    <div class="card">
-        <h2>1. Configure & Load</h2>
-        <div class="config-row">
-            <div class="config-group">
-                <label for="fpRateInput">False Positive Rate</label>
-                <select id="fpRateInput">
-                    <option value="0.01">1%</option>
-                    <option value="0.001">0.1%</option>
-                    <option value="0.0001" selected>0.01%</option>
-                    <option value="0.00001">0.001%</option>
-                </select>
+    <div class="main-container">
+        <div class="intro-section">
+            <h1>Universal Bloom Filter Tool</h1>
+            <p>A Bloom filter is a space-efficient probabilistic data structure that eliminates false negatives.</p>
+        </div>
+
+        <div class="main-layout">
+            <!-- Left Column: Generator Configuration -->
+            <div class="column">
+                <div class="card">
+                    <h2>1. Configure & Load</h2>
+                    
+                    <div class="drop-zone" id="schemaDropZone">
+                        <p>Drag & drop layout schema files here or <strong>browse</strong></p>
+                        <p style="font-size: 0.75em; margin-top: 2px; color: #797986;">Supports .json, .csv, .xml, .dat</p>
+                        <input type="file" id="datFile" accept=".json,.csv,.xml,.dat" multiple style="display: none;" />
+                        <div id="fileListDisplay" class="file-list"></div>
+                    </div>
+
+                    <!-- Toggle Control Slider Layout -->
+                    <div class="toggle-container">
+                        <span class="toggle-label">Create single filter</span>
+                        <label class="switch">
+                            <input type="checkbox" id="combineToggle">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="config-row">
+                        <div class="config-group">
+                            <label for="fpRateInput">False Positive Rate</label>
+                            <select id="fpRateInput">
+                                <option value="0.01">1%</option>
+                                <option value="0.001">0.1%</option>
+                                <option value="0.0001" selected>0.01%</option>
+                                <option value="0.00001">0.001%</option>
+                            </select>
+                        </div>
+                        <div class="config-group">
+                            <label for="overrideCount">Override Items Count (Optional)</label>
+                            <input type="number" id="overrideCount" placeholder="Auto-detect" min="1" />
+                        </div>
+                    </div>
+
+                    <div id="schemaSelectorBox" class="schema-selector-box" style="display: none;">
+                        <div class="config-group" style="margin-bottom:0;">
+                            <label for="targetKeySelector" style="color: #4ea8de; font-weight: bold;">Select Data Target Property/Column:</label>
+                            <select id="targetKeySelector">
+                                <option value="">-- Choose a field --</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-grid">
+                        <div class="stat-box">Files Segmented: <span id="statFiles">0</span></div>
+                        <div class="stat-box">Hashes Mapped: <span id="statCount">0</span></div>
+                        <div class="stat-box">Allocated Memory: <span id="statSize">0 bytes</span></div>
+                        <div class="stat-box">Optimal Hashes (k): <span id="statHashes">0</span></div>
+                    </div>
+
+                    <div class="btn-row-inline" id="actionRowInline" style="visibility: hidden;">
+                        <button id="downloadBtn" class="primary-bin" title="Download Active (.bin)">Active Binary (.bin)</button>
+                        <button id="downloadB64Btn" class="secondary-b64" title="Download Active Base64 (.txt)">Base64 String (.txt)</button>
+                        <button id="downloadJsBtn" class="js-bundle" title="Download Bundle (game-filter-data.js)">JS Bundle (.js)</button>
+                    </div>
+                </div>
             </div>
-            <div class="config-group">
-                <label for="overrideCount">Override Games Count (Optional)</label>
-                <input type="number" id="overrideCount" placeholder="Auto-detect from file" min="1" />
+
+            <!-- Right Column: Verification Engine -->
+            <div class="column">
+                <div class="card" id="lookupCard">
+                    <h2>2. Verification Engine</h2>
+                    
+                    <div class="drop-zone" id="filterDropZone">
+                        <p>Drag & drop existing filter here or <strong>browse</strong></p>
+                        <p style="font-size: 0.75em; margin-top: 2px; color: #797986;">Supports exported .bin, .txt, .js files</p>
+                        <input type="file" id="importFilterFile" accept=".bin,.txt,.js" style="display: none;" />
+                        <div id="importStatus" style="font-size: 0.75em; color: #4ea8de; margin-top: 4px; display: none; text-align: left; background: #121214; padding: 4px 8px; border-radius: 4px; border: 1px solid #29292e;"></div>
+                    </div>
+
+                    <!-- Dynamic imported filter selector drop-down -->
+                    <div id="importedFilterSelectorBox" class="schema-selector-box" style="display: none; border-color: #04d361; margin-top: 5px;">
+                        <div class="config-group" style="margin-bottom:0;">
+                            <label for="importedActiveFilterSelector" style="color: #04d361; font-weight: bold;">Select Imported Filter Target:</label>
+                            <select id="importedActiveFilterSelector">
+                                <option value="all">-- All Filters (Scan Entire Bundle) --</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="divider-text">Execution</div>
+
+                    <div class="config-group" style="flex: none; margin-bottom: 0;">
+                        <label for="crcInput">Enter Target Hash Value to Test:</label>
+                        <input type="text" id="crcInput" placeholder="Type hex value to assert structural check..." />
+                    </div>
+                    <div id="result"></div>
+                </div>
             </div>
         </div>
-
-        <div class="toggle-container">
-            <label class="switch">
-                <input type="checkbox" id="combineToggle">
-                <span class="slider"></span>
-            </label>
-            <label for="combineToggle" class="toggle-label">Combine into a single bundle filter (global single key)</label>
-        </div>
-        
-        <div class="config-group" style="margin-bottom: 20px;">
-            <label for="datFile">Select No-Intro DAT File(s)</label>
-            <input type="file" id="datFile" accept=".dat" multiple />
-            <div id="fileListDisplay" class="file-list"></div>
-        </div>
-        
-        <div class="stat-grid">
-            <div class="stat-box">Total DATs Loaded: <span id="statFiles">0</span></div>
-            <div class="stat-box">Total Games Inserted: <span id="statCount">0</span></div>
-            <div class="stat-box">Total Allocated Memory: <span id="statSize">0 bytes</span></div>
-            <div class="stat-box">Last Active Optimal Hashes: <span id="statHashes">0</span></div>
-        </div>
-
-        <div class="btn-container">
-            <div class="btn-row">
-                <button id="downloadBtn" style="display: none;">Download Active (.bin)</button>
-                <button id="downloadB64Btn" class="secondary" style="display: none;">Download Active Base64 (.txt)</button>
-            </div>
-            <button id="downloadJsBtn" class="js-btn" style="display: none;">Download Bundle (bloom-filters-data.js)</button>
-        </div>
-    </div>
-
-    <div class="card" id="lookupCard" style="opacity: 0.3; pointer-events: none; transition: opacity 0.2s ease;">
-        <h2>2. Live Verification Engine</h2>
-        <p style="font-size:0.85em; margin-top:-5px; color:#a8a8b3;">Tests against the generated structure.</p>
-        <div class="config-group">
-            <label for="crcInput">Enter Target CRC32 Hash (8-character Hexadecimal):</label>
-            <input type="text" id="crcInput" placeholder="e.g., c5e40e24" maxlength="8" />
-        </div>
-        <div id="result"></div>
     </div>
 
     <script>
         class BloomFilter {
-            constructor(expectedElements, falsePositiveRate) {
-                this.n = expectedElements;
-                this.fpRate = falsePositiveRate;
-                this.m = Math.ceil((-this.n * Math.log(this.fpRate)) / (Math.log(2) ** 2));
-                this.k = Math.ceil((this.m / this.n) * Math.log(2));
-                this.bitArray = new Uint8Array(Math.ceil(this.m / 8));
+            constructor(m, k, existingBuffer = null) {
+                this.m = m;
+                this.k = k;
+                this.bitArray = existingBuffer ? new Uint8Array(existingBuffer) : new Uint8Array(Math.ceil(this.m / 8));
+            }
+
+            static createOptimal(expectedElements, falsePositiveRate) {
+                const m = Math.ceil((-expectedElements * Math.log(falsePositiveRate)) / (Math.log(2) ** 2));
+                const k = Math.ceil((m / expectedElements) * Math.log(2));
+                return new BloomFilter(m, k);
             }
 
             _hash(item, i) {
-                const salted = `${i}:${item.toLowerCase()}`;
+                const salted = `${i}:${item.toLowerCase().trim()}`;
                 let hash = 0x811c9dc5;
                 for (let j = 0; j < salted.length; j++) {
                     hash ^= salted.charCodeAt(j);
@@ -265,175 +438,396 @@
             }
         }
 
-        let rawFilesCache = []; 
-        let loadedFilters = [];  
+        let cacheRawFiles = []; 
+        let globalParsedRecords = []; 
         let activeFilter = null;
         let activeBaseName = "bloom-filter";
+        let trackingMultipleFilters = []; 
+        let importedFiltersMap = {};
 
-        function parseCleanKey(filename) {
-            const match = filename.match(/^[^([\.]+/);
-            if (match && match[0]) {
-                // Reemplaza espacios, guiones y caracteres especiales por guiones bajos (_)
-                let cleanName = match[0].trim().toLowerCase().replace(/[\s\-_]+/g, '_');
-                cleanName = cleanName.replace(/_+$/, ''); // Limpia guiones bajos sueltos al final
-                return cleanName || "rom";
-            }
-            return "rom";
-        }
+        function setupDropZone(zoneId, inputId, handleFilesFn) {
+            const zone = document.getElementById(zoneId);
+            const input = document.getElementById(inputId);
 
-        function buildFilterInstance(crcList, selectedFpRate, userCountOverride) {
-            const capacityTarget = isNaN(userCountOverride) || userCountOverride <= 0 ? crcList.length : userCountOverride;
-            const newFilter = new BloomFilter(capacityTarget, selectedFpRate);
-            crcList.forEach(crc => newFilter.add(crc));
-            return newFilter;
-        }
-
-        function refreshGlobalUI() {
-            if (loadedFilters.length === 0) return;
-
-            let totalGames = 0;
-            let totalBytes = 0;
-            
-            loadedFilters.forEach(f => {
-                totalGames += f.totalGames;
-                totalBytes += f.filterInstance.bitArray.byteLength + 5; 
-            });
-
-            document.getElementById('statFiles').textContent = rawFilesCache.length;
-            document.getElementById('statCount').textContent = totalGames.toLocaleString();
-            document.getElementById('statSize').textContent = `${(totalBytes / 1024).toFixed(2)} KB (${totalBytes} bytes)`;
-            
-            if (activeFilter) {
-                document.getElementById('statHashes').textContent = activeFilter.k;
-            }
-
-            const crcInput = document.getElementById('crcInput');
-            if (crcInput.value.trim().length === 8) {
-                crcInput.dispatchEvent(new Event('input'));
-            }
-        }
-
-        function processCachedData() {
-            if (rawFilesCache.length === 0) return;
-
-            const selectedFpRate = parseFloat(document.getElementById('fpRateInput').value);
-            const userCountOverride = parseInt(document.getElementById('overrideCount').value, 10);
-            const shouldCombine = document.getElementById('combineToggle').checked;
-
-            loadedFilters = [];
-
-            if (shouldCombine) {
-                let masterCrcList = [];
-                rawFilesCache.forEach(file => {
-                    masterCrcList = masterCrcList.concat(file.crcs);
-                });
-
-                if (masterCrcList.length > 0) {
-                    const combinedFilter = buildFilterInstance(masterCrcList, selectedFpRate, userCountOverride);
-                    loadedFilters.push({
-                        keyName: "combined",
-                        totalGames: masterCrcList.length,
-                        filterInstance: combinedFilter
-                    });
+            zone.addEventListener('click', () => input.click());
+            zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('dragover'); });
+            zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+            zone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                zone.classList.remove('dragover');
+                if (e.dataTransfer.files.length > 0) {
+                    handleFilesFn(e.dataTransfer.files);
                 }
-            } else {
-                rawFilesCache.forEach(file => {
-                    const key = parseCleanKey(file.filename);
-                    const fileFilter = buildFilterInstance(file.crcs, selectedFpRate, userCountOverride);
-                    loadedFilters.push({
-                        keyName: key,
-                        totalGames: file.crcs.length,
-                        filterInstance: fileFilter
-                    });
-                });
-            }
-
-            if (loadedFilters.length > 0) {
-                const lastEntry = loadedFilters[loadedFilters.length - 1];
-                activeFilter = lastEntry.filterInstance;
-                activeBaseName = shouldCombine ? "combined_bloom_filter" : `${lastEntry.keyName}_bloom_filter`;
-            }
-
-            refreshGlobalUI();
+            });
+            input.addEventListener('change', (e) => {
+                if (e.target.files.length > 0) {
+                    handleFilesFn(e.target.files);
+                }
+            });
         }
 
-        document.getElementById('fpRateInput').addEventListener('change', processCachedData);
-        document.getElementById('overrideCount').addEventListener('input', processCachedData);
-        document.getElementById('combineToggle').addEventListener('change', processCachedData);
+        setupDropZone('schemaDropZone', 'datFile', (files) => {
+            cacheRawFiles = Array.from(files);
+            processSchemaFiles();
+        });
+        setupDropZone('filterDropZone', 'importFilterFile', (files) => processImportFilter(files[0]));
 
-        document.getElementById('datFile').addEventListener('change', async function(e) {
-            const files = e.target.files;
-            if (files.length === 0) return;
+        document.getElementById('combineToggle').addEventListener('change', processSchemaFiles);
 
-            rawFilesCache = []; 
+        function parseFileToObjects(text, filename) {
+            const ext = filename.split('.').pop().toLowerCase();
+            let records = [];
+
+            try {
+                if (ext === 'json') {
+                    const parsed = JSON.parse(text);
+                    records = Array.isArray(parsed) ? parsed : (parsed.items || parsed.games || [parsed]);
+                } 
+                else if (ext === 'csv') {
+                    const lines = text.split(/\r?\n/).filter(l => l.trim() !== '');
+                    if (lines.length > 1) {
+                        const headers = lines[0].split(',').map(h => h.replace(/["']/g, '').trim());
+                        for (let i = 1; i < lines.length; i++) {
+                            const cells = lines[i].split(',');
+                            let obj = {};
+                            headers.forEach((h, index) => {
+                                obj[h] = cells[index] ? cells[index].replace(/["']/g, '').trim() : '';
+                            });
+                            records.push(obj);
+                        }
+                    }
+                } 
+                else if (ext === 'xml' || ext === 'dat') {
+                    const parser = new DOMParser();
+                    const xmlDoc = parser.parseFromString(text, "text/xml");
+                    
+                    let roms = xmlDoc.querySelectorAll('rom');
+                    if (roms.length > 0) {
+                        for (let i = 0; i < roms.length; i++) {
+                            let node = roms[i];
+                            let obj = {};
+                            for (let attr of node.attributes) {
+                                obj[attr.name] = attr.value;
+                            }
+                            if (Object.keys(obj).length > 0) records.push(obj);
+                        }
+                    } else {
+                        let items = xmlDoc.querySelectorAll('game, item, row');
+                        if (items.length === 0) items = xmlDoc.documentElement.children;
+                        for (let i = 0; i < items.length; i++) {
+                            let node = items[i];
+                            let obj = {};
+                            for (let attr of node.attributes) {
+                                obj[attr.name] = attr.value;
+                            }
+                            for (let child of node.children) {
+                                for (let attr of child.attributes) {
+                                    obj[attr.name] = attr.value;
+                                }
+                            }
+                            if (Object.keys(obj).length > 0) records.push(obj);
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error("Layout extraction error inside: " + filename, err);
+            }
+            return records;
+        }
+
+        async function processSchemaFiles() {
+            if(cacheRawFiles.length === 0) return;
+            
+            globalParsedRecords = [];
+            trackingMultipleFilters = [];
+            
             const fileListDisplay = document.getElementById('fileListDisplay');
             fileListDisplay.innerHTML = "";
             fileListDisplay.style.display = "block";
 
-            for (let i = 0; i < files.length; i++) {
-                const file = files[i];
+            const discoveredKeys = new Set();
+            const createSingle = document.getElementById('combineToggle').checked;
+            let totalFilesLoaded = 0;
+
+            for (let i = 0; i < cacheRawFiles.length; i++) {
+                const file = cacheRawFiles[i];
                 const text = await file.text();
-                
-                const crcRegex = /crc="([0-9A-Fa-f]{8})"/gi;
-                let match;
-                let crcList = [];
+                const records = parseFileToObjects(text, file.name);
 
-                while ((match = crcRegex.exec(text)) !== null) {
-                    crcList.push(match[1]);
-                }
+                if (records.length > 0) {
+                    totalFilesLoaded++;
+                    const fileCleanName = file.name.split('.')[0];
+                    
+                    if (!createSingle) {
+                        trackingMultipleFilters.push({
+                            name: fileCleanName,
+                            records: records
+                        });
+                    } else {
+                        globalParsedRecords = globalParsedRecords.concat(records);
+                    }
 
-                if (crcList.length > 0) {
-                    rawFilesCache.push({
-                        filename: file.name,
-                        crcs: crcList
+                    records.forEach(rec => {
+                        Object.keys(rec).forEach(k => discoveredKeys.add(k));
                     });
 
                     const fileBadge = document.createElement('div');
-                    fileBadge.textContent = `✓ Loaded: ${file.name} (${crcList.length.toLocaleString()} codes)`;
+                    fileBadge.textContent = `✓ Loaded: ${file.name} (${records.length.toLocaleString()} items)`;
                     fileListDisplay.appendChild(fileBadge);
                 }
             }
 
-            if (rawFilesCache.length === 0) {
-                alert("No valid CRC32 attributes located.");
-                return;
+            activeBaseName = (cacheRawFiles.length === 1 || !createSingle) 
+                ? cacheRawFiles[0].name.split('.')[0] 
+                : "combined_bloom_filters";
+
+            const selector = document.getElementById('targetKeySelector');
+            selector.innerHTML = '<option value="">-- Choose target data property --</option>';
+            
+            let matchedDefaultKey = "";
+            discoveredKeys.forEach(key => {
+                const opt = document.createElement('option');
+                opt.value = key;
+                opt.textContent = key;
+                if (!matchedDefaultKey && ['crc', 'crc32', 'md5', 'sha1', 'sha256', 'hash', 'id'].includes(key.toLowerCase())) {
+                    opt.selected = true;
+                    matchedDefaultKey = key;
+                }
+                selector.appendChild(opt);
+            });
+
+            document.getElementById('schemaSelectorBox').style.display = 'block';
+            document.getElementById('statFiles').textContent = totalFilesLoaded.toString();
+            
+            if (selector.value) {
+                buildBloomFromSelectedKey();
+            }
+        }
+
+        document.getElementById('targetKeySelector').addEventListener('change', buildBloomFromSelectedKey);
+        document.getElementById('fpRateInput').addEventListener('change', buildBloomFromSelectedKey);
+        document.getElementById('overrideCount').addEventListener('input', buildBloomFromSelectedKey);
+
+        function buildBloomFromSelectedKey() {
+            const targetKey = document.getElementById('targetKeySelector').value;
+            if (!targetKey) return;
+
+            const createSingle = document.getElementById('combineToggle').checked;
+            const selectedFpRate = parseFloat(document.getElementById('fpRateInput').value);
+            const userCountOverride = parseInt(document.getElementById('overrideCount').value, 10);
+
+            if (createSingle) {
+                const valueList = globalParsedRecords
+                    .map(r => r[targetKey])
+                    .filter(val => val !== undefined && val !== null && val !== '');
+
+                if (valueList.length === 0) return;
+
+                const capacityTarget = isNaN(userCountOverride) || userCountOverride <= 0 ? valueList.length : userCountOverride;
+                activeFilter = BloomFilter.createOptimal(capacityTarget, selectedFpRate);
+                valueList.forEach(item => activeFilter.add(item));
+
+                document.getElementById('statCount').textContent = valueList.length.toLocaleString();
+                const totalBytes = activeFilter.bitArray.byteLength + 5;
+                document.getElementById('statSize').textContent = `${(totalBytes / 1024).toFixed(2)} KB`;
+                document.getElementById('statHashes').textContent = activeFilter.k;
+            } else {
+                let cumulativeCount = 0;
+                let cumulativeBytes = 0;
+                let finalK = 0;
+
+                trackingMultipleFilters.forEach(itemGroup => {
+                    const localValues = itemGroup.records
+                        .map(r => r[targetKey])
+                        .filter(val => val !== undefined && val !== null && val !== '');
+                    
+                    const capacityTarget = isNaN(userCountOverride) || userCountOverride <= 0 ? localValues.length : userCountOverride;
+                    if(capacityTarget > 0) {
+                        const filterInstance = BloomFilter.createOptimal(capacityTarget, selectedFpRate);
+                        localValues.forEach(v => filterInstance.add(v));
+                        itemGroup.generatedFilter = filterInstance;
+                        
+                        cumulativeCount += localValues.length;
+                        cumulativeBytes += (filterInstance.bitArray.byteLength + 5);
+                        finalK = filterInstance.k;
+                    }
+                });
+
+                if (trackingMultipleFilters.length > 0 && trackingMultipleFilters[0].generatedFilter) {
+                    activeFilter = trackingMultipleFilters[0].generatedFilter; 
+                }
+
+                document.getElementById('statCount').textContent = `${cumulativeCount.toLocaleString()} (Total)`;
+                document.getElementById('statSize').textContent = `${(cumulativeBytes / 1024).toFixed(2)} KB package`;
+                document.getElementById('statHashes').textContent = finalK;
             }
 
-            processCachedData();
+            document.getElementById('actionRowInline').style.visibility = "visible";
+            triggerLiveVerify();
+        }
 
-            const lookupCard = document.getElementById('lookupCard');
-            lookupCard.style.opacity = "1";
-            lookupCard.style.pointerEvents = "auto";
+        async function processImportFilter(file) {
+            if (!file) return;
+
+            const ext = file.name.split('.').pop().toLowerCase();
+            const statusDiv = document.getElementById('importStatus');
+            const selectorBox = document.getElementById('importedFilterSelectorBox');
+            const selector = document.getElementById('importedActiveFilterSelector');
             
-            document.getElementById('downloadBtn').style.display = "block";
-            document.getElementById('downloadB64Btn').style.display = "block";
-            document.getElementById('downloadJsBtn').style.display = "block";
-            document.getElementById('crcInput').value = '';
-            document.getElementById('result').style.display = "none";
+            statusDiv.style.display = "block";
+            statusDiv.textContent = "Processing layout...";
+            selectorBox.style.display = "none";
+            selector.innerHTML = '<option value="all">-- All Filters (Scan Entire Bundle) --</option>';
+            importedFiltersMap = {};
+            activeFilter = null;
+
+            try {
+                if (ext === 'js') {
+                    const text = await file.text();
+                    const clearText = text.replace(/window\.GAME_FILTER_DATA\s*=\s*\{/, '{').replace(/\};?\s*$/, '}');
+                    
+                    let parsedJsObject;
+                    try {
+                        parsedJsObject = new Function(`return ${clearText};`)();
+                    } catch(e) {
+                        parsedJsObject = {};
+                        const matches = text.matchAll(/"([^"]+)"\s*:\s*"([^"]+)"/g);
+                        for (const match of matches) {
+                            parsedJsObject[match[1]] = match[2];
+                        }
+                    }
+
+                    const keys = Object.keys(parsedJsObject || {});
+                    if (keys.length === 0) throw new Error("No properties found in file.");
+
+                    keys.forEach(key => {
+                        importedFiltersMap[key] = parsedJsObject[key];
+                        const opt = document.createElement('option');
+                        opt.value = key;
+                        opt.textContent = `${key} (${Math.round(atob(parsedJsObject[key]).length / 1024)} KB)`;
+                        selector.appendChild(opt);
+                    });
+
+                    selectorBox.style.display = "block";
+                    selector.value = "all";
+                    
+                    statusDiv.textContent = `✓ Loaded JS Bundle: ${keys.length} filter variants detected.`;
+                    
+                } else {
+                    let binaryData;
+                    if (ext === 'bin') {
+                        const buffer = await file.arrayBuffer();
+                        binaryData = new Uint8Array(buffer);
+                    } else {
+                        const text = await file.text();
+                        binaryData = base64ToUint8Array(text.trim());
+                    }
+                    initializeFilterFromBuffer(binaryData);
+                    statusDiv.textContent = `✓ Loaded: m=${activeFilter.m}, k=${activeFilter.k} (${activeFilter.bitArray.byteLength} array bytes)`;
+                }
+                triggerLiveVerify();
+            } catch (err) {
+                console.error(err);
+                statusDiv.textContent = "❌ Failed to reconstruct parameters.";
+                activeFilter = null;
+            }
+        }
+
+        document.getElementById('importedActiveFilterSelector').addEventListener('change', function(e) {
+            const selectedKey = e.target.value;
+            if (selectedKey === "all") {
+                activeFilter = null; 
+                triggerLiveVerify();
+            } else if (selectedKey && importedFiltersMap[selectedKey]) {
+                loadFilterFromBase64String(importedFiltersMap[selectedKey]);
+                triggerLiveVerify();
+            }
         });
 
-        document.getElementById('crcInput').addEventListener('input', function(e) {
-            if (!activeFilter) return;
-            
-            const val = e.target.value.trim();
-            const resultDiv = document.getElementById('result');
+        function loadFilterFromBase64String(b64Str) {
+            const binaryData = base64ToUint8Array(b64Str);
+            initializeFilterFromBuffer(binaryData);
+        }
 
-            if (val.length < 8) {
+        function base64ToUint8Array(base64String) {
+            const binaryString = atob(base64String);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes;
+        }
+
+        function initializeFilterFromBuffer(binaryData) {
+            if (binaryData.length < 5) throw new Error("Invalid header size.");
+            const dataView = new DataView(binaryData.buffer, binaryData.byteOffset, binaryData.byteLength);
+            const m = dataView.getUint32(0, true);
+            const k = dataView.getUint8(4);
+            const bitArrayBuffer = binaryData.subarray(5);
+            activeFilter = new BloomFilter(m, k, bitArrayBuffer);
+        }
+
+        document.getElementById('crcInput').addEventListener('input', triggerLiveVerify);
+
+        function triggerLiveVerify() {
+            const val = document.getElementById('crcInput').value.trim();
+            const resultDiv = document.getElementById('result');
+            const currentTarget = document.getElementById('importedActiveFilterSelector').value;
+
+            if (!val) {
                 resultDiv.style.display = "none";
                 return;
             }
 
-            resultDiv.style.display = "block";
-            const isCommercial = activeFilter.contains(val);
+            if (currentTarget === "all") {
+                resultDiv.style.display = "block";
+                let matchingFilters = [];
 
-            if (isCommercial) {
+                Object.keys(importedFiltersMap).forEach(key => {
+                    try {
+                        const binaryData = base64ToUint8Array(importedFiltersMap[key]);
+                        if (binaryData.length >= 5) {
+                            const dataView = new DataView(binaryData.buffer, binaryData.byteOffset, binaryData.byteLength);
+                            const m = dataView.getUint32(0, true);
+                            const k = dataView.getUint8(4);
+                            const bitArrayBuffer = binaryData.subarray(5);
+                            const tempFilter = new BloomFilter(m, k, bitArrayBuffer);
+                            
+                            if (tempFilter.contains(val)) {
+                                matchingFilters.push(key);
+                            }
+                        }
+                    } catch (e) {
+                        console.error(`Error scanning filter ${key}:`, e);
+                    }
+                });
+
+                if (matchingFilters.length > 0) {
+                    resultDiv.className = "match";
+                    resultDiv.textContent = `Match Found inside: [ ${matchingFilters.join(", ")} ]`;
+                } else {
+                    resultDiv.className = "no-match";
+                    resultDiv.textContent = "No Match: Absolute absence confirmed across all bundle filters.";
+                }
+                return;
+            }
+
+            if (!activeFilter) {
+                resultDiv.style.display = "block";
+                resultDiv.className = "no-match";
+                resultDiv.textContent = "No filter loaded to evaluate.";
+                return;
+            }
+
+            resultDiv.style.display = "block";
+            if (activeFilter.contains(val)) {
                 resultDiv.className = "match";
-                resultDiv.textContent = `Match Verified: Hash structure matches active filter constraints.`;
+                resultDiv.textContent = `Match Found: Footprint exists inside filter boundaries.`;
             } else {
                 resultDiv.className = "no-match";
-                resultDiv.textContent = `Absolute Negation: Hash strictly identified as non-commercial or missing.`;
+                resultDiv.textContent = `No Match: Absolute absence confirmed.`;
             }
-        });
+        }
 
         function generateCombinedBuffer(targetFilter) {
             const headerBuffer = new ArrayBuffer(5);
@@ -455,68 +849,77 @@
             return btoa(binaryString);
         }
 
-        document.getElementById('downloadBtn').addEventListener('click', function() {
-            if (!activeFilter) return;
-
-            const packedData = generateCombinedBuffer(activeFilter);
-            const blob = new Blob([packedData], { type: "application/octet-stream" });
+        function triggerTriggeredDownload(blob, outputFilename) {
             const url = URL.createObjectURL(blob);
-            
             const a = document.createElement('a');
             a.href = url;
-            a.download = `${activeBaseName}.bin`;
-            document.body.appendChild(a);
+            a.download = outputFilename;
             a.click();
-            document.body.removeChild(a);
             URL.revokeObjectURL(url);
+        }
+
+        document.getElementById('downloadBtn').addEventListener('click', function() {
+            const createSingle = document.getElementById('combineToggle').checked;
+            if (createSingle) {
+                if (!activeFilter) return;
+                const packedData = generateCombinedBuffer(activeFilter);
+                triggerTriggeredDownload(new Blob([packedData]), `${activeBaseName}.bin`);
+            } else {
+                const zip = new JSZip();
+                trackingMultipleFilters.forEach(item => {
+                    if (item.generatedFilter) {
+                        const packed = generateCombinedBuffer(item.generatedFilter);
+                        zip.file(`${item.name}.bin`, packed);
+                    }
+                });
+                zip.generateAsync({type:"blob"}).then(blob => triggerTriggeredDownload(blob, "bloom_filters_binary.zip"));
+            }
         });
 
         document.getElementById('downloadB64Btn').addEventListener('click', function() {
-            if (!activeFilter) return;
-
-            const packedData = generateCombinedBuffer(activeFilter);
-            const b64String = bufferToBase64(packedData);
-
-            const blob = new Blob([b64String], { type: "text/plain" });
-            const url = URL.createObjectURL(blob);
-            
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${activeBaseName}_b64.txt`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
+            const createSingle = document.getElementById('combineToggle').checked;
+            if (createSingle) {
+                if (!activeFilter) return;
+                const packedData = generateCombinedBuffer(activeFilter);
+                triggerTriggeredDownload(new Blob([bufferToBase64(packedData)]), `${activeBaseName}_b64.txt`);
+            } else {
+                const zip = new JSZip();
+                trackingMultipleFilters.forEach(item => {
+                    if (item.generatedFilter) {
+                        const packed = generateCombinedBuffer(item.generatedFilter);
+                        zip.file(`${item.name}_b64.txt`, bufferToBase64(packed));
+                    }
+                });
+                zip.generateAsync({type:"blob"}).then(blob => triggerTriggeredDownload(blob, "bloom_filters_base64.zip"));
+            }
         });
 
         document.getElementById('downloadJsBtn').addEventListener('click', function() {
-            if (loadedFilters.length === 0) return;
-
-            let jsLines = [
-                "// AUTO-GENERATED by browser bloom engine tool - do not edit by hand.",
-                "// Refresh this file after resetting parameters or loading updated source DAT configurations.",
-                "window.GAME_FILTER_DATA = {"
-            ];
-
-            loadedFilters.forEach(item => {
-                const packed = generateCombinedBuffer(item.filterInstance);
-                const b64 = bufferToBase64(packed);
-                jsLines.push(`  ${item.keyName}: "${b64}",`);
-            });
-
-            jsLines.push("};");
-
-            const finalJsText = jsLines.join("\n") + "\n";
-            const blob = new Blob([finalJsText], { type: "application/javascript" });
-            const url = URL.createObjectURL(blob);
+            const createSingle = document.getElementById('combineToggle').checked;
             
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = "game-filters-data.js";
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
+            if (createSingle) {
+                if (!activeFilter) return;
+                const packed = generateCombinedBuffer(activeFilter);
+                const text = `window.GAME_FILTER_DATA = {\n  custom_filter: "${bufferToBase64(packed)}"\n};`;
+                triggerTriggeredDownload(new Blob([text], {type: "application/javascript"}), "game-filter-data.js");
+            } else {
+                let lines = [];
+                lines.push("window.GAME_FILTER_DATA = {");
+                
+                const properties = [];
+                trackingMultipleFilters.forEach(item => {
+                    if (item.generatedFilter) {
+                        const packed = generateCombinedBuffer(item.generatedFilter);
+                        properties.push(`  "${item.name}": "${bufferToBase64(packed)}"`);
+                    }
+                });
+                
+                lines.push(properties.join(",\n"));
+                lines.push("};");
+                
+                const singleJsContent = lines.join("\n");
+                triggerTriggeredDownload(new Blob([singleJsContent], {type: "application/javascript"}), "game-filter-data.js");
+            }
         });
     </script>
 </body>

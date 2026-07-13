@@ -1296,6 +1296,7 @@
     </label>
     <span class="mode-label" id="dotMatrixLabelOn">Shader</span>
   </div>
+
   <div class="model-toggle">
     <span class="model-label" id="modelLabelGB">GB</span>
     <label class="switch">
@@ -1642,15 +1643,14 @@
           <input type="file" id="importStateInput" accept="application/json,.json" style="display:none;">
         </label>
         <button class="ui-btn danger" id="btnDeleteAllStates" disabled>🗑 Delete All</button>
-        <button class="ui-btn" id="btnDownloadSav" disabled title="Battery cart RAM only (Pokemon/SML2-style saves) - separate from the save states above" style="margin-left:auto;">⬇ Download .sav</button>
-        <label class="ui-btn disabled" id="btnImportSav" title="Battery cart RAM only - separate from the save states above">
+        <button class="ui-btn" id="btnDownloadSav" disabled title="Battery cart RAM only - separate from the save states" style="margin-left:auto;">⬇ Download .sav</button>
+        <label class="ui-btn disabled" id="btnImportSav" title="Battery cart RAM only - separate from the save states">
           ⬆ Load .sav
           <input type="file" id="importSavInput" accept=".sav,application/octet-stream" style="display:none;">
         </label>
       </div>
       <div class="state-info" id="savInfo"></div>
       <div class="state-info" id="stateInfo"></div>
-      <div class="hotkey-hint">[ quick-saves a new slot &nbsp;•&nbsp; ] loads the latest &nbsp;•&nbsp; click a slot to load it</div>
       <div class="slot-list" id="slotList">
         <div class="slot-empty" id="slotEmpty">No saved states yet for this ROM.</div>
       </div>

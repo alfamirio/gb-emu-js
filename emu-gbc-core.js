@@ -1,7 +1,7 @@
 /* =========================================================================================
    emu-gbc-core.js — JS GBC (CGB, Game Boy Color) emulation core
    -----------------------------------------------------------------------------------------
-   Adds Game Boy Color support alongside the original DMG core (emu-gb-core.js), which this
+   Adds GBC support alongside the original DMG core (emu-gb-core.js), which this
    file leaves completely untouched except for two small, additive extension points pulled
    out of Emulator/CPU there (CPU.handleStop(), Emulator.stepHardware()) specifically so this
    file's subclasses could hook in without copy-pasting the whole opcode table or main loop.
@@ -40,7 +40,7 @@
        for a non-CGB cart running in DMG-compatibility mode below.
      - DMG-compatibility mode: a cartridge without the CGB flag (0x143) never touches
        BCPS/BCPD, so CGBMMU.applyDMGCompatPalette() translates its BGP/OBP0/OBP1 writes into
-       BG palette 0 / OBJ palettes 0-1 using the DMG core's Game Boy Pocket grayscale ramp -
+       BG palette 0 / OBJ palettes 0-1 using the DMG core's GB Pocket grayscale ramp -
        a simplification of the real boot ROM, which instead assigns one of several built-in
        tinted palettes per-game (keyed off the cartridge title/checksum). CGB-flagged carts
        are unaffected: their palette RAM still starts blank, same as real hardware, since they
@@ -167,8 +167,8 @@ class CGBMMU {
     this.cartTypeByte = cartType;
 
     // CGB flag (header offset 0x143): 0x80 = CGB-enhanced (also runs on plain DMG hardware),
-    // 0xC0 = CGB-exclusive. Anything else is a cartridge that has never heard of Game Boy
-    // Color - it will never touch BCPS/BCPD, so without a compatibility translation its BG/OBJ
+    // 0xC0 = CGB-exclusive. Anything else is a cartridge that has never heard of GBC
+    // - it will never touch BCPS/BCPD, so without a compatibility translation its BG/OBJ
     // palette RAM would stay all-zero (black) forever. See applyDMGCompatPalette() below.
     const cgbFlag = bytes[0x143];
     this.cgbFlag = cgbFlag;
@@ -521,7 +521,7 @@ class CGBMMU {
   // Real CGB hardware handles this by running such carts in "DMG compatibility mode": the
   // PPU still renders from its normal color palette RAM internally, but the boot ROM/hardware
   // keeps that RAM in sync with whatever the game writes to BGP/OBP0/OBP1, translating each
-  // 2-bit shade through a fixed ramp. We do the same, reusing the DMG core's own Game Boy
+  // 2-bit shade through a fixed ramp. We do the same, reusing the DMG core's own GB
   // Pocket grayscale table (EMU_CORE_CONFIG.PALETTE_GBP) as that ramp - a reasonable,
   // documented simplification of the real boot ROM's per-game tinted compatibility palettes.
   // BGP always maps to BG palette 0; OBP0/OBP1 map to OBJ palettes 0/1 respectively, matching

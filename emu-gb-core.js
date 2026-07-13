@@ -39,7 +39,7 @@
 /* ============================== 0. Emulation core config =============================== */
 // Every hardware-defined constant the core relies on lives here: clock speed, frame/PPU
 // timing, memory-map layout and region sizes, timer periods, sprite limits, palettes, and
-// boot-state register/IO values. Keeps "what a Game Boy is" separate from "how we emulate
+// boot-state register/IO values. Keeps "what a GB is" separate from "how we emulate
 // it", and lets the debug/visualizer UI reuse the same numbers instead of its own copies.
 const EMU_CORE_CONFIG = {
   CLOCK_HZ: 4194304, // GB system clock speed, in T-cycles/second
@@ -76,7 +76,7 @@ const EMU_CORE_CONFIG = {
   OAM_DMA_BYTES: 0xA0,
 
   // Two selectable four-shade palettes: the classic DMG green tint, and the neutral
-  // grayscale used by the Game Boy Pocket's screen.
+  // grayscale used by the GB Pocket's screen.
   PALETTE_GB:  [[155, 188, 15], [139, 172, 15], [48, 98, 48], [15, 56, 15]],
   PALETTE_GBP: [[255, 255, 255], [169, 169, 169], [84, 84, 84], [0, 0, 0]],
 
@@ -1134,8 +1134,8 @@ function explainInstruction(mnemonicText) {
 /* ==================================== 3. PPU (graphics) ================================= */
 
 class PPU {
-  // Two selectable four-shade palettes: the classic DMG (original Game Boy) green tint,
-  // and the neutral grayscale used by the Game Boy Pocket's screen. SHADES points at
+  // Two selectable four-shade palettes: the classic DMG (original GB) green tint,
+  // and the neutral grayscale used by the GB Pocket's screen. SHADES points at
   // whichever is currently active (see setScreenModel() on Emulator) and is what
   // applyPalette() actually reads from.
   static PALETTE_GB  = EMU_CORE_CONFIG.PALETTE_GB;
@@ -2012,7 +2012,7 @@ class APU {
     const fillRatio = this.available / this.RING_SIZE;
     const correction = 1 + (fillRatio - 0.5) * 0.02;
 
-    // this.cyclesPerSample assumes cycles arrive at the real Game Boy clock rate. The speed
+    // this.cyclesPerSample assumes cycles arrive at the real GB clock rate. The speed
     // slider breaks that: at 10% speed the ring buffer would fill 10x slower than the audio
     // callback drains it (constant underrun). Scaling the target by this.emulator.speed keeps
     // sample production paced to real time, which also naturally pitches audio down in slow motion.

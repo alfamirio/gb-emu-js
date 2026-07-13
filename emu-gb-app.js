@@ -22,7 +22,7 @@
 
 /* ---- screen canvas + emulator instance ----
    `emulator` is deliberately `let`, not `const`: coreToggle below swaps it between a
-   GBEmulator (original DMG core) and CGBEmulator (Game Boy Color core, emu-gbc-core.js)
+   GBEmulator (original DMG core) and CGBEmulator (GBC core, emu-gbc-core.js)
    depending on which core the person has selected. Every other function in this file and
    in emu-gb-debug.js reads `emulator` (and `emulator.mmu`/`.cpu`/`.ppu`/etc) fresh each time
    it's called rather than caching a reference at load time, so the swap is transparent to
@@ -312,7 +312,7 @@ function getCartRAMByteSize(bytes) {
   return RAM_SIZES[bytes[0x149]] || 0;
 }
 
-// The cartridge header's CGB flag (offset 0x143) tells us whether a ROM requires Game Boy
+// The cartridge header's CGB flag (offset 0x143) tells us whether a ROM requires GB
 // Color hardware to run at all (0xC0), or merely takes advantage of it when present while
 // staying playable on original DMG hardware (0x80). The GB/GBC core toggle overrides this and
 // always forces one specific core, so these two helpers warn when that forced choice
@@ -320,18 +320,18 @@ function getCartRAMByteSize(bytes) {
 function getGBCCompatibilityWarning(bytes) {
   const flag = bytes[0x143];
   if (flag === 0xC0 && !coreToggle.checked) {
-    return 'Game Boy Color-only game forced onto the Game Boy core - it will likely fail to run correctly.';
+    return 'GBC-only game forced onto the GB core - it will likely fail to run correctly.';
   }
   return null;
 }
 function getGBCInfoNote(bytes) {
   const flag = bytes[0x143];
   const runningGBC = coreToggle.checked;
-  if (flag === 0xC0) return runningGBC ? 'Game Boy Color-only game - running on the Game Boy Color core.' : null;
+  if (flag === 0xC0) return runningGBC ? 'GBC-only game - running on the GBC core.' : null;
   if (flag === 0x80) {
     return runningGBC
-      ? 'Game Boy Color-enhanced game - running on the Game Boy Color core for its full color palettes.'
-      : 'Game Boy Color-enhanced game forced onto the Game Boy core - runs, but without its color palettes.';
+      ? 'GBC-enhanced game - running on the GBC core for its full color palettes.'
+      : 'GBC-enhanced game forced onto the GB core - runs, but without its color palettes.';
   }
   return null;
 }
@@ -484,7 +484,7 @@ async function loadROMBytes(bytes) {
   if (typeof modelToggle !== 'undefined') {
     modelToggle.disabled = emulator instanceof CGBEmulator;
     modelToggle.title = modelToggle.disabled
-      ? 'Not applicable in Game Boy Color mode - colors come from the cartridge\'s own CGB palettes.'
+      ? 'Not applicable in GBC mode - colors come from the cartridge\'s own CGB palettes.'
       : '';
   }
   emulator.start();
@@ -601,7 +601,7 @@ btnPause.addEventListener('click', () => {
 // loaded ROM. loadROM() reinitializes CPU/PPU/banking/RTC state but deliberately does NOT touch
 // cartRAM (it's allocated once and left alone across loads - see emu-gbc-core.js), so this is
 // safe to call right after writing new bytes into cartRAM and will make the game actually pick
-// them up, the same way power-cycling a real Game Boy would.
+// them up, the same way power-cycling a real GB would.
 function resetEmulator(statusMsg) {
   if (!lastROMBytes) return;
   emulator.loadROM(lastROMBytes);
@@ -1012,7 +1012,7 @@ importStateInput.addEventListener('change', (e) => {
    Deliberately separate from the save-state system above. Save states snapshot the whole
    emulator (CPU/PPU/APU/RAM/banking registers, everything) so you can resume mid-frame;
    a .sav is just the cartridge's battery-backed RAM, in the plain flat-binary layout other
-   emulators and real flash carts use for Pokemon/SML2/etc-style in-game saves - so a file
+   emulators and real flash carts use for in-game saves - so a file
    exported here can be loaded into another emulator (or vice versa), which a .json save
    state can't do. */
 btnDownloadSav.addEventListener('click', () => {

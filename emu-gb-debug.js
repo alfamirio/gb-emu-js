@@ -54,7 +54,7 @@ const REG_DERIVED = {
 const tileViewerCanvas = document.getElementById('tileViewerCanvas');
 const tileViewerCtx = tileViewerCanvas.getContext('2d');
 // Grid layout: 16 cols x 24 rows of tiles, with a 1px gap between/around cells so hovering can
-// visually pick out one tile from the next. Each source Game Boy pixel is drawn as a
+// visually pick out one tile from the next. Each source GB pixel is drawn as a
 // TV_SCALE x TV_SCALE block so the tile art is zoomed in and crisp - but TV_GAP is NOT part of
 // that supersample, and the canvas is never CSS-scaled on top of its native size (no
 // style.width/height, no aspect-ratio trick, no ResizeObserver). That means TV_GAP stays
@@ -181,7 +181,7 @@ const MEM_REGIONS = [
   { key: 'OAM',    label: 'OAM',           range: '0xFE00–0xFE9F', color: '#b366cc', weight: 0x00A0, minPx: 20,
     purpose: 'Object Attribute Memory - up to 40 sprite entries (X/Y position, tile index, flip/priority/palette flags) that the PPU composites onto each scanline.' },
   { key: 'UNUSED', label: 'Unused',        range: '0xFEA0–0xFEFF', color: '#3a3a42', weight: 0x0060, minPx: 16,
-    purpose: 'Unmapped on DMG hardware. Real Game Boys return inconsistent (often 0x00) values here depending on model/revision; no game is meant to rely on it.' },
+    purpose: 'Unmapped on DMG hardware. Real GBs return inconsistent (often 0x00) values here depending on model/revision; no game is meant to rely on it.' },
   { key: 'IO',     label: 'I/O Regs',      range: '0xFF00–0xFF7F', color: '#e05fb0', weight: 0x0080, minPx: 20,
     purpose: 'Memory-mapped hardware registers: joypad input, serial, timers, sound channels, and LCD/PPU control - the interface between code and the rest of the hardware.' },
   { key: 'HRAM',   label: 'HRAM',          range: '0xFF80–0xFFFE', color: '#f0d84a', weight: 0x007F, minPx: 20,
@@ -850,14 +850,12 @@ modelToggle.addEventListener('change', applyScreenModel);
 
 /* ---- navbar toggle: overlay a line on the GB screen at the PPU's current scanline (LY) ---- */
 const scanlineMarkToggle = document.getElementById('scanlineMarkToggle');
-const scanlineMarkLabelOff = document.getElementById('scanlineMarkLabelOff');
 const scanlineMarkLabelOn = document.getElementById('scanlineMarkLabelOn');
 
 function applyScanlineMark() {
   const on = scanlineMarkToggle.checked;
   emulator.markCurrentLine = on;
   scanlineMarkLabelOn.classList.toggle('active', on);
-  scanlineMarkLabelOff.classList.toggle('active', !on);
   saveUIConfig({ markCurrentLine: on });
   // Repaint immediately so toggling is visible even while paused/no frame is running.
   if (emulator.mmu.rom && emulator.mmu.rom.length) emulator.draw();
@@ -870,14 +868,12 @@ scanlineMarkToggle.addEventListener('change', applyScanlineMark);
 /* ---- navbar toggle: wash each PPU layer (background / window "tiles" / sprites) with its
    own tint color, so overlapping layers are easy to tell apart on the GB screen ---- */
 const layerTintToggle = document.getElementById('layerTintToggle');
-const layerTintLabelOff = document.getElementById('layerTintLabelOff');
 const layerTintLabelOn = document.getElementById('layerTintLabelOn');
 
 function applyLayerTint() {
   const on = layerTintToggle.checked;
   emulator.layerTint = on;
   layerTintLabelOn.classList.toggle('active', on);
-  layerTintLabelOff.classList.toggle('active', !on);
   saveUIConfig({ layerTint: on });
   // Repaint immediately so toggling is visible even while paused/no frame is running.
   if (emulator.mmu.rom && emulator.mmu.rom.length) emulator.draw();
@@ -888,17 +884,15 @@ if (typeof savedUIConfig.layerTint === 'boolean') layerTintToggle.checked = save
 layerTintToggle.addEventListener('change', applyLayerTint);
 
 /* ---- navbar toggle: overlay a hairline pixel grid on the GB screen, mimicking the visible
-   dot matrix of a real Game Boy LCD. Purely cosmetic (CSS overlay, no canvas/shader work
+   dot matrix of a real GB LCD. Purely cosmetic (CSS overlay, no canvas/shader work
    needed), so no repaint is required when toggling. ---- */
 const dotMatrixToggle = document.getElementById('dotMatrixToggle');
-const dotMatrixLabelOff = document.getElementById('dotMatrixLabelOff');
 const dotMatrixLabelOn = document.getElementById('dotMatrixLabelOn');
 
 function applyDotMatrix() {
   const on = dotMatrixToggle.checked;
   document.body.classList.toggle('dot-matrix-on', on);
   dotMatrixLabelOn.classList.toggle('active', on);
-  dotMatrixLabelOff.classList.toggle('active', !on);
   saveUIConfig({ dotMatrix: on });
 }
 
@@ -1669,7 +1663,7 @@ function drawScanlineTimeline() {
 /* ---- 4d. RTC (MBC3 real-time clock) viewer: only relevant for MBC3+TIMER carts (0x0F/0x10)
    - rtcUsable()/updateRtcTabAvailability() above are what actually hide the tab the rest of
    the time. Shows the live counters (ticked forward to "now" on every draw, since the real
-   chip keeps running even while the Game Boy is off) next to the latched snapshot the game
+   chip keeps running even while the GB is off) next to the latched snapshot the game
    itself reads, and lets the person edit the live clock directly - "Set clock" writes straight
    onto the live registers and then immediately copies them into the latched snapshot too, so
    the game sees the new value on its very next read instead of waiting for its own

@@ -114,7 +114,7 @@ Only **ROM ONLY**, **MBC1**, **MBC2**, **MBC3** and **MBC5** are implemented her
 | **MBC3** | ✅ | 2 MB | 32 KB (64 KB Crystal/MBC30) | ✅ | No | ~15-20% | *Pokémon Gold/Silver/Crystal* |
 | **MBC5** | ✅ | 8 MB | 128 KB | No | ✅ optional | ~35-40% | *Pokémon Yellow*, *Wario Land 2* |
 
-Notes: MBC1 and MBC5 together dominate the library (adoption flipped to MBC5 once GBC launched, since it's the only Nintendo mapper guaranteed correct in CGB double-speed mode). MBC3 is the only one here with a built-in RTC (used by *Pokémon Gold/Silver/Crystal* for day/night and berry growth). Other MBC or custom solutions not worth implementing.
+Notes: MBC1 and MBC5 together dominate the library (adoption flipped to MBC5 once GBC launched, since it's the only mapper guaranteed correct in CGB double-speed mode). MBC3 is the only one here with a built-in RTC (used by *Pokémon Gold/Silver/Crystal* for day/night and berry growth). Other MBC or custom solutions not worth implementing.
 
 ## Further reading
 

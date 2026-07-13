@@ -792,12 +792,18 @@ class CGBPPU {
 
   renderBackgroundLine(y, bgPriority) {
     const tileMapBase = (this.lcdc & 0x08) ? 0x9C00 : 0x9800;
+    const tint = this.emulator.layerTint;
     for (let x = 0; x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
       const bgX = (x + this.scx) & 0xFF, bgY = (y + this.scy) & 0xFF;
       const { colorIndex, paletteNum, priority } = this.getBGWindowPixel(tileMapBase, bgX, bgY);
       bgPriority[x] = (colorIndex !== 0 ? 1 : 0) | (priority ? 2 : 0);
       const [r, g, b] = this.mmu.getPaletteRGB(false, paletteNum, colorIndex);
-      this.setPixel(x, y, r, g, b);
+      if (tint) {
+        const [tr, tg, tb] = this.tintForLayer(r, g, b, 'bg');
+        this.setPixel(x, y, tr, tg, tb);
+      } else {
+        this.setPixel(x, y, r, g, b);
+      }
     }
   }
 
@@ -808,12 +814,18 @@ class CGBPPU {
     const tileMapBase = (this.lcdc & 0x40) ? 0x9C00 : 0x9800;
     const winY = this.windowLineCounter;
     let drewAny = false;
+    const tint = this.emulator.layerTint;
 
     for (let x = Math.max(wx, 0); x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
       const { colorIndex, paletteNum, priority } = this.getBGWindowPixel(tileMapBase, x - wx, winY);
       bgPriority[x] = (colorIndex !== 0 ? 1 : 0) | (priority ? 2 : 0);
       const [r, g, b] = this.mmu.getPaletteRGB(false, paletteNum, colorIndex);
-      this.setPixel(x, y, r, g, b);
+      if (tint) {
+        const [tr, tg, tb] = this.tintForLayer(r, g, b, 'window');
+        this.setPixel(x, y, tr, tg, tb);
+      } else {
+        this.setPixel(x, y, r, g, b);
+      }
       drewAny = true;
     }
     if (drewAny) this.windowLineCounter++;
@@ -881,6 +893,7 @@ class CGBPPU {
     // LCDC.0 master priority: when clear, sprites always draw on top, ignoring both the
     // sprite's own OBJ-to-BG priority bit and the BG tile's priority attribute.
     const masterPriority = !!(this.lcdc & 0x01);
+    const tint = this.emulator.layerTint;
 
     for (const s of candidates) {
       if (s.spriteX <= -8 || s.spriteX >= EMU_CORE_CONFIG.SCREEN.WIDTH) continue;
@@ -902,9 +915,25 @@ class CGBPPU {
           if ((behindBG || bgHasPriority) && bgHasColor) continue;
         }
         const [r, g, b] = this.mmu.getPaletteRGB(true, paletteNum, colorNum);
-        this.setPixel(sx, y, r, g, b);
+        if (tint) {
+          const [tr, tg, tb] = this.tintForLayer(r, g, b, 'sprite');
+          this.setPixel(sx, y, tr, tg, tb);
+        } else {
+          this.setPixel(sx, y, r, g, b);
+        }
       }
     }
+  }
+
+  // Blends a rendered pixel toward its layer's debug tint color when layer-tint mode is on;
+  // returns the color unchanged otherwise. `layer` is one of 'bg' | 'window' | 'sprite'.
+  // Mirrors DMG PPU.tintForLayer(), reusing the same EMU_CORE_CONFIG.LAYER_TINTS palette so
+  // the layer-viewer tab looks consistent across both cores.
+  tintForLayer(r, g, b, layer) {
+    if (!this.emulator.layerTint) return [r, g, b];
+    const [tr, tg, tb] = EMU_CORE_CONFIG.LAYER_TINTS[layer];
+    const m = EMU_CORE_CONFIG.LAYER_TINT_MIX;
+    return [r * (1 - m) + tr * m, g * (1 - m) + tg * m, b * (1 - m) + tb * m];
   }
 
   toSigned8(v) { return (v & 0x80) ? v - 256 : v; }

@@ -2074,20 +2074,13 @@ function drawInterrupts() {
 /* ---- Stack panel: a window of 16-bit words around SP, row-aligned to SP itself ---- */
 function drawStack() {
   if (!lastROMBytes) { stackList.innerHTML = '<div class="disasm-empty">Load a ROM to see the stack.</div>'; stackSpReadout.textContent = '—'; return; }
-  const mmu = emulator.mmu, sp = emulator.cpu.SP;
+  const sp = emulator.cpu.SP;
   const WORDS_ABOVE = 6, WORDS_BELOW = 22;
 
   stackSpReadout.textContent = `SP = ${hex16(sp)}  (top of stack — next POP/RET reads from here)`;
 
-  const rows = [];
-  for (let i = -WORDS_ABOVE; i <= WORDS_BELOW; i++) {
-    const addr = (sp + i * 2) & 0xFFFF;
-    // peek8, not read8: debugger inspection shouldn't count as CPU memory activity.
-    const lo = mmu.peek8(addr);
-    const hi = mmu.peek8((addr + 1) & 0xFFFF);
-    const word = lo | (hi << 8);
-    rows.push({ addr, word, current: i === 0, below: i > 0 });
-  }
+  const rows = emulator.instrumentation.walkStack(sp, WORDS_ABOVE, WORDS_BELOW)
+    .map(({ addr, word, offsetWords }) => ({ addr, word, current: offsetWords === 0, below: offsetWords > 0 }));
 
   stackList.innerHTML = rows.map(r =>
     `<div class="disasm-line${r.current ? ' current' : ''}${r.below && !r.current ? ' stack-line-below' : ''}">` +
@@ -2135,23 +2128,23 @@ REG_INPUTS.forEach(({ el }) => {
 REG_FLAGS.forEach(({ el }) => { el.addEventListener('change', () => commitRegFlag(el)); });
 
 function drawRegisters() {
-  const cpu = emulator.cpu;
+  const regs = emulator.instrumentation.readRegisters();
   const running = emulator.running;
 
   REG_INPUTS.forEach(({ el, key, bits }) => {
     // Only repaint fields that aren't currently focused, to avoid stomping on typing.
-    if (document.activeElement !== el) el.value = bits === 16 ? hex16(cpu[key]) : hex8(cpu[key]);
+    if (document.activeElement !== el) el.value = bits === 16 ? hex16(regs[key]) : hex8(regs[key]);
     el.disabled = running;
   });
 
   REG_FLAGS.forEach(({ el, key }) => {
-    el.checked = !!cpu[key];
+    el.checked = !!regs[key];
     el.disabled = running;
   });
 
-  REG_DERIVED.BC.textContent = `BC = ${hex16(cpu.getBC())}`;
-  REG_DERIVED.DE.textContent = `DE = ${hex16(cpu.getDE())}`;
-  REG_DERIVED.HL.textContent = `HL = ${hex16(cpu.getHL())}`;
+  REG_DERIVED.BC.textContent = `BC = ${hex16(regs.BC)}`;
+  REG_DERIVED.DE.textContent = `DE = ${hex16(regs.DE)}`;
+  REG_DERIVED.HL.textContent = `HL = ${hex16(regs.HL)}`;
 
   regPausedNote.style.display = running ? '' : 'none';
 

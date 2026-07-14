@@ -353,4 +353,42 @@ class Instrumentation {
     this._bpSkipFirstMatch = false;
     if (this.onBreakpointHit) this.onBreakpointHit(reason);
   }
+
+  /* ---- generic register/stack introspection ----
+     Read-only snapshots for any CPU-state-inspecting debug panel (register editor, stack
+     view, and anywhere else that just wants "what does the machine look like right now").
+     Generic to any LR35902-based core (DMG or GBC) since they're keyed off the same field
+     names on `cpu`/`mmu` either core exposes. */
+
+  // A plain-object snapshot of every CPU register/flag worth displaying, including the
+  // 16-bit pairs (BC/DE/HL) computed from their 8-bit halves. Distinct from snapshotRegs()
+  // above, which is a narrower, hot-path snapshot used only for the trace diff.
+  readRegisters() {
+    const c = this.emulator.cpu;
+    return {
+      A: c.A, B: c.B, C: c.C, D: c.D, E: c.E, H: c.H, L: c.L,
+      SP: c.SP, PC: c.PC,
+      flagZ: c.flagZ, flagN: c.flagN, flagH: c.flagH, flagC: c.flagC,
+      IME: c.IME, halted: c.halted,
+      BC: c.getBC(), DE: c.getDE(), HL: c.getHL(),
+    };
+  }
+
+  // Returns a window of 16-bit words straddling `sp`: `aboveWords` words above it (lower
+  // addresses — i.e. already-popped stack space) through `belowWords` words below it
+  // (higher addresses — i.e. what's still on the stack), each tagged with its signed
+  // word-offset from sp so callers can tell which entry is "the top of stack" without
+  // recomputing it. Uses peek8, not read8: this is debugger inspection, not real CPU
+  // memory activity.
+  walkStack(sp, aboveWords, belowWords) {
+    const mmu = this.emulator.mmu;
+    const words = [];
+    for (let i = -aboveWords; i <= belowWords; i++) {
+      const addr = (sp + i * 2) & 0xFFFF;
+      const lo = mmu.peek8(addr);
+      const hi = mmu.peek8((addr + 1) & 0xFFFF);
+      words.push({ addr, word: lo | (hi << 8), offsetWords: i });
+    }
+    return words;
+  }
 }

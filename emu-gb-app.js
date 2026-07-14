@@ -113,9 +113,16 @@ function ensureAudioEngine() {
 // Pushes current master volume/mute (isMuted / soundControls.volumeSlider, wired up further
 // down) onto the GainNode. Plain UI state feeding a plain audio node — the APU never sees
 // or cares about volume/mute, exactly like it never sees canvas drawing settings.
+//
+// The slider itself stays a plain 0-100% (that's what the label shows), but it's mapped to
+// gain through a squared "audio taper" curve rather than straight-line gain = pct. Ears
+// perceive loudness roughly logarithmically, so a linear mapping crams all the useful
+// range into the bottom of the slider and makes the top end feel disproportionately loud;
 function applyGain() {
   if (!masterGain) return;
-  masterGain.gain.value = isMuted ? 0 : (soundControls.volumeSlider.value / APP_CONFIG.VOLUME_MAX);
+  const pct = soundControls.volumeSlider.value / APP_CONFIG.VOLUME_MAX; // 0..1, straight off the slider
+  const taperedGain = pct * pct * APP_CONFIG.VOLUME_MAX_GAIN;
+  masterGain.gain.value = isMuted ? 0 : taperedGain;
 }
 
 // Wires the cross-cutting hooks the core GBEmulator (and its Instrumentation) exposes
@@ -283,6 +290,7 @@ const APP_CONFIG = {
   VOLUME_MAX: 100,
   VOLUME_STEP: 5,                     // volume slider/percentage only moves in steps this size
   VOLUME_DEFAULT: 50,
+  VOLUME_MAX_GAIN: 0.6,               // gain at slider=100%; keeps max volume well under full-scale
   TURBO_SPEED: 2,                     // emulation speed multiplier the T hotkey toggles to
   SCREENSHOT_WEBP_QUALITY: 0.80,      // canvas.toBlob() quality for the screenshot feature
   RECORDING_TIMER_LABEL_INTERVAL_MS: 500, // how often the video/audio recording timer label updates

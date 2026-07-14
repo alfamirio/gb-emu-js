@@ -779,8 +779,8 @@ window.addEventListener('keydown', (e) => {
 // Keyboard input
 const KEY_MAP = {
   ArrowRight: [0, true], ArrowLeft: [1, true], ArrowUp: [2, true], ArrowDown: [3, true],
-  z: [0, false], Z: [0, false],  // A
-  x: [1, false], X: [1, false],  // B
+  z: [1, false], Z: [1, false],  // B
+  x: [0, false], X: [0, false],  // A
   Shift: [2, false],             // Select
   Enter: [3, false],             // Start
 };

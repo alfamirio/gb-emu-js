@@ -524,6 +524,96 @@ class Instrumentation {
     return start === undefined ? oam : oam.subarray(start, start + length);
   }
 
+  // Aggregate mapper/banking state for the MBC Banking panel and the Interrupts panel's
+  // IE/IF readout (ie/io are included here rather than a separate method since they're
+  // read alongside the rest of this snapshot everywhere they're used).
+  readMBCState() {
+    const m = this.emulator.mmu;
+    return {
+      mbcType: m.mbcType, romBank: m.currentROMBank, ramBank: m.currentRAMBank,
+      ramEnabled: m.ramEnabled, rtcSelect: m.rtcSelect, hasTimer: m.hasTimer,
+      cartTypeSupported: m.cartTypeSupported, ie: m.ie, io: m.io,
+    };
+  }
+
+  /* ---- RTC (MBC3 real-time clock) — read + the handful of mutations the RTC panel's
+     buttons need. All go through here so debug.js never touches mmu.rtc directly. ---- */
+
+  // Catches the live counters up to "now" first, same as every other RTC read used to do
+  // inline before touching mmu.rtc.
+  readRTCState() {
+    const mmu = this.emulator.mmu;
+    mmu.tickRTC();
+    const rtc = mmu.rtc;
+    return { s: rtc.s, m: rtc.m, h: rtc.h, dl: rtc.dl, dh: rtc.dh, lastRealMs: rtc.lastRealMs, latched: { ...rtc.latched } };
+  }
+
+  // Copies the live counters into the latched snapshot (instant latch write) — what a
+  // real MBC3 does when the game writes 0x00 then 0x01 to 0x6000-0x7FFF.
+  latchRTCNow() {
+    const rtc = this.emulator.mmu.rtc;
+    rtc.latched.s = rtc.s; rtc.latched.m = rtc.m; rtc.latched.h = rtc.h;
+    rtc.latched.dl = rtc.dl; rtc.latched.dh = rtc.dh;
+  }
+
+  // "Set clock" button: writes an explicit h/m/s/day-count/halt, preserving whatever the
+  // day-carry flag currently is (setting the clock doesn't clear a carry that already happened).
+  setRTCTime(seconds, minutes, hours, days, halt) {
+    const rtc = this.emulator.mmu.rtc;
+    rtc.s = seconds; rtc.m = minutes; rtc.h = hours;
+    rtc.dl = days & 0xFF;
+    rtc.dh = (rtc.dh & 0x80)       // preserve day-carry flag
+           | ((days >> 8) & 0x01)  // day counter bit 8
+           | (halt ? 0x40 : 0x00); // halt flag
+    rtc.lastRealMs = Date.now();
+    this.latchRTCNow();
+  }
+
+  // "Set to now" button: re-bases the day counter to a weekday (0-6) instead of a day
+  // count, and unconditionally clears both halt and day-carry.
+  setRTCToWeekday(seconds, minutes, hours, weekday) {
+    const rtc = this.emulator.mmu.rtc;
+    rtc.s = seconds; rtc.m = minutes; rtc.h = hours;
+    rtc.dl = weekday;
+    rtc.dh = 0; // clears halt and day-carry
+    rtc.lastRealMs = Date.now();
+    this.latchRTCNow();
+  }
+
+  // "Clear day-carry" button.
+  clearRTCCarry() {
+    const mmu = this.emulator.mmu;
+    mmu.tickRTC();
+    mmu.rtc.dh &= ~0x80;
+    this.latchRTCNow();
+  }
+
+  // "Zero clock" button.
+  zeroRTC() {
+    const rtc = this.emulator.mmu.rtc;
+    rtc.s = 0; rtc.m = 0; rtc.h = 0; rtc.dl = 0; rtc.dh = 0;
+    rtc.lastRealMs = Date.now();
+    this.latchRTCNow();
+  }
+
+  // PPU register/scanline-position snapshot for the register readout, layer viewer, and
+  // scanline timeline panels.
+  readPPUState() {
+    const p = this.emulator.ppu;
+    return { ly: p.ly, mode: p.mode, modeClock: p.modeClock, lcdc: p.lcdc,
+             scx: p.scx, scy: p.scy, wx: p.wx, wy: p.wy };
+  }
+
+  // Per-scanline sprite candidates plus their decoded row bits, for the sprite-layer
+  // renderer (Layers > Sprites and the OAM composited view). `ppu` still passed through
+  // to spritePixelRGB()/spriteRowColorIndex() by the caller — this just replaces the two
+  // separate ppu.getSpriteCandidatesForLine()/getSpriteRowBits() calls debug.js used to make.
+  readSpritesForLine(line, spriteHeight) {
+    const ppu = this.emulator.ppu;
+    return ppu.getSpriteCandidatesForLine(line, spriteHeight)
+      .map(s => ({ ...s, ...ppu.getSpriteRowBits(s, line, spriteHeight) }));
+  }
+
   /* ---- CGB-aware color helpers, shared by every visualization panel in debug.js. DMG uses
      one flat BGP/OBP0/OBP1 register per layer; CGB resolves color per-tile/per-sprite from
      palette RAM. Absorbed verbatim from debug.js (isCGBRun/bgWindowPixelRGB/spritePixelRGB

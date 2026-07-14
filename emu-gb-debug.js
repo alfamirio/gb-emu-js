@@ -186,10 +186,9 @@ function buildMemMapStrip() {
 let lastRenderedAccessSeq = -1;
 
 function drawMemMap() {
-  const mmu = emulator.mmu;
   // Keep the ROM bank tag accurate even if nothing was read from it this frame
   const bankTag = document.getElementById('mmRomBankTag');
-  if (bankTag) bankTag.textContent = 'Bank ' + mmu.currentROMBank;
+  if (bankTag) bankTag.textContent = 'Bank ' + emulator.instrumentation.readMBCState().romBank;
 
   const a = emulator.stats.lastAccess;
   if (a.seq === 0) return; // nothing accessed yet (no ROM loaded / not run)
@@ -216,33 +215,35 @@ function drawMemMap() {
 const RTC_REG_LABEL = { 0x08: 'RTC Seconds', 0x09: 'RTC Minutes', 0x0A: 'RTC Hours', 0x0B: 'RTC Day (lo)', 0x0C: 'RTC Day (hi)/Flags' };
 
 // Switchable 8KB cart-RAM banks a mapper exposes (MBC2's RAM has no banking).
-function getRamBankTotal(mmu) {
-  if (mmu.mbcType === 0 || mmu.mbcType === 2) return 0;
-  if (mmu.mbcType === 5) return 16;
+// Takes the readMBCState() snapshot, not mmu, so every caller reads through instrumentation.
+function getRamBankTotal(mbc) {
+  if (mbc.mbcType === 0 || mbc.mbcType === 2) return 0;
+  if (mbc.mbcType === 5) return 16;
   return 4;
 }
 
 // What's mapped into 0xA000-0xBFFF right now.
-function ramBankTarget(mmu, ramBankTotal) {
-  if (mmu.mbcType === 2) return mmu.ramEnabled ? 'Built-in RAM (512×4-bit)' : 'disabled';
+function ramBankTarget(mbc, ramBankTotal) {
+  if (mbc.mbcType === 2) return mbc.ramEnabled ? 'Built-in RAM (512×4-bit)' : 'disabled';
   if (!ramBankTotal) return 'no cart RAM';
-  if (!mmu.ramEnabled) return 'disabled';
-  if (mmu.mbcType === 3 && mmu.rtcSelect !== -1) return RTC_REG_LABEL[mmu.rtcSelect] || 'RTC register';
-  return 'RAM Bank ' + mmu.currentRAMBank;
+  if (!mbc.ramEnabled) return 'disabled';
+  if (mbc.mbcType === 3 && mbc.rtcSelect !== -1) return RTC_REG_LABEL[mbc.rtcSelect] || 'RTC register';
+  return 'RAM Bank ' + mbc.ramBank;
 }
 
 function buildBankingPanel() {
   const mmu = emulator.mmu;
+  const mbc = emulator.instrumentation.readMBCState();
   const romBytes = mmu.rom ? mmu.rom.length : 0;
   const romBankTotal = romBytes > 0 ? Math.max(1, Math.ceil(romBytes / 0x4000)) : 0;
-  const ramBankTotal = getRamBankTotal(mmu);
+  const ramBankTotal = getRamBankTotal(mbc);
 
   bankingDesc.innerHTML = romBytes === 0
     ? 'Load a ROM to see its mapper and which ROM/RAM banks are currently switched in.'
     : `Mapper: <b>${getMBCName(mmu.rom)}</b> &middot; ${romBankTotal} ROM bank(s) of 16KB` +
-      (mmu.mbcType === 2 ? ' &middot; 512×4-bit built-in RAM (no banking)'
+      (mbc.mbcType === 2 ? ' &middot; 512×4-bit built-in RAM (no banking)'
         : ramBankTotal ? ` &middot; up to ${ramBankTotal} RAM bank(s) of 8KB` : ' &middot; no external RAM') +
-      (!mmu.cartTypeSupported ? `<br><span style="color:#e8794b">⚠ Unsupported mapper - banking below is simulated as MBC1 and won't match real hardware.</span>` : '');
+      (!mbc.cartTypeSupported ? `<br><span style="color:#e8794b">⚠ Unsupported mapper - banking below is simulated as MBC1 and won't match real hardware.</span>` : '');
 
   bankingWindows.innerHTML = `
     <div class="bank-window" id="bwFixed">
@@ -254,14 +255,14 @@ function buildBankingPanel() {
     <div class="bank-window" id="bwSwitchable">
       <div class="bw-range">CPU addresses 0x4000–0x7FFF</div>
       <div class="bw-arrow">↓ currently mapped to</div>
-      <div class="bw-target" id="bwSwitchableTarget">${romBankTotal ? 'ROM Bank ' + mmu.currentROMBank : '—'}</div>
+      <div class="bw-target" id="bwSwitchableTarget">${romBankTotal ? 'ROM Bank ' + mbc.romBank : '—'}</div>
       <div class="bw-note">Switched by writing to 0x2000–0x3FFF (MBC1/MBC3), 0x0000–0x3FFF with address bit 8 set (MBC2), or 0x2000–0x2FFF + 0x3000–0x3FFF for the low/high bank bits (MBC5). This is what "bank switching" means.</div>
     </div>
     <div class="bank-window" id="bwRam">
       <div class="bw-range">CPU addresses 0xA000–0xBFFF</div>
       <div class="bw-arrow">↓ currently mapped to</div>
-      <div class="bw-target" id="bwRamTarget">${ramBankTarget(mmu, ramBankTotal)}</div>
-      <div class="bw-note" id="bwRamNote">${mmu.mbcType === 3 ? 'Must be enabled (write 0x0A to 0x0000–0x1FFF); writing 0x08–0x0C to 0x4000–0x5FFF maps an RTC register in here instead.' : 'Must be enabled (write 0x0A to 0x0000–0x1FFF) before it\'s readable/writable.'}</div>
+      <div class="bw-target" id="bwRamTarget">${ramBankTarget(mbc, ramBankTotal)}</div>
+      <div class="bw-note" id="bwRamNote">${mbc.mbcType === 3 ? 'Must be enabled (write 0x0A to 0x0000–0x1FFF); writing 0x08–0x0C to 0x4000–0x5FFF maps an RTC register in here instead.' : 'Must be enabled (write 0x0A to 0x0000–0x1FFF) before it\'s readable/writable.'}</div>
     </div>`;
 
   romBankGrid.innerHTML = '';
@@ -280,7 +281,7 @@ function buildBankingPanel() {
   romBankCountEl.textContent = romBankTotal ? `(${romBankTotal} × 16KB = ${(romBankTotal * 16)}KB ROM)` : '';
 
   ramBankGrid.innerHTML = '';
-  if (mmu.mbcType === 2) {
+  if (mbc.mbcType === 2) {
     ramBankGrid.innerHTML = '<div class="bank-empty">Built-in 512×4-bit RAM - not bank-switched, see readout above.</div>';
   } else if (ramBankTotal === 0) {
     ramBankGrid.innerHTML = '<div class="bank-empty">This mapper has no external RAM.</div>';
@@ -303,21 +304,22 @@ let lastRenderedBankSwitchT = -1;
 const BANK_KIND_LABEL = { rom: 'ROM bank switch', ram: 'RAM bank switch', enable: 'RAM enable/disable', mode: 'banking mode switch', rtc: 'RTC register select' };
 
 function drawBanking() {
-  const mmu = emulator.mmu;
+  const mmu = emulator.mmu; // .rom is still checked directly — battery/ROM presence, not banking state
   if (!mmu.rom || mmu.rom.length === 0) return;
+  const mbc = emulator.instrumentation.readMBCState();
 
   // Keep readouts and active-tile highlight correct every frame
   const romTarget = document.getElementById('bwSwitchableTarget');
-  if (romTarget) romTarget.textContent = 'ROM Bank ' + mmu.currentROMBank;
+  if (romTarget) romTarget.textContent = 'ROM Bank ' + mbc.romBank;
   const ramTarget = document.getElementById('bwRamTarget');
-  if (ramTarget) ramTarget.textContent = ramBankTarget(mmu, getRamBankTotal(mmu));
+  if (ramTarget) ramTarget.textContent = ramBankTarget(mbc, getRamBankTotal(mbc));
 
   romBankGrid.querySelectorAll('.bank-tile').forEach(t => {
-    t.classList.toggle('bank-active', Number(t.dataset.bank) === mmu.currentROMBank);
+    t.classList.toggle('bank-active', Number(t.dataset.bank) === mbc.romBank);
   });
-  const ramBankMapped = mmu.ramEnabled && !(mmu.mbcType === 3 && mmu.rtcSelect !== -1);
+  const ramBankMapped = mbc.ramEnabled && !(mbc.mbcType === 3 && mbc.rtcSelect !== -1);
   ramBankGrid.querySelectorAll('.bank-tile').forEach(t => {
-    t.classList.toggle('bank-active', ramBankMapped && Number(t.dataset.bank) === mmu.currentRAMBank);
+    t.classList.toggle('bank-active', ramBankMapped && Number(t.dataset.bank) === mbc.ramBank);
   });
 
   const bs = emulator.stats.lastBankSwitch;
@@ -336,7 +338,7 @@ function drawBanking() {
     }
 
     bankingLog.textContent = `Write ${hex8(bs.val)} → ${hex16(bs.addr)}  (${BANK_KIND_LABEL[bs.kind]})` +
-      `  ⇒  ROM bank ${bs.romBank}` + (mmu.mbcType !== 0 ? `, ${ramBankTarget(mmu, getRamBankTotal(mmu))}` : '');
+      `  ⇒  ROM bank ${bs.romBank}` + (mbc.mbcType !== 0 ? `, ${ramBankTarget(mbc, getRamBankTotal(mbc))}` : '');
   }
 }
 
@@ -633,13 +635,13 @@ function buildRamEditBody() {
 
 // Live refresh: repaints visible cells from instrumentation.peekByte(), skipping any focused input.
 function drawRamEditor() {
-  const mmu = emulator.mmu;
   const meta = ramEditRegionMeta(ramEditKey);
 
   const dyn = document.getElementById('ramEditDynamicNote');
   if (dyn) {
-    if (meta.key === 'ROMX') dyn.textContent = `Bank currently mapped at 0x4000–0x7FFF: ${mmu.currentROMBank}`;
-    else if (meta.key === 'ERAM') dyn.textContent = mmu.ramEnabled ? `RAM enabled — current bank: ${mmu.currentRAMBank}` : 'RAM disabled (RAMG) — reads return 0xFF, writes are ignored.';
+    const mbc = emulator.instrumentation.readMBCState();
+    if (meta.key === 'ROMX') dyn.textContent = `Bank currently mapped at 0x4000–0x7FFF: ${mbc.romBank}`;
+    else if (meta.key === 'ERAM') dyn.textContent = mbc.ramEnabled ? `RAM enabled — current bank: ${mbc.ramBank}` : 'RAM disabled (RAMG) — reads return 0xFF, writes are ignored.';
   }
 
   if (meta.mode === 'io') {
@@ -721,8 +723,9 @@ syncAccessTracking(debugToolsContainer.querySelector('.tool-tab.active').dataset
 // RTC only exists on MBC3+TIMER carts (0x0F/0x10); the tab hides otherwise.
 // Called on every ROM (re)load/reset.
 function rtcUsable() {
-  const mmu = emulator.mmu;
-  return !!(mmu && mmu.rom && mmu.rom.length && mmu.mbcType === 3 && mmu.hasTimer);
+  if (!emulator.hasROM()) return false;
+  const mbc = emulator.instrumentation.readMBCState();
+  return mbc.mbcType === 3 && mbc.hasTimer;
 }
 function updateRtcTabAvailability() {
   const usable = rtcUsable();
@@ -1012,7 +1015,8 @@ function drawTileMap() {
   }
 
   // Highlight the current viewport (SCX/SCY), wrapping around the map edges.
-  const scx = ppu.scx, scy = ppu.scy, vw = EMU_CORE_CONFIG.SCREEN.WIDTH, vh = EMU_CORE_CONFIG.SCREEN.HEIGHT;
+  const { scx, scy } = emulator.instrumentation.readPPUState();
+  const vw = EMU_CORE_CONFIG.SCREEN.WIDTH, vh = EMU_CORE_CONFIG.SCREEN.HEIGHT;
   for (let x = 0; x < vw; x++) {
     setMapPixel(data, scx + x, scy, 255, 221, 0);
     setMapPixel(data, scx + x, scy + vh - 1, 255, 221, 0);
@@ -1119,14 +1123,15 @@ document.querySelectorAll('.layer-download-btn').forEach(btn => {
 // candidate selection and priority rules as the real renderer (10-sprite-per-line cap
 // included). Shared by the Layers > Sprites panel and the OAM composited view.
 function renderSpriteLayerPixels(data, W, H) {
-  const ppu = emulator.ppu;
-  const spriteHeight = (ppu.lcdc & 0x04) ? EMU_CORE_CONFIG.SPRITES.HEIGHT_TALL : EMU_CORE_CONFIG.SPRITES.HEIGHT_SMALL;
+  const ppu = emulator.ppu; // still passed through to spritePixelRGB(), which needs the ppu handle itself
+  const { lcdc } = emulator.instrumentation.readPPUState();
+  const spriteHeight = (lcdc & 0x04) ? EMU_CORE_CONFIG.SPRITES.HEIGHT_TALL : EMU_CORE_CONFIG.SPRITES.HEIGHT_SMALL;
   for (let y = 0; y < H; y++) {
-    const candidates = ppu.getSpriteCandidatesForLine(y, spriteHeight);
+    const candidates = emulator.instrumentation.readSpritesForLine(y, spriteHeight);
 
     for (const s of candidates) {
       if (s.spriteX <= -8 || s.spriteX >= W) continue;
-      const { lo, hi, xFlip } = ppu.getSpriteRowBits(s, y, spriteHeight);
+      const { lo, hi, xFlip } = s;
 
       for (let px = 0; px < 8; px++) {
         const sx = s.spriteX + px;
@@ -1142,21 +1147,22 @@ function renderSpriteLayerPixels(data, W, H) {
 }
 
 function drawLayers() {
-  const ppu = emulator.ppu;
+  const ppu = emulator.ppu; // still passed through to bgWindowPixelRGB(), which needs the ppu handle itself
+  const { lcdc, scx, scy, wx: wxReg, wy } = emulator.instrumentation.readPPUState();
   const W = EMU_CORE_CONFIG.SCREEN.WIDTH, H = EMU_CORE_CONFIG.SCREEN.HEIGHT;
 
   /* ---- Background: covers the full frame when enabled, using the same pixel decode as
      the real renderer. ---- */
-  const bgOn = !!(ppu.lcdc & 0x01);
+  const bgOn = !!(lcdc & 0x01);
   setLayerStatus(layerStatusBG, layerCanvasBG.closest('.layer-block'), bgOn, 'LCDC.0');
   if (!bgOn) {
     fillLayerImage(layerImageDataBG, 255, 255, 255); // matches real hardware: BG off = blank white
   } else {
-    const bgTileMapBase = (ppu.lcdc & 0x08) ? 0x9C00 : 0x9800;
+    const bgTileMapBase = (lcdc & 0x08) ? 0x9C00 : 0x9800;
     const data = layerImageDataBG.data;
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
-        const bgX = (x + ppu.scx) & 0xFF, bgY = (y + ppu.scy) & 0xFF;
+        const bgX = (x + scx) & 0xFF, bgY = (y + scy) & 0xFF;
         const [r, g, b] = emulator.instrumentation.bgWindowPixelRGB(ppu, bgTileMapBase, bgX, bgY);
         const idx = (y * W + x) * 4;
         data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
@@ -1167,13 +1173,13 @@ function drawLayers() {
 
   /* ---- Window: only draws where WX/WY place it; requires BG to be on. Static snapshot,
      using a plain y - WY per line rather than the renderer's live window-line counter. ---- */
-  const winOn = bgOn && !!(ppu.lcdc & 0x20);
+  const winOn = bgOn && !!(lcdc & 0x20);
   setLayerStatus(layerStatusWindow, layerCanvasWindow.closest('.layer-block'), winOn, bgOn ? 'LCDC.5' : 'LCDC.0');
   fillLayerImage(layerImageDataWindow, 0, 0, 0, 0);
   if (winOn) {
-    const wx = ppu.wx - 7, wy = ppu.wy;
+    const wx = wxReg - 7;
     if (wx <= W - 1) {
-      const winTileMapBase = (ppu.lcdc & 0x40) ? 0x9C00 : 0x9800;
+      const winTileMapBase = (lcdc & 0x40) ? 0x9C00 : 0x9800;
       const data = layerImageDataWindow.data;
       for (let y = Math.max(wy, 0); y < H; y++) {
         const winY = y - wy;
@@ -1189,7 +1195,7 @@ function drawLayers() {
 
   /* ---- Sprites: every on-screen OAM entry, with the real 10-per-line cap and priority,
      ignoring BG-priority occlusion so the full sprite layer stays visible. ---- */
-  const sprOn = !!(ppu.lcdc & 0x02);
+  const sprOn = !!(lcdc & 0x02);
   setLayerStatus(layerStatusSprites, layerCanvasSprites.closest('.layer-block'), sprOn, 'LCDC.1');
   fillLayerImage(layerImageDataSprites, 0, 0, 0, 0);
   if (sprOn) {
@@ -1227,8 +1233,8 @@ function drawOAMComposition() {
 
 // Finds the highest-priority sprite (lowest OAM index) whose bounding box covers (px, py).
 function oamSpriteAt(px, py) {
-  const ppu = emulator.ppu;
-  const spriteHeight = (ppu.lcdc & 0x04) ? 16 : 8;
+  const { lcdc } = emulator.instrumentation.readPPUState();
+  const spriteHeight = (lcdc & 0x04) ? 16 : 8;
   for (let i = 0; i < 40; i++) {
     const { spriteX, spriteY } = oamSpriteGeometry(i, spriteHeight);
     if (px >= spriteX && px < spriteX + 8 && py >= spriteY && py < spriteY + spriteHeight) {
@@ -1271,9 +1277,9 @@ oamCompCanvas.addEventListener('mouseleave', () => {
 });
 
 function drawOAMTable() {
-  const ppu = emulator.ppu;
-  const mmu = emulator.mmu;
-  const spriteHeight = (ppu.lcdc & 0x04) ? 16 : 8;
+  const ppu = emulator.ppu; // still passed through to spritePixelRGB(), which needs the ppu handle itself
+  const { lcdc } = emulator.instrumentation.readPPUState();
+  const spriteHeight = (lcdc & 0x04) ? 16 : 8;
   oamTableBody.innerHTML = '';
 
   for (let i = 0; i < 40; i++) {
@@ -1454,7 +1460,7 @@ const frameTimelineCanvas = document.getElementById('frameTimelineCanvas');
 const lineTimelineCanvas = document.getElementById('lineTimelineCanvas');
 const scanlineStatsEl = document.getElementById('scanlineStats');
 
-function drawFrameTimeline(ppu) {
+function drawFrameTimeline(ppuState) {
   const ctx = frameTimelineCanvas.getContext('2d');
   const w = frameTimelineCanvas.width, h = frameTimelineCanvas.height;
   ctx.clearRect(0, 0, w, h);
@@ -1471,7 +1477,7 @@ function drawFrameTimeline(ppu) {
   }
 
   // Playhead: current scanline
-  const playX = (ppu.ly / SCANLINE_TOTAL_LINES) * w;
+  const playX = (ppuState.ly / SCANLINE_TOTAL_LINES) * w;
   const playW = Math.max(2, w / SCANLINE_TOTAL_LINES);
   ctx.fillStyle = '#ffdd00';
   ctx.fillRect(playX, 0, playW, h);
@@ -1485,12 +1491,12 @@ function drawFrameTimeline(ppu) {
   ctx.textAlign = 'right'; ctx.fillText('153', w - 3, h - 4);
 }
 
-function drawLineTimeline(ppu) {
+function drawLineTimeline(ppuState) {
   const ctx = lineTimelineCanvas.getContext('2d');
   const w = lineTimelineCanvas.width, h = lineTimelineCanvas.height;
   ctx.clearRect(0, 0, w, h);
 
-  if (ppu.mode === 1) {
+  if (ppuState.mode === 1) {
     // V-Blank: single mode for the whole 456-cycle line
     ctx.fillStyle = '#8a5ac2';
     ctx.fillRect(0, 0, w, h);
@@ -1510,10 +1516,10 @@ function drawLineTimeline(ppu) {
   ctx.fillStyle = '#4a4a55'; ctx.fillRect(oamW + transferW, 0, hblankW, h);
 
   const [segStart, segWidth, modeTotal] =
-    ppu.mode === 2 ? [0, oamW, SCANLINE_OAM] :
-    ppu.mode === 3 ? [oamW, transferW, SCANLINE_TRANSFER] :
+    ppuState.mode === 2 ? [0, oamW, SCANLINE_OAM] :
+    ppuState.mode === 3 ? [oamW, transferW, SCANLINE_TRANSFER] :
                       [oamW + transferW, hblankW, SCANLINE_HBLANK];
-  const frac = Math.min(1, ppu.modeClock / modeTotal);
+  const frac = Math.min(1, ppuState.modeClock / modeTotal);
   ctx.fillStyle = '#ffdd00';
   ctx.fillRect(Math.max(0, segStart + frac * segWidth - 1.5), 0, 3, h);
 }
@@ -1522,11 +1528,11 @@ function scanlineStat(label, value) {
   return `<div class="scanline-stat"><div class="label">${label}</div><div class="value">${value}</div></div>`;
 }
 
-function drawScanlineStats(ppu) {
-  const ly = ppu.ly, mode = ppu.mode;
+function drawScanlineStats(ppuState) {
+  const ly = ppuState.ly, mode = ppuState.mode;
   const modeNames  = { 0: 'H-Blank', 1: 'V-Blank', 2: 'OAM Search', 3: 'Pixel Transfer' };
   const modeTotals = { 0: SCANLINE_HBLANK, 1: SCANLINE_LINE_CYCLES, 2: SCANLINE_OAM, 3: SCANLINE_TRANSFER };
-  const modeClock = Math.min(ppu.modeClock, modeTotals[mode]);
+  const modeClock = Math.min(ppuState.modeClock, modeTotals[mode]);
 
   const intraLine =
     mode === 2 ? modeClock :
@@ -1547,10 +1553,10 @@ function drawScanlineStats(ppu) {
 }
 
 function drawScanlineTimeline() {
-  const ppu = emulator.ppu;
-  drawFrameTimeline(ppu);
-  drawLineTimeline(ppu);
-  drawScanlineStats(ppu);
+  const ppuState = emulator.instrumentation.readPPUState();
+  drawFrameTimeline(ppuState);
+  drawLineTimeline(ppuState);
+  drawScanlineStats(ppuState);
 }
 
 /* ---- 4d. RTC (MBC3 real-time clock) viewer: for MBC3+TIMER carts (0x0F/0x10) ---- */
@@ -1561,12 +1567,8 @@ function rtcClamp(v, lo, hi) {
   return Math.min(hi, Math.max(lo, n));
 }
 
-// Copies live counters into the latched snapshot (instant latch write)
-function relatchRTCNow(mmu) {
-  const rtc = mmu.rtc;
-  rtc.latched.s = rtc.s; rtc.latched.m = rtc.m; rtc.latched.h = rtc.h;
-  rtc.latched.dl = rtc.dl; rtc.latched.dh = rtc.dh;
-}
+// (relatching the live counters into the latched snapshot now goes through
+// emulator.instrumentation.latchRTCNow())
 
 // Clock correction: offsets some games apply on top of raw RTC (e.g. Pokémon G/S/C). Added when the clock is set; persisted per save file.
 const rtcCorrectionStore = makePersistedConfig('jsgb-config:rtc-correction', { h: 0, m: 0 });
@@ -1626,9 +1628,7 @@ function setRtcInfo(msg) {
 // not on every redraw, so mid-edit fields aren't clobbered.
 function syncRtcInputsFromLive() {
   if (!rtcUsable()) return;
-  const mmu = emulator.mmu;
-  mmu.tickRTC();
-  const rtc = mmu.rtc;
+  const rtc = emulator.instrumentation.readRTCState();
   rtcInputDays.value = ((rtc.dh & 0x01) << 8) | rtc.dl;
   rtcInputHours.value = rtc.h;
   rtcInputMinutes.value = rtc.m;
@@ -1642,9 +1642,7 @@ function drawRTC() {
   rtcContentEl.classList.toggle('hidden', !usable);
   if (!usable) return;
 
-  const mmu = emulator.mmu;
-  mmu.tickRTC(); // catch counters up to "now"
-  const rtc = mmu.rtc;
+  const rtc = emulator.instrumentation.readRTCState(); // catches counters up to "now"
   const halted = (rtc.dh & 0x40) !== 0;
   const carry = (rtc.dh & 0x80) !== 0;
   const days = ((rtc.dh & 0x01) << 8) | rtc.dl;
@@ -1665,7 +1663,6 @@ function drawRTC() {
 
 btnRtcApply.addEventListener('click', () => {
   if (!rtcUsable()) return;
-  const mmu = emulator.mmu;
   const rawDays = rtcClamp(rtcInputDays.value, 0, 511);
   const rawHours = rtcClamp(rtcInputHours.value, 0, 23);
   const rawMinutes = rtcClamp(rtcInputMinutes.value, 0, 59);
@@ -1675,16 +1672,8 @@ btnRtcApply.addEventListener('click', () => {
   // Apply the clock correction, then clamp the day count to 0-511.
   const corrected = applyRtcCorrection(rawHours, rawMinutes, rawSeconds, rawDays);
   const days = rtcClamp(corrected.days, 0, 511);
-  const hours = corrected.hours, minutes = corrected.minutes, seconds = corrected.seconds;
 
-  const rtc = mmu.rtc;
-  rtc.s = seconds; rtc.m = minutes; rtc.h = hours;
-  rtc.dl = days & 0xFF;
-  rtc.dh = (rtc.dh & 0x80)       // preserve day-carry flag
-         | ((days >> 8) & 0x01)  // day counter bit 8
-         | (halt ? 0x40 : 0x00); // halt flag
-  rtc.lastRealMs = Date.now();
-  relatchRTCNow(mmu);
+  emulator.instrumentation.setRTCTime(corrected.seconds, corrected.minutes, corrected.hours, days, halt);
 
   setRtcInfo('Clock set.');
   refreshDebugTools();
@@ -1694,7 +1683,6 @@ const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', '
 
 btnRtcNow.addEventListener('click', () => {
   if (!rtcUsable()) return;
-  const mmu = emulator.mmu;
   // Re-base the day counter to today's weekday so (day counter % 7) matches reality.
   const now = new Date();
   const rawWeekday = now.getDay(); // 0-6, Sunday = 0
@@ -1704,12 +1692,7 @@ btnRtcNow.addEventListener('click', () => {
   const hours = corrected.hours, minutes = corrected.minutes, seconds = corrected.seconds;
   const weekday = ((corrected.days % 7) + 7) % 7;
 
-  const rtc = mmu.rtc;
-  rtc.s = seconds; rtc.m = minutes; rtc.h = hours;
-  rtc.dl = weekday; // 0-6 fits in the low byte
-  rtc.dh = 0;        // clears halt and day-carry
-  rtc.lastRealMs = Date.now();
-  relatchRTCNow(mmu);
+  emulator.instrumentation.setRTCToWeekday(seconds, minutes, hours, weekday);
 
   // Fill the Set Clock boxes with the plain system time, not the corrected hardware value.
   rtcInputDays.value = rawWeekday;
@@ -1724,21 +1707,14 @@ btnRtcNow.addEventListener('click', () => {
 
 btnRtcClearCarry.addEventListener('click', () => {
   if (!rtcUsable()) return;
-  const mmu = emulator.mmu;
-  mmu.tickRTC();
-  mmu.rtc.dh &= ~0x80;
-  relatchRTCNow(mmu);
+  emulator.instrumentation.clearRTCCarry();
   setRtcInfo('Day-carry flag cleared.');
   refreshDebugTools();
 });
 
 btnRtcZero.addEventListener('click', () => {
   if (!rtcUsable()) return;
-  const mmu = emulator.mmu;
-  const rtc = mmu.rtc;
-  rtc.s = 0; rtc.m = 0; rtc.h = 0; rtc.dl = 0; rtc.dh = 0;
-  rtc.lastRealMs = Date.now();
-  relatchRTCNow(mmu);
+  emulator.instrumentation.zeroRTC();
   syncRtcInputsFromLive();
   setRtcInfo('Clock zeroed.');
   refreshDebugTools();
@@ -2021,15 +1997,16 @@ function drawInterrupts() {
     intLog.innerHTML = '<div class="int-log-empty">No interrupts serviced yet.</div>';
     return;
   }
-  const cpu = emulator.cpu, mmu = emulator.mmu;
-  const ie = mmu.ie & 0x1F;
-  const iff = mmu.io[0x0F] & 0x1F;
+  const regs = emulator.instrumentation.readRegisters();
+  const mbc = emulator.instrumentation.readMBCState();
+  const ie = mbc.ie & 0x1F;
+  const iff = mbc.io[0x0F] & 0x1F;
 
   intSummary.innerHTML =
-    `<span class="int-ime ${cpu.IME ? 'on' : 'off'}">IME ${cpu.IME ? 'ON' : 'OFF'}</span>` +
+    `<span class="int-ime ${regs.IME ? 'on' : 'off'}">IME ${regs.IME ? 'ON' : 'OFF'}</span>` +
     `<span class="int-reg">IE=${hex8(ie)}</span>` +
     `<span class="int-reg">IF=${hex8(iff)}</span>` +
-    (cpu.halted ? `<span class="int-halted">HALTed — waiting for an interrupt</span>` : '');
+    (regs.halted ? `<span class="int-halted">HALTed — waiting for an interrupt</span>` : '');
 
   intTable.innerHTML = INTERRUPT_SOURCES.map(src => {
     const enabled = (ie >> src.bit) & 1;
@@ -2128,7 +2105,8 @@ function drawRegisters() {
 
   regPausedNote.style.display = running ? '' : 'none';
 
-  regIoReadout.textContent = `LY=${emulator.ppu.ly}  Mode=${emulator.ppu.mode}  LCDC=${hex8(emulator.ppu.lcdc)}`;
+  const ppuState = emulator.instrumentation.readPPUState();
+  regIoReadout.textContent = `LY=${ppuState.ly}  Mode=${ppuState.mode}  LCDC=${hex8(ppuState.lcdc)}`;
 }
 
 drawRegisters(); // paint the boot-state register values immediately, before any ROM is loaded

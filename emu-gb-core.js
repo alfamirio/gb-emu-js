@@ -1980,6 +1980,9 @@ class Emulator {
 
     this.running = false;
     this.onRunStateChange = null; // called with the new boolean whenever _setRunning() flips this.running
+    this.onFrame = null;      // called after a redraw-worthy point (frame/step/rewind), with this.frameStats
+    this.onInterrupt = null;  // called whenever an interrupt is actually dispatched, with (bit, pcBefore)
+    this.onFpsUpdate = null;  // called ~once/sec during continuous play, with the rendered-frames-per-second count
     this.frameReady = false;
     this._rafId = null;
     this.markCurrentLine = false;
@@ -2074,6 +2077,7 @@ class Emulator {
   logInterruptServiced(bit, pcBefore) {
     this.interruptLog.push({ seq: this.interruptSeq++, frame: this.frameCounter, bit, pcBefore });
     if (this.interruptLog.length > this.INTERRUPT_LOG_SIZE) this.interruptLog.shift();
+    if (this.onInterrupt) this.onInterrupt(bit, pcBefore);
   }
 
   loadROM(bytes) {
@@ -2216,8 +2220,7 @@ class Emulator {
     const state = this.rewindBuffer.pop();
     this.loadSaveState(state);
     this.rewindFrameAcc = 0;
-    this.draw();
-    refreshDebugTools();
+    if (this.onFrame) this.onFrame(this.frameStats);
     return true;
   }
 
@@ -2235,8 +2238,7 @@ class Emulator {
   stepOne() {
     if (this.running) this.pause();
     this.stepInstruction();
-    this.draw();
-    refreshDebugTools();
+    if (this.onFrame) this.onFrame(this.frameStats);
   }
 
   // Runs until the PPU moves to the next scanline (LY changes), then redraws. Capped at one
@@ -2252,8 +2254,7 @@ class Emulator {
       cyclesSpent += cycles;
     }
     this._setRunning(false);
-    this.draw();
-    refreshDebugTools();
+    if (this.onFrame) this.onFrame(this.frameStats);
   }
 
   // Runs exactly one full frame (same budget runFrame() uses for normal play), then redraws.
@@ -2262,8 +2263,7 @@ class Emulator {
     this._setRunning(true); // runFrame() bails early if this flips false mid-frame (breakpoint)
     this.runFrame();
     this._setRunning(false);
-    this.draw();
-    refreshDebugTools();
+    if (this.onFrame) this.onFrame(this.frameStats);
   }
 
   // Runs 60 full frames back to back (~1.005s of emulated time), then redraws — a coarse
@@ -2277,8 +2277,7 @@ class Emulator {
       if (!this.running) break; // a breakpoint fired mid-frame
     }
     this._setRunning(false);
-    this.draw();
-    refreshDebugTools();
+    if (this.onFrame) this.onFrame(this.frameStats);
   }
 
   // Resumes continuous execution, auto-pausing the moment PC reaches pcTarget and/or
@@ -2391,13 +2390,12 @@ class Emulator {
       const RENDER_MS = 1000 / 60;
       if (now - this._lastRenderTime >= RENDER_MS - 1) { // -1ms slack absorbs rAF jitter
         this._lastRenderTime = now;
-        this.draw();
         this._fpsFrames++; // counts renders, not emulated frames, so the fps label stays ~60 even at 2x/3x/4x speed
-        refreshDebugTools();
+        if (this.onFrame) this.onFrame(this.frameStats);
       }
     }
     if (now - this._fpsLast >= 1000) {
-      document.getElementById('fps').textContent = this._fpsFrames + ' fps';
+      if (this.onFpsUpdate) this.onFpsUpdate(this._fpsFrames);
       this._fpsFrames = 0; this._fpsLast = now;
     }
     this._rafId = requestAnimationFrame((t) => this.loop(t));

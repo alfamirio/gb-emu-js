@@ -20,12 +20,30 @@ const canvas = document.getElementById('screen');
 const coreToggle = document.getElementById('coreToggle'); // unchecked = GB core, checked = GBC core
 let emulator = new GBEmulator(canvas);
 
+// Wires the cross-cutting hooks the core Emulator exposes (onFrame/onFpsUpdate/onBreakpointHit)
+// onto whichever Emulator instance is current. Called once at startup and again every time
+// ensureEmulatorMatchesCoreToggle() swaps in a new instance, so a GB<->GBC toggle mid-session
+// doesn't silently drop debug-panel wiring. This is the one place app.js decides "a frame/step/
+// rewind happened, now go repaint the canvas and the debug panels" — the core itself no longer
+// knows either of those things exist.
+function wireEmulatorCallbacks() {
+  emulator.onFrame = () => { emulator.draw(); refreshDebugTools(); };
+  emulator.onFpsUpdate = (fps) => { document.getElementById('fps').textContent = fps + ' fps'; };
+  emulator.onBreakpointHit = (reason) => {
+    btnPause.textContent = '▶ Start';
+    bpStatus.textContent = `⏹ Stopped — ${reason}`;
+    refreshDebugTools();
+  };
+}
+wireEmulatorCallbacks();
+
 // Swaps `emulator` to match the GB/GBC core toggle, pausing the old instance first.
 function ensureEmulatorMatchesCoreToggle() {
   const NeededClass = coreToggle.checked ? CGBEmulator : GBEmulator;
   if (emulator instanceof NeededClass) return;
   emulator.pause();
   emulator = new NeededClass(canvas);
+  wireEmulatorCallbacks();
 }
 
 // ROM loading panel refs (file picker, drag-drop zone, ROM header info)
@@ -668,37 +686,30 @@ btnRewind.addEventListener('click', () => {
   if (ok) {
     btnPause.textContent = '▶ Start';
     bpStatus.textContent = `Rewound ${emulator.REWIND_SNAPSHOT_INTERVAL_SECONDS}s — PC=${hex16(emulator.cpu.PC)}`;
-    refreshDebugTools();
   }
   updateRewindButton();
 });
 
-/* ---- step / breakpoint debugger ---- */
-emulator.onBreakpointHit = (reason) => {
-  btnPause.textContent = '▶ Start';
-  bpStatus.textContent = `⏹ Stopped — ${reason}`;
-  refreshDebugTools();
-};
-
+/* ---- step / breakpoint debugger ----
+   Each of these calls a stepping method that now fires the emulator's onFrame hook itself
+   (wired in wireEmulatorCallbacks() to draw()+refreshDebugTools()), so no explicit
+   refreshDebugTools() call is needed here anymore — just the click-specific status text. */
 btnStep.addEventListener('click', () => {
   emulator.stepOne();
   btnPause.textContent = '▶ Start';
   bpStatus.textContent = `Stepped — now at PC=${hex16(emulator.cpu.PC)}`;
-  refreshDebugTools();
 });
 
 btnStepLine.addEventListener('click', () => {
   emulator.stepLine();
   btnPause.textContent = '▶ Start';
   bpStatus.textContent = `Stepped to line LY=${emulator.ppu.ly} — PC=${hex16(emulator.cpu.PC)}`;
-  refreshDebugTools();
 });
 
 btnStepFrame.addEventListener('click', () => {
   emulator.stepFrame();
   btnPause.textContent = '▶ Start';
   bpStatus.textContent = `Stepped one frame — PC=${hex16(emulator.cpu.PC)}`;
-  refreshDebugTools();
 });
 
 btnStep1s.addEventListener('click', () => {
@@ -706,7 +717,6 @@ btnStep1s.addEventListener('click', () => {
   btnPause.textContent = '▶ Start';
   bpStatus.textContent = `Stepped 1s (60 frames) — PC=${hex16(emulator.cpu.PC)}`;
   selectedFrameStatsIndex = null; // let Frame Activity follow the 60 frames just stepped
-  refreshDebugTools();
 });
 
 // Sound controls: mute state + volume persisted in localStorage.
@@ -779,8 +789,8 @@ window.addEventListener('keydown', (e) => {
 // Keyboard input
 const KEY_MAP = {
   ArrowRight: [0, true], ArrowLeft: [1, true], ArrowUp: [2, true], ArrowDown: [3, true],
-  z: [1, false], Z: [1, false],  // B
-  x: [0, false], X: [0, false],  // A
+  z: [0, false], Z: [0, false],  // A
+  x: [1, false], X: [1, false],  // B
   Shift: [2, false],             // Select
   Enter: [3, false],             // Start
 };

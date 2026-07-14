@@ -8,8 +8,6 @@
      - Instrumentation (+ disassembler): execution trace, breakpoints (Trace/Disasm/
        Registers/Stack panels). Optional `emulator` back-reference (can be attached
        later), needed for triggerBreakpoint() to pause the run loop.
-     - WebAudioBackend: real implementation of APU's audio contract (init/resume/
-       suspend/setGain), using the Web Audio API.
      - RafScheduler: real implementation of GBEmulator's scheduler contract
        (requestFrame/cancelFrame), using requestAnimationFrame. */
 
@@ -462,7 +460,7 @@ class Instrumentation {
     const e = this.emulator;
     e._setRunning(false);
     if (e._rafId) cancelAnimationFrame(e._rafId);
-    e.apu.suspend();
+    e.onAudioSuspend?.();
     this.breakHitReason = reason;
     this._bpSkipFirstMatch = false;
     if (this.onBreakpointHit) this.onBreakpointHit(reason);
@@ -509,36 +507,5 @@ class RafScheduler {
   cancelFrame(id) { cancelAnimationFrame(id); }
 }
 
-/* WebAudioBackend — real implementation of APU's audio contract (init/resume/suspend/
-   setGain), using the Web Audio API. A ScriptProcessorNode (rather than AudioWorklet)
-   keeps this synchronous and inline, with no separate module file to load.
-   `audioCtx`/`masterGain` are public since app.js's clip/audio-export code reads them
-   directly to fan its recording destinations out of the same node feeding the speakers. */
 
-class WebAudioBackend {
-  constructor() {
-    this.audioCtx = null;
-    this.masterGain = null;
-  }
-  init(pullSample) {
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) return null;
-    this.audioCtx = new Ctx();
-    this.masterGain = this.audioCtx.createGain();
-    this.masterGain.connect(this.audioCtx.destination);
-
-    const bufferSize = 2048;
-    const node = this.audioCtx.createScriptProcessor(bufferSize, 0, 2);
-    node.onaudioprocess = (e) => {
-      const { left, right } = pullSample(bufferSize);
-      e.outputBuffer.getChannelData(0).set(left);
-      e.outputBuffer.getChannelData(1).set(right);
-    };
-    node.connect(this.masterGain);
-    return this.audioCtx.sampleRate;
-  }
-  resume() { if (this.audioCtx?.state === 'suspended') this.audioCtx.resume(); }
-  suspend() { if (this.audioCtx?.state === 'running') this.audioCtx.suspend(); }
-  setGain(v) { if (this.masterGain) this.masterGain.gain.value = v; }
-}
 

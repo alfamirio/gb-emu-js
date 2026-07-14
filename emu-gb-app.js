@@ -19,14 +19,14 @@
 const canvas = document.getElementById('screen');
 const coreToggle = document.getElementById('coreToggle'); // unchecked = GB core, checked = GBC core
 
-// Composition root: GBEmulator never constructs stats/instrumentation/audio/scheduler
-// itself (see emu-gb-core.js) — app.js decides these should be live and injects real ones
-// (CoreStats/Instrumentation/WebAudioBackend/RafScheduler, all from emu-gb-stats-instrumentation.js).
+// Composition root: GBEmulator never constructs stats/instrumentation/scheduler itself (see
+// emu-gb-core.js) — app.js decides these should be live and injects real ones (CoreStats/
+// Instrumentation/RafScheduler, from emu-gb-stats-instrumentation.js). Audio isn't injected
+// at all — it's wired up separately below, in the audio engine section.
 function createEmulator(EmulatorClass) {
   return new EmulatorClass({
     stats: new CoreStats(),
     instrumentation: new Instrumentation(),
-    audio: new WebAudioBackend(),
     scheduler: new RafScheduler(),
   });
 }
@@ -58,6 +58,66 @@ function drawCurrentLineMarker() {
   ctx.restore();
 }
 
+/* ---- audio engine: mirrors the canvas rendering section above. The core APU has no idea
+   an AudioContext exists — it only produces mixed stereo samples into a ring buffer
+   (emulator.apu.ringL/ringR). app.js owns turning that into actual sound, the same way it
+   owns turning the PPU framebuffer into canvas pixels via draw(). No injected backend, no
+   pull-callback contract — app.js just reads the buffer on its own schedule. ---- */
+let audioCtx = null;
+let masterGain = null;
+let audioNode = null; // ScriptProcessorNode feeding masterGain, pulling from the ring buffer
+
+// Drains bufferSize samples out of the *current* emulator's APU ring buffer. An underrun
+// (ring buffer empty) decays toward silence instead of a hard click.
+function drainAudioRing(bufferSize) {
+  const apu = emulator.apu;
+  const left = new Float32Array(bufferSize);
+  const right = new Float32Array(bufferSize);
+  for (let i = 0; i < bufferSize; i++) {
+    if (apu.available > 0) {
+      apu.lastL = apu.ringL[apu.readPos];
+      apu.lastR = apu.ringR[apu.readPos];
+      apu.readPos = (apu.readPos + 1) % apu.RING_SIZE;
+      apu.available--;
+    } else {
+      apu.lastL *= 0.9; apu.lastR *= 0.9;
+    }
+    left[i] = apu.lastL; right[i] = apu.lastR;
+  }
+  return { left, right };
+}
+
+// Lazily creates the AudioContext/GainNode/ScriptProcessorNode on first use. Must happen
+// inside a user gesture (click/drop) per browser autoplay policy, so this is only ever
+// reached from places that are (see onAudioResume below, wired from GBEmulator.start()).
+function ensureAudioEngine() {
+  if (audioCtx) return;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  audioCtx = new Ctx();
+  masterGain = audioCtx.createGain();
+  masterGain.connect(audioCtx.destination);
+  emulator.apu.setSampleRate(audioCtx.sampleRate); // real device rate, not an assumed 44100
+
+  const bufferSize = 2048;
+  audioNode = audioCtx.createScriptProcessor(bufferSize, 0, 2);
+  audioNode.onaudioprocess = (e) => {
+    const { left, right } = drainAudioRing(bufferSize);
+    e.outputBuffer.getChannelData(0).set(left);
+    e.outputBuffer.getChannelData(1).set(right);
+  };
+  audioNode.connect(masterGain);
+  applyGain();
+}
+
+// Pushes current master volume/mute (isMuted / soundControls.volumeSlider, wired up further
+// down) onto the GainNode. Plain UI state feeding a plain audio node — the APU never sees
+// or cares about volume/mute, exactly like it never sees canvas drawing settings.
+function applyGain() {
+  if (!masterGain) return;
+  masterGain.gain.value = isMuted ? 0 : (soundControls.volumeSlider.value / APP_CONFIG.VOLUME_MAX);
+}
+
 // Wires the cross-cutting hooks the core GBEmulator (and its Instrumentation) exposes
 // (onFrame/onFpsUpdate/onBreakpointHit) onto whichever GBEmulator instance is current. Called
 // once at startup and again every time ensureEmulatorMatchesCoreToggle() swaps in a new
@@ -73,6 +133,11 @@ function wireEmulatorCallbacks() {
     bpStatus.textContent = `⏹ Stopped — ${reason}`;
     refreshDebugTools();
   };
+  emulator.onAudioResume = () => { ensureAudioEngine(); if (audioCtx?.state === 'suspended') audioCtx.resume(); };
+  emulator.onAudioSuspend = () => { if (audioCtx?.state === 'running') audioCtx.suspend(); };
+  // A GB<->GBC core swap gives us a fresh APU defaulting to 44100 — if the audio engine is
+  // already running, tell it the real rate immediately rather than waiting for a resume.
+  if (audioCtx) emulator.apu.setSampleRate(audioCtx.sampleRate);
 }
 wireEmulatorCallbacks();
 
@@ -785,19 +850,18 @@ const savedSoundConfig = loadSoundConfig();
 if (savedSoundConfig && typeof savedSoundConfig.volume === 'number') soundControls.volumeSlider.value = snapToVolumeStep(savedSoundConfig.volume);
 let isMuted = !!(savedSoundConfig && savedSoundConfig.muted);
 
-emulator.apu.setVolume(soundControls.volumeSlider.value / APP_CONFIG.VOLUME_MAX);
-emulator.apu.setMuted(isMuted);
+applyGain();
 soundControls.btnMute.textContent = isMuted ? '🔇 Unmute' : '🔊 Mute';
 soundControls.volumeLabel.textContent = soundControls.volumeSlider.value + '%';
 
 soundControls.btnMute.addEventListener('click', () => {
   isMuted = !isMuted;
-  emulator.apu.setMuted(isMuted);
+  applyGain();
   soundControls.btnMute.textContent = isMuted ? '🔇 Unmute' : '🔊 Mute';
   saveSoundConfig();
 });
 soundControls.volumeSlider.addEventListener('input', () => {
-  emulator.apu.setVolume(soundControls.volumeSlider.value / APP_CONFIG.VOLUME_MAX);
+  applyGain();
   soundControls.volumeLabel.textContent = soundControls.volumeSlider.value + '%';
   saveSoundConfig();
 });
@@ -1173,14 +1237,13 @@ function startClipRecording() {
   const mimeType = pickClipMimeType();
   if (!mimeType) { alert('No supported WEBM video codec found in this browser.'); return; }
 
-  emulator.apu.initAudio(); // no-op if already set up; safe here since a click is a user gesture
+  ensureAudioEngine(); // no-op if already set up; safe here since a click is a user gesture
 
   const videoStream = canvas.captureStream(APP_CONFIG.VIDEO_CAPTURE_FPS);
   const tracks = [...videoStream.getVideoTracks()];
-  const audio = emulator.apu.audio;
-  if (audio?.audioCtx && audio?.masterGain) {
-    clipAudioDest = audio.audioCtx.createMediaStreamDestination();
-    audio.masterGain.connect(clipAudioDest); // fans out alongside the existing speaker connection
+  if (audioCtx && masterGain) {
+    clipAudioDest = audioCtx.createMediaStreamDestination();
+    masterGain.connect(clipAudioDest); // fans out alongside the existing speaker connection
     tracks.push(...clipAudioDest.stream.getAudioTracks());
   }
 
@@ -1192,7 +1255,7 @@ function startClipRecording() {
   });
   clipRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) clipChunks.push(e.data); };
   clipRecorder.onstop = () => {
-    if (clipAudioDest) { audio.masterGain.disconnect(clipAudioDest); clipAudioDest = null; }
+    if (clipAudioDest) { masterGain.disconnect(clipAudioDest); clipAudioDest = null; }
     videoStream.getTracks().forEach(t => t.stop());
     clearInterval(clipTimerId);
     const blob = new Blob(clipChunks, { type: mimeType.split(';')[0] });
@@ -1254,12 +1317,11 @@ function startAudioRecording() {
   const mimeType = pickAudioMimeType();
   if (!mimeType) { alert('No supported Opus audio codec found in this browser.'); return; }
 
-  emulator.apu.initAudio(); // no-op if already set up; safe here since a click is a user gesture
-  const audio = emulator.apu.audio;
-  if (!audio?.audioCtx || !audio?.masterGain) { alert('Audio is not available in this browser.'); return; }
+  ensureAudioEngine(); // no-op if already set up; safe here since a click is a user gesture
+  if (!audioCtx || !masterGain) { alert('Audio is not available in this browser.'); return; }
 
-  audioDest = audio.audioCtx.createMediaStreamDestination();
-  audio.masterGain.connect(audioDest); // fans out alongside the existing speaker connection
+  audioDest = audioCtx.createMediaStreamDestination();
+  masterGain.connect(audioDest); // fans out alongside the existing speaker connection
 
   audioChunks = [];
   audioRecorder = new MediaRecorder(audioDest.stream, {
@@ -1268,7 +1330,7 @@ function startAudioRecording() {
   });
   audioRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
   audioRecorder.onstop = () => {
-    audio.masterGain.disconnect(audioDest);
+    masterGain.disconnect(audioDest);
     audioDest = null;
     clearInterval(audioTimerId);
     const blob = new Blob(audioChunks, { type: mimeType.split(';')[0] });

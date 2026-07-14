@@ -1237,20 +1237,17 @@ const APU_IO_MASK = {
   0xFF24: 0x00, 0xFF25: 0x00,
 };
 
-/* Audio backend contract, injected via GBEmulator({ audio }) — APU never touches
-   AudioContext/window itself, only these four methods (duck-typed, no base class needed):
-     - init(pullSample) -> sampleRate (number), or falsy if audio isn't available.
-         pullSample(bufferSize) must return { left: Float32Array, right: Float32Array },
-         exactly bufferSize samples each; the backend calls it whenever it needs more audio.
-     - resume() / suspend(): mirror AudioContext.resume()/suspend().
-     - setGain(value): master volume, 0..1.
-   `audio` may be null/undefined — every call against it below is optional-chained, so an
-   emulator built with no audio backend just runs silently instead of crashing. */
+/* Audio output: same shape as the PPU's framebuffer. APU has no idea an AudioContext or a
+   <canvas>-shaped world exists — it just keeps writing mixed stereo samples into a ring
+   buffer (ringL/ringR, below) as it steps. Whatever's driving playback (app.js) drains that
+   ring buffer on its own schedule, the same way draw() reads emulator.ppu.framebuffer.
+   The only thing APU exposes *about* playback is setSampleRate(), because pushSample()'s
+   cadence depends on knowing how many emulated cycles correspond to one output sample —
+   that's a fact about the consumer's clock, not a callback into it. */
 
 class APU {
-  constructor(emulator, audio = null) {
+  constructor(emulator) {
     this.emulator = emulator;
-    this.audio = audio; // contract instance, or null — never constructed here
     this.enabled = false; // NR52 master power bit
 
     this.ch1 = this.newCh1State();
@@ -1270,9 +1267,10 @@ class APU {
     this.fsStep = 0;
     this.frameSeqTimer = 0;
 
-    // Overwritten by initAudio() with the AudioContext's actual sample rate (often not
-    // 44100) — getting this wrong desyncs sample production from consumption and causes
-    // periodic clicking.
+    // Overwritten by setSampleRate() with the real output device rate (often not 44100,
+    // e.g. 48000) — getting this wrong desyncs sample production from consumption and
+    // causes periodic clicking. Defaults to 44100 so the ring buffer fills at a sane pace
+    // even before anything downstream has told APU what rate it's actually consuming at.
     this.sampleRate = 44100;
     this.cyclesPerSample = EMU_CORE_CONFIG.CLOCK_HZ / this.sampleRate;
     this.sampleCounter = 0;
@@ -1298,10 +1296,7 @@ class APU {
     this.scopeCh4 = new Float32Array(this.SCOPE_SIZE);
     this.scopeWritePos = 0;
 
-    this._audioReady = false; // set once audio.init() has succeeded; guards re-init
-    this.muted = false;
     this.chMuted = [false, false, false, false]; // per-channel mute (oscilloscope UI), indexed CH1-CH4
-    this.volume = 0.5;
   }
 
   newSquareState() {
@@ -1319,8 +1314,9 @@ class APU {
   }
 
   /* ---- save state ----
-     The ring buffer, AudioContext, and other Web Audio plumbing are runtime/output-device
-     concerns, not console state — left out and reset to a clean, silent buffer on restore. */
+     The ring buffer and any output-device state (AudioContext, sample rate, etc.) are
+     runtime/playback concerns, not console state — left out and reset to a clean, silent
+     buffer on restore. */
   serialize() {
     return {
       enabled: this.enabled,
@@ -1343,43 +1339,16 @@ class APU {
     this.writePos = 0; this.readPos = 0; this.available = 0; this.lastL = 0; this.lastR = 0;
   }
 
-  /* ---- audio output, via the injected `audio` contract (see class comment above) ---- */
-  initAudio() {
-    if (this._audioReady || !this.audio) return;
-    const rate = this.audio.init((bufferSize) => this._pullSamples(bufferSize));
-    if (!rate) return; // backend unavailable/failed — stay silent, don't retry every call
-    this._audioReady = true;
-
-    // Use the real hardware/OS sample rate rather than assuming 44100.
+  // Tells APU what rate output samples are actually being consumed at, so pushSample()'s
+  // cadence (cyclesPerSample) matches reality instead of assuming 44100. Whoever owns the
+  // real output device (app.js) calls this once it knows — e.g. from audioCtx.sampleRate —
+  // the same way the <canvas> width/height are just given to the PPU's config, not pulled
+  // from it.
+  setSampleRate(rate) {
+    if (!rate) return;
     this.sampleRate = rate;
-    this.cyclesPerSample = EMU_CORE_CONFIG.CLOCK_HZ / this.sampleRate;
-    this.audio.setGain(this.muted ? 0 : this.volume);
+    this.cyclesPerSample = EMU_CORE_CONFIG.CLOCK_HZ / rate;
   }
-
-  // Called by the audio backend whenever it needs more output samples. Drains the ring
-  // buffer (producer: emulator loop via pushSample()); an underrun decays toward silence
-  // instead of a hard click.
-  _pullSamples(bufferSize) {
-    const left = new Float32Array(bufferSize);
-    const right = new Float32Array(bufferSize);
-    for (let i = 0; i < bufferSize; i++) {
-      if (this.available > 0) {
-        this.lastL = this.ringL[this.readPos];
-        this.lastR = this.ringR[this.readPos];
-        this.readPos = (this.readPos + 1) % this.RING_SIZE;
-        this.available--;
-      } else {
-        this.lastL *= 0.9; this.lastR *= 0.9;
-      }
-      left[i] = this.lastL; right[i] = this.lastR;
-    }
-    return { left, right };
-  }
-
-  resume() { this.audio?.resume(); }
-  suspend() { this.audio?.suspend(); }
-  setVolume(v) { this.volume = v; this.audio?.setGain(this.muted ? 0 : v); }
-  setMuted(m) { this.muted = m; this.audio?.setGain(m ? 0 : this.volume); }
 
   pushSample(l, r) {
     this.ringL[this.writePos] = l; this.ringR[this.writePos] = r;
@@ -1714,16 +1683,17 @@ class APU {
 class GBEmulator {
   static CYCLES_PER_FRAME = EMU_CORE_CONFIG.FRAME.CYCLES_PER_FRAME; // 154 scanlines x 456 T-cycles
 
-  // `stats`/`instrumentation`/`audio`/`scheduler` are all DI'd in by the composition root.
+  // `stats`/`instrumentation`/`scheduler` are all DI'd in by the composition root.
   // GBEmulator never constructs any of them itself, and no-ops (via `?.`) if left
-  // null/undefined — see the APU class comment for the audio contract.
-  constructor({ stats = null, instrumentation = null, audio = null, scheduler = null } = {}) {
+  // null/undefined. Audio has no DI'd contract at all — the APU just exposes a ring buffer
+  // (see the APU class comment) that whoever owns the real output device drains on its own.
+  constructor({ stats = null, instrumentation = null, scheduler = null } = {}) {
     this.mmu = new MMU(this);
     this.cpu = new CPU(this.mmu);
     this.ppu = new PPU(this);
     this.timer = new Timer(this);
     this.joypad = new Joypad(this);
-    this.apu = new APU(this, audio);
+    this.apu = new APU(this);
     this.scheduler = scheduler;
 
     this.running = false;
@@ -1731,6 +1701,12 @@ class GBEmulator {
     this.onFrame = null;      // called after a redraw-worthy point (frame/step/rewind), with this.stats.frameStats
     this.onInterrupt = null;  // called whenever an interrupt is actually dispatched, with (bit, pcBefore)
     this.onFpsUpdate = null;  // called ~once/sec during continuous play, with the rendered-frames-per-second count
+    // Fired from start()/pause() only (a real user gesture), not from the stepXxx() helpers
+    // below, which flip `running` true-then-false internally without actually starting
+    // continuous playback. Whoever owns the output device (app.js) wires these to actually
+    // create/resume/suspend it — GBEmulator itself has no idea what's on the other end.
+    this.onAudioResume = null;
+    this.onAudioSuspend = null;
     this.frameReady = false;
     this._rafId = null;
     this.layerTint = false;
@@ -1991,11 +1967,10 @@ class GBEmulator {
     this._setRunning(true);
     this._lastTime = null;
     this._frameAcc = 0;
-    this.apu.initAudio(); // must happen inside a user gesture (click/drop), which start() always is
-    this.apu.resume();
+    this.onAudioResume?.(); // must happen inside a user gesture (click/drop), which start() always is
     this.loop(performance.now());
   }
-  pause() { this._setRunning(false); if (this._rafId) this.scheduler?.cancelFrame(this._rafId); this.apu.suspend(); }
+  pause() { this._setRunning(false); if (this._rafId) this.scheduler?.cancelFrame(this._rafId); this.onAudioSuspend?.(); }
 
   // Paces emulated frames against real elapsed time, scaled by this.speed (1 = normal,
   // 0.1 = 10%, etc). An accumulator (rather than "one frame per rAF tick") means slowing

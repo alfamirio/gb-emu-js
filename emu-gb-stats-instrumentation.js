@@ -652,6 +652,29 @@ class Instrumentation {
   // Thin forward to the static PPU decode helper, so debug.js's sprite-layer renderer
   // never needs a bare `PPU` class reference either.
   spriteRowColorIndex(lo, hi, xFlip, px) { return PPU.spriteRowColorIndex(lo, hi, xFlip, px); }
+
+  // DMG palette register values, for the Palette viewer's BGP/OBP0/OBP1 readout. Meaningless
+  // on CGB (which resolves color from palette RAM instead) — callers branch on isCGBRun()
+  // before reading these.
+  readPaletteRegisters() {
+    const p = this.emulator.ppu;
+    return { bgp: p.bgp, obp0: p.obp0, obp1: p.obp1 };
+  }
+
+  // Single swatch color for the Palette viewer. On CGB, `paletteRegOrIndex` is a palette
+  // number (0-7) resolved through palette RAM; on DMG it's one of the register values from
+  // readPaletteRegisters() above, run through the classic 2-bit lookup.
+  paletteSwatchRGB(isObj, paletteRegOrIndex, colorNum) {
+    const p = this.emulator.ppu;
+    if (this.isCGBRun()) return p.mmu.getPaletteRGB(isObj, paletteRegOrIndex, colorNum);
+    return p.applyPalette(colorNum, paletteRegOrIndex);
+  }
+
+  // Disassembles the instruction at `addr`, reading live memory through the real read8 path
+  // (mirrors what the CPU would actually fetch, banking included) — used by the Disassembly
+  // panel's resync search and forward-decode. Thin forward to the free disassembleAt() above,
+  // so debug.js never needs to hold onto an `emulator.mmu` reference for this.
+  disassembleAt(addr) { return disassembleAt(this.emulator.mmu, addr); }
 }
 
 /* RafScheduler — real implementation of GBEmulator's scheduler contract

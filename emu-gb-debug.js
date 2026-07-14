@@ -1333,7 +1333,6 @@ function drawOAMTable() {
 
 /* ---- 4. Palette viewer: BGP/OBP0/OBP1 swatches on DMG; all 8 BG + 8 OBJ palettes on CGB. ---- */
 function drawPalettes() {
-  const ppu = emulator.ppu;
   paletteGrid.innerHTML = '';
 
   function addBlock(col, name, valLabel, colorFn) {
@@ -1370,12 +1369,13 @@ function drawPalettes() {
   const objCol = addColumn('Objects (Sprites)');
 
   if (emulator.instrumentation.isCGBRun()) {
-    for (let p = 0; p < 8; p++) addBlock(bgCol, `BG ${p}`, '', (c) => ppu.mmu.getPaletteRGB(false, p, c));
-    for (let p = 0; p < 8; p++) addBlock(objCol, `OBJ ${p}`, '', (c) => ppu.mmu.getPaletteRGB(true, p, c));
+    for (let p = 0; p < 8; p++) addBlock(bgCol, `BG ${p}`, '', (c) => emulator.instrumentation.paletteSwatchRGB(false, p, c));
+    for (let p = 0; p < 8; p++) addBlock(objCol, `OBJ ${p}`, '', (c) => emulator.instrumentation.paletteSwatchRGB(true, p, c));
   } else {
-    addBlock(bgCol, 'BGP', hex8(ppu.bgp), (c) => ppu.applyPalette(c, ppu.bgp));
-    addBlock(objCol, 'OBP0', hex8(ppu.obp0), (c) => ppu.applyPalette(c, ppu.obp0));
-    addBlock(objCol, 'OBP1', hex8(ppu.obp1), (c) => ppu.applyPalette(c, ppu.obp1));
+    const { bgp, obp0, obp1 } = emulator.instrumentation.readPaletteRegisters();
+    addBlock(bgCol, 'BGP', hex8(bgp), (c) => emulator.instrumentation.paletteSwatchRGB(false, bgp, c));
+    addBlock(objCol, 'OBP0', hex8(obp0), (c) => emulator.instrumentation.paletteSwatchRGB(true, obp0, c));
+    addBlock(objCol, 'OBP1', hex8(obp1), (c) => emulator.instrumentation.paletteSwatchRGB(true, obp1, c));
   }
 }
 
@@ -1929,7 +1929,7 @@ let disasmResyncCache = null; // { pc, rom, beforeLines, currentText, nextExpect
 
 function drawDisassembly() {
   if (!lastROMBytes) { disasmList.innerHTML = '<div class="disasm-empty">Load a ROM to see disassembly.</div>'; disasmResyncCache = null; return; }
-  const mmu = emulator.mmu, pc = emulator.instrumentation.readRegisters().PC;
+  const pc = emulator.instrumentation.readRegisters().PC;
   const rom = emulator.instrumentation.readROM();
   const COUNT_BEFORE = 5, COUNT_AFTER = 9, MAX_LOOKBACK = 12;
 
@@ -1951,7 +1951,7 @@ function drawDisassembly() {
       if (addr < 0) continue;
       const insns = [];
       while (addr < pc) {
-        const { text, length } = disassembleAt(mmu, addr & 0xFFFF);
+        const { text, length } = emulator.instrumentation.disassembleAt(addr & 0xFFFF);
         insns.push({ addr: addr & 0xFFFF, text });
         addr += length;
       }
@@ -1963,7 +1963,7 @@ function drawDisassembly() {
   let addr = pc;
   let currentText = null, currentLength = 0;
   for (let i = 0; i <= COUNT_AFTER; i++) {
-    const { text, length } = disassembleAt(mmu, addr & 0xFFFF);
+    const { text, length } = emulator.instrumentation.disassembleAt(addr & 0xFFFF);
     lines.push({ addr: addr & 0xFFFF, text, current: i === 0 });
     if (i === 0) { currentText = text; currentLength = length; }
     addr += length;

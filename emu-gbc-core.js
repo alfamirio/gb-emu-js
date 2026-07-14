@@ -1,50 +1,18 @@
 /* =========================================================================================
-   emu-gbc-core.js — JS GBC (CGB, Game Boy Color) emulation core
+   emu-gbc-core.js — Game Boy Color (CGB) emulation core
    -----------------------------------------------------------------------------------------
-   Adds GBC support alongside the original DMG core (emu-gb-core.js), which this
-   file leaves completely untouched except for two small, additive extension points pulled
-   out of Emulator/CPU there (CPU.handleStop(), Emulator.stepHardware()) specifically so this
-   file's subclasses could hook in without copy-pasting the whole opcode table or main loop.
+   Adds CGB support on top of the DMG core (emu-gb-core.js). Timer, Joypad and APU are
+   identical on both consoles and are reused as-is. CPU is subclassed (CGBCPU) since only
+   boot values and STOP's double-speed switch differ. MMU and PPU are separate classes
+   (CGBMMU, CGBPPU) since CGB memory layout (banked VRAM/WRAM, color palette RAM, HDMA) and
+   rendering diverge too much from DMG to share cleanly.
 
-   Load order requirement: emu-gb-core.js -> emu-gbc-core.js -> emu-gb-app.js -> emu-gb-debug.js
-   (see index.html). This file reuses several DMG-core globals directly, since they're true
-   regardless of which console you're emulating: EMU_CORE_CONFIG (screen size, sprite limits,
-   frame/line timing - CGB in single-speed mode runs the exact same 4.194304MHz timing DMG
-   does), REGION_* / REGION_NAMES (memory-map visualizer buckets), and the hex8/hex16/
-   u8ToBase64/base64ToU8 helpers.
+   Load order: emu-gb-core.js -> emu-gbc-core.js -> emu-gb-app.js -> emu-gb-debug.js
 
-   What's shared outright vs. what's forked, and why:
-     - Timer, Joypad, APU: reused as-is (imported by reference, not copied). These three
-       pieces of hardware are identical between DMG and CGB - nothing here overrides them.
-     - CPU -> CGBCPU (subclass): the LR35902 instruction set doesn't change on CGB. Only the
-       boot register values and the STOP opcode's behavior (armed double-speed switch)
-       differ, both already isolated as overridable methods in the DMG core.
-     - Emulator -> CGBEmulator (subclass): owns the double-speed cycle accounting via the
-       stepHardware() extension point; otherwise identical glue logic (loop/draw/save-state).
-     - MMU -> CGBMMU and PPU -> CGBPPU: NOT subclasses. Both diverge too deeply to share a
-       base cleanly (two VRAM banks with tile *attributes* in bank 1, 8 WRAM banks, a full
-       32768-color palette RAM replacing the DMG's 4-shade lookup, HDMA/GDMA) - forcing that
-       into DMG's MMU/PPU would mean threading virtual dispatch through their hottest
-       per-access/per-pixel paths, which works against this project's goal of keeping the DMG
-       reference readable on its own. Cartridge/MBC banking logic (MBC1/3/5 + RTC) IS
-       duplicated here rather than shared, since "self-contained" was the explicit design
-       choice - a GBC cart uses the exact same mapper chips, so that logic is a straight copy.
-
-   Known simplifications (consistent with the DMG core's own documented simplifications -
-   instant OAM DMA, non-cycle-exact PPU mode lengths, STOP as a near no-op):
-     - HDMA general-purpose transfers happen instantly; H-Blank-mode HDMA transfers one
-       0x10-byte block per H-Blank (matching real hardware's block size) but doesn't stall
-       the CPU for the M-cycles a real transfer would cost.
-     - OPRI (object priority mode, 0xFF6C) is accepted but always behaves as CGB-default
-       (OAM-index priority) - the DMG-style X-coordinate priority mode isn't implemented, even
-       for a non-CGB cart running in DMG-compatibility mode below.
-     - DMG-compatibility mode: a cartridge without the CGB flag (0x143) never touches
-       BCPS/BCPD, so CGBMMU.applyDMGCompatPalette() translates its BGP/OBP0/OBP1 writes into
-       BG palette 0 / OBJ palettes 0-1 using the DMG core's GB Pocket grayscale ramp -
-       a simplification of the real boot ROM, which instead assigns one of several built-in
-       tinted palettes per-game (keyed off the cartridge title/checksum). CGB-flagged carts
-       are unaffected: their palette RAM still starts blank, same as real hardware, since they
-       write their own palettes via BCPS/BCPD immediately.
+   Simplifications: OAM DMA and HDMA transfers complete instantly rather than stalling the
+   CPU cycle-accurately; OPRI (object priority mode) is accepted but CGB-default (OAM-index)
+   priority is always used; DMG-compatibility mode approximates the boot ROM's per-game
+   tinted palettes with the DMG core's grayscale ramp.
    ========================================================================================= */
 
 /* ============================== 0. CGB-only config additions =========================== */
@@ -52,11 +20,10 @@ const EMU_CGB_CORE_CONFIG = {
   VRAM_BANK_SIZE: EMU_CORE_CONFIG.MEMORY.VRAM_SIZE, // 0x2000 per bank, 2 banks
   WRAM_BANK_SIZE: 0x1000,                            // 4KB per bank, 8 banks (bank 0 fixed + 1-7 switchable)
   WRAM_BANK_COUNT: 8,
-  PALETTE_RAM_SIZE: 64, // 8 palettes x 4 colors x 2 bytes (BCPD and OCPD each have their own 64 bytes)
-  HDMA_BLOCK_BYTES: 0x10, // one H-Blank DMA block, matching real hardware's per-HBlank transfer size
+  PALETTE_RAM_SIZE: 64, // 8 palettes x 4 colors x 2 bytes (BCPD and OCPD each get their own 64 bytes)
+  HDMA_BLOCK_BYTES: 0x10, // one H-Blank DMA block
 
-  // Register values the real CGB boot ROM leaves behind right before a game's code starts,
-  // when running a CGB-flagged cartridge (distinct from the DMG boot state in EMU_CORE_CONFIG.BOOT).
+  // CGB boot ROM register state for a CGB-flagged cartridge (distinct from DMG's BOOT config).
   BOOT: {
     A: 0x11, B: 0x00, C: 0x00, D: 0x00, E: 0x08, H: 0x00, L: 0x7C,
     SP: 0xFFFE, PC: 0x0100,
@@ -65,7 +32,7 @@ const EMU_CGB_CORE_CONFIG = {
   },
 };
 
-/* ============================== 1. CGBMMU (self-contained) ============================= */
+/* ============================== 1. CGBMMU ================================================ */
 
 class CGBMMU {
   constructor(emulator) {
@@ -90,50 +57,44 @@ class CGBMMU {
       lastRealMs: Date.now(),
     };
     this.rtcSelect = -1;
-    this.hasTimer = false; // true only for cart types 0x0F/0x10 (MBC3+TIMER...) - see DMG MMU for the same flag
+    this.hasTimer = false; // cart types 0x0F/0x10 (MBC3+TIMER)
 
-    // ---- CGB-specific memory: two VRAM banks, eight 4KB WRAM banks ----
+    // Two VRAM banks (0x8000-0x9FFF window), eight 4KB WRAM banks.
     this.vramBanks = [new Uint8Array(CGB.VRAM_BANK_SIZE), new Uint8Array(CGB.VRAM_BANK_SIZE)];
-    this.vbk = 0; // 0xFF4F bit0: which VRAM bank 0x8000-0x9FFF currently maps to
+    this.vbk = 0; // 0xFF4F bit0: which VRAM bank is mapped
     this.wramBanks = Array.from({ length: CGB.WRAM_BANK_COUNT }, () => new Uint8Array(CGB.WRAM_BANK_SIZE));
-    this.svbk = 1; // 0xFF70 bits0-2: which bank 0xD000-0xDFFF maps to (0 behaves as 1, like real hardware)
+    this.svbk = 1; // 0xFF70 bits0-2: which bank maps to 0xD000-0xDFFF (0 behaves as 1)
 
     this.oam  = new Uint8Array(MEM.OAM_SIZE);
     this.hram = new Uint8Array(MEM.HRAM_SIZE);
     this.io   = new Uint8Array(MEM.IO_SIZE);
     this.ie   = 0;
 
-    // ---- CGB palette RAM: BG and OBJ each get 8 palettes x 4 colors x 2 bytes (RGB555) ----
+    // BG and OBJ palette RAM: 8 palettes x 4 colors x 2 bytes (RGB555) each.
     this.bgPaletteRAM  = new Uint8Array(CGB.PALETTE_RAM_SIZE);
     this.objPaletteRAM = new Uint8Array(CGB.PALETTE_RAM_SIZE);
-    this.bcps = 0; // 0xFF68: bit7 = auto-increment, bits0-5 = current byte index into bgPaletteRAM
-    this.ocps = 0; // 0xFF6A: same shape, for objPaletteRAM
+    this.bcps = 0; // 0xFF68: bit7 = auto-increment, bits0-5 = index into bgPaletteRAM
+    this.ocps = 0; // 0xFF6A: same, for objPaletteRAM
 
-    // ---- HDMA (0xFF51-0xFF55) ----
+    // HDMA (0xFF51-0xFF55)
     this.hdmaSrc = 0;
     this.hdmaDst = 0;
-    this.hdmaActive = false;   // an H-Blank-mode transfer is in progress (waiting for HBlanks)
-    this.hdmaBlocksLeft = 0;   // remaining 0x10-byte blocks
+    this.hdmaActive = false;   // H-Blank-mode transfer in progress
+    this.hdmaBlocksLeft = 0;
 
-    // ---- CGB double-speed (KEY1, 0xFF4D) ----
-    // doubleSpeed/speedSwitchArmed live here (not just on the CPU) because both the CPU
-    // (STOP opcode) and the MMU (KEY1 register read/write) need to see the same state.
+    // KEY1 double-speed state (0xFF4D). Lives on the MMU since both CPU (STOP) and MMU
+    // (register read/write) need to see it.
     this.doubleSpeed = false;
     this.speedSwitchArmed = false;
 
-    // ---- live instrumentation for the Memory Map / Banking visualizers (same scheme as
-    // the DMG MMU - reuses the DMG core's REGION_* ids/REGION_NAMES, since the address-range
-    // buckets themselves don't change on CGB) ----
+    // Instrumentation for the Memory Map / Banking debug views.
     this.accessSeq = 0;
     this.lastAccess = { addr: 0, region: 'ROM0', type: 'read', seq: 0 };
     this.regionLastTouch = new Uint32Array(REGION_COUNT);
     this.lastBankSwitch = null;
   }
 
-  // Currently-mapped VRAM bank, exposed as a flat `vram` property so any code written
-  // against the DMG MMU's shape (emu-gb-debug.js's tile/tilemap viewers, the RAM editor)
-  // keeps working unmodified - it always sees "whichever bank is selected right now" as a
-  // plain Uint8Array, exactly like reading the real 0x8000-0x9FFF window would.
+  // Currently-mapped VRAM bank as a flat Uint8Array, mirroring reads to 0x8000-0x9FFF.
   get vram() { return this.vramBanks[this.vbk & 1]; }
 
   regionForAddr(addr) {
@@ -159,17 +120,14 @@ class CGBMMU {
     a.addr = addr; a.region = REGION_NAMES[regionId]; a.type = type; a.seq = this.accessSeq;
   }
 
-  /* ---- ROM load / cartridge type detection (identical mapper support to the DMG MMU -
-     GBC cartridges use the exact same MBC1/MBC2/MBC3/MBC5 chips) ---- */
+  /* ---- ROM load / cartridge detection (same MBC1/2/3/5 support as the DMG MMU) ---- */
   loadROM(bytes) {
     this.rom = bytes;
     const cartType = bytes[0x147];
     this.cartTypeByte = cartType;
 
-    // CGB flag (header offset 0x143): 0x80 = CGB-enhanced (also runs on plain DMG hardware),
-    // 0xC0 = CGB-exclusive. Anything else is a cartridge that has never heard of GBC
-    // - it will never touch BCPS/BCPD, so without a compatibility translation its BG/OBJ
-    // palette RAM would stay all-zero (black) forever. See applyDMGCompatPalette() below.
+    // CGB flag (0x143): 0x80 = CGB-enhanced (also runs on DMG), 0xC0 = CGB-exclusive.
+    // Anything else never touches BCPS/BCPD, so palette RAM needs DMG-compat translation.
     const cgbFlag = bytes[0x143];
     this.cgbFlag = cgbFlag;
     this.isCGBCart = (cgbFlag === 0x80 || cgbFlag === 0xC0);
@@ -181,7 +139,7 @@ class CGBMMU {
     else if (cartType >= 0x19 && cartType <= 0x1E) { this.mbcType = 5; this.cartTypeSupported = true; }
     else { this.mbcType = 1; this.cartTypeSupported = false; }
     this.hasRumble = (cartType >= 0x1C && cartType <= 0x1E);
-    this.hasTimer = (cartType === 0x0F || cartType === 0x10); // MBC3+TIMER+BATTERY / MBC3+TIMER+RAM+BATTERY only
+    this.hasTimer = (cartType === 0x0F || cartType === 0x10);
 
     this.currentROMBank = 1;
     this.currentRAMBank = 0;
@@ -220,11 +178,7 @@ class CGBMMU {
     this.io[0x4F] = 0xFE; // VBK reads back with bits 1-7 set
     this.io[0x70] = 0xF8; // SVBK reads back with bits 3-7 set
 
-    // DMG-compatibility mode: a non-CGB cartridge will drive the screen entirely through
-    // BGP/OBP0/OBP1 and will never write BCPS/BCPD, so seed palette RAM from the boot
-    // register values now (applyDMGCompatPalette() also keeps it in sync on every later
-    // BGP/OBP0/OBP1 write - see writeIO). CGB-flagged carts are untouched here, matching the
-    // "blank palette RAM until the game writes its own" behavior documented in the file header.
+    // Non-CGB carts never write BCPS/BCPD, so seed palette RAM from the boot registers now.
     if (!this.isCGBCart) {
       this.applyDMGCompatPalette(0x47, bootIO.BGP);
       this.applyDMGCompatPalette(0x48, bootIO.OBP0);
@@ -302,9 +256,8 @@ class CGBMMU {
     return this.ie;
   }
 
-  // WRAM is 0x2000 bytes of address space split into two 4KB halves: 0x0000-0x0FFF (of that
-  // window) is always bank 0; 0x1000-0x1FFF is whichever bank SVBK selects (bank 0 there
-  // behaves as bank 1 - real hardware quirk, same "0 is never selectable" pattern MBC1/3 use).
+  // WRAM window is two 4KB halves: 0x0000-0x0FFF (of the window) is always bank 0;
+  // 0x1000-0x1FFF is whichever bank SVBK selects (0 behaves as 1, never selectable).
   readWRAM(offset) {
     if (offset < 0x1000) return this.wramBanks[0][offset];
     const bank = (this.svbk & 0x07) || 1;
@@ -338,8 +291,7 @@ class CGBMMU {
     this.ie = val;
   }
 
-  /* ---- MBC banking (byte-for-byte the same logic as the DMG MMU - GBC carts use the same
-     mapper chips) ---- */
+  /* ---- MBC banking (same logic as the DMG MMU - GBC carts use the same mapper chips) ---- */
   handleBanking(addr, val) {
     if (this.mbcType === 0) return;
     const prevROM = this.currentROMBank, prevRAM = this.currentRAMBank,
@@ -470,24 +422,22 @@ class CGBMMU {
       case 0x41: this.io[reg] = (this.io[reg] & 0x07) | (val & 0xF8); return;
       case 0x44: this.io[reg] = 0; return;
       case 0x46: this.doDMA(val); return;
-      // BGP/OBP0/OBP1: on real CGB hardware these still exist and are still writable even by
-      // CGB-aware games, but only actually drive the screen for a non-CGB cart running in
-      // DMG-compatibility mode - see applyDMGCompatPalette().
+      // BGP/OBP0/OBP1 only actually drive the screen for a non-CGB cart (DMG-compat mode).
       case 0x47: this.io[reg] = val; if (!this.isCGBCart) this.applyDMGCompatPalette(0x47, val); return;
       case 0x48: this.io[reg] = val; if (!this.isCGBCart) this.applyDMGCompatPalette(0x48, val); return;
       case 0x49: this.io[reg] = val; if (!this.isCGBCart) this.applyDMGCompatPalette(0x49, val); return;
-      case 0x4D: this.speedSwitchArmed = !!(val & 0x01); return; // KEY1: only bit0 (armed) is writable
+      case 0x4D: this.speedSwitchArmed = !!(val & 0x01); return; // KEY1: only bit0 is writable
       case 0x4F: this.vbk = val & 0x01; return;
       case 0x51: this.hdmaSrc = (this.hdmaSrc & 0x00FF) | (val << 8); return;               // HDMA1 (src hi)
-      case 0x52: this.hdmaSrc = (this.hdmaSrc & 0xFF00) | (val & 0xF0); return;              // HDMA2 (src lo, low nibble ignored)
-      case 0x53: this.hdmaDst = (this.hdmaDst & 0x00FF) | ((val & 0x1F) << 8); return;       // HDMA3 (dst hi, top bits ignored)
-      case 0x54: this.hdmaDst = (this.hdmaDst & 0xFF00) | (val & 0xF0); return;              // HDMA4 (dst lo, low nibble ignored)
+      case 0x52: this.hdmaSrc = (this.hdmaSrc & 0xFF00) | (val & 0xF0); return;              // HDMA2 (src lo)
+      case 0x53: this.hdmaDst = (this.hdmaDst & 0x00FF) | ((val & 0x1F) << 8); return;       // HDMA3 (dst hi)
+      case 0x54: this.hdmaDst = (this.hdmaDst & 0xFF00) | (val & 0xF0); return;              // HDMA4 (dst lo)
       case 0x55: this.startHDMA(val); return;                                                // HDMA5
       case 0x68: this.bcps = val; return;
       case 0x69: this.writeBGPaletteByte(val); return;
       case 0x6A: this.ocps = val; return;
       case 0x6B: this.writeOBJPaletteByte(val); return;
-      case 0x6C: this.io[reg] = val; return; // OPRI - accepted but not acted on (see file header note)
+      case 0x6C: this.io[reg] = val; return; // OPRI - accepted but not acted on
       case 0x70: this.svbk = val & 0x07; return;
       default: this.io[reg] = val; return;
     }
@@ -502,31 +452,20 @@ class CGBMMU {
     if (this.ocps & 0x80) this.ocps = 0x80 | ((this.ocps + 1) & 0x3F);
   }
 
-  // Reads one of the 8 BG or OBJ palettes (4 RGB555 colors each) as [r,g,b] 0-255 triples,
-  // for the PPU to use directly and for a future palette-viewer debug panel.
+  // Reads one of the 8 BG or OBJ palettes (4 RGB555 colors each) as an [r,g,b] 0-255 triple.
   getPaletteRGB(isObj, paletteIndex, colorIndex) {
     const ram = isObj ? this.objPaletteRAM : this.bgPaletteRAM;
     const base = paletteIndex * 8 + colorIndex * 2;
     const lo = ram[base], hi = ram[base + 1];
     const word = (hi << 8) | lo;
     const r5 = word & 0x1F, g5 = (word >> 5) & 0x1F, b5 = (word >> 10) & 0x1F;
-    // 5-bit -> 8-bit: replicate the top 3 bits into the low bits, same technique used
-    // throughout graphics hardware/emulation for a perceptually even spread across 0-255.
+    // 5-bit -> 8-bit: replicate the top 3 bits into the low bits for an even spread.
     return [(r5 << 3) | (r5 >> 2), (g5 << 3) | (g5 >> 2), (b5 << 3) | (b5 >> 2)];
   }
 
-  // ---- DMG compatibility palette (only used when isCGBCart is false) ----
-  // A cartridge without the CGB flag has no idea BCPS/BCPD (0xFF68-0xFF6B) exist - it only
-  // ever writes the classic DMG palette registers BGP (0xFF47), OBP0 (0xFF48), OBP1 (0xFF49).
-  // Real CGB hardware handles this by running such carts in "DMG compatibility mode": the
-  // PPU still renders from its normal color palette RAM internally, but the boot ROM/hardware
-  // keeps that RAM in sync with whatever the game writes to BGP/OBP0/OBP1, translating each
-  // 2-bit shade through a fixed ramp. We do the same, reusing the DMG core's own GB
-  // Pocket grayscale table (EMU_CORE_CONFIG.PALETTE_GBP) as that ramp - a reasonable,
-  // documented simplification of the real boot ROM's per-game tinted compatibility palettes.
-  // BGP always maps to BG palette 0; OBP0/OBP1 map to OBJ palettes 0/1 respectively, matching
-  // which OAM attribute bit a DMG game actually sets (see getSpriteCandidatesForLine in
-  // CGBPPU, which reads that same bit instead of the full CGB 3-bit palette-index field).
+  // DMG-compatibility mode: a non-CGB cart only writes BGP/OBP0/OBP1, so translate each
+  // write into CGB palette RAM through the DMG grayscale ramp. BGP -> BG palette 0,
+  // OBP0/OBP1 -> OBJ palettes 0/1.
   applyDMGCompatPalette(reg, val) {
     const SHADES = EMU_CORE_CONFIG.PALETTE_GBP;
     const isObj = reg !== 0x47;
@@ -549,22 +488,20 @@ class CGBMMU {
     if (this.emulator.trackAccess) fs.events.push({ line: this.emulator.ppu.ly, kind: 'dma' });
   }
 
-  // HDMA5 write: bit7 chooses general-purpose (instant) vs H-Blank-mode transfer; bits0-6
-  // are (transfer length / 0x10) - 1, i.e. 1-128 blocks of 16 bytes each (max 0x800 bytes).
+  // HDMA5 write: bit7 picks general-purpose (instant) vs H-Blank-mode transfer; bits0-6 are
+  // (length / 0x10) - 1, i.e. 1-128 blocks of 16 bytes each.
   startHDMA(val) {
     const blocks = (val & 0x7F) + 1;
     if (val & 0x80) {
-      // H-Blank mode: don't transfer yet - CGBPPU calls serviceHDMABlock() once per HBlank.
-      this.hdmaActive = true;
+      this.hdmaActive = true; // transferred one block per H-Blank via serviceHDMABlock()
       this.hdmaBlocksLeft = blocks;
     } else {
-      if (this.hdmaActive) { this.hdmaActive = false; return; } // writing GP-mode while HBlank-mode is active cancels it
+      if (this.hdmaActive) { this.hdmaActive = false; return; } // GP-mode write cancels an active HBlank transfer
       for (let b = 0; b < blocks; b++) this.transferHDMABlock();
     }
   }
 
-  // Moves one 0x10-byte block from hdmaSrc to hdmaDst (both auto-advance), used by both the
-  // instant general-purpose path above and CGBPPU's once-per-HBlank calls.
+  // Moves one 0x10-byte block from hdmaSrc to hdmaDst (both auto-advance).
   transferHDMABlock() {
     const CGB = EMU_CGB_CORE_CONFIG;
     for (let i = 0; i < CGB.HDMA_BLOCK_BYTES; i++) {
@@ -574,9 +511,7 @@ class CGBMMU {
     this.hdmaDst = (this.hdmaDst + CGB.HDMA_BLOCK_BYTES) & 0x1FFF;
   }
 
-  // Called by CGBPPU exactly once each time the PPU enters H-Blank, while an H-Blank-mode
-  // HDMA transfer is pending. Real hardware also briefly stalls the CPU per block; this
-  // emulator (like its DMG OAM DMA) simplifies that away.
+  // Called by CGBPPU once per H-Blank while an H-Blank-mode HDMA transfer is pending.
   serviceHDMABlock() {
     if (!this.hdmaActive) return;
     this.transferHDMABlock();
@@ -585,7 +520,7 @@ class CGBMMU {
   }
 }
 
-/* ============================== 2. CGBCPU (subclass of CPU) ============================ */
+/* ============================== 2. CGBCPU (subclass of CPU) ============================= */
 
 class CGBCPU extends CPU {
   reset() {
@@ -601,8 +536,7 @@ class CGBCPU extends CPU {
     this.cycles = 0;
   }
 
-  // Overrides only the CGB speed-switch behavior; every other opcode still runs through
-  // the base CPU's execute()/opcode table unchanged.
+  // Only STOP's double-speed switch differs from the base CPU; every other opcode is unchanged.
   handleStop() {
     this.PC = (this.PC + 1) & 0xFFFF;
     if (this.mmu.speedSwitchArmed) {
@@ -615,7 +549,7 @@ class CGBCPU extends CPU {
   get doubleSpeed() { return this.mmu.doubleSpeed; }
 }
 
-/* ============================== 3. CGBPPU (self-contained) ============================== */
+/* ============================== 3. CGBPPU ================================================ */
 
 class CGBPPU {
   constructor(emulator) {
@@ -660,21 +594,21 @@ class CGBPPU {
     const MODE = EMU_CORE_CONFIG.PPU_MODE_CYCLES, FRAME = EMU_CORE_CONFIG.FRAME;
     this.modeClock += cycles;
     switch (this.mode) {
-      case 2:
+      case 2: // OAM search
         if (this.modeClock >= MODE.OAM_SEARCH) { this.modeClock -= MODE.OAM_SEARCH; this.mode = 3; }
         break;
 
-      case 3:
+      case 3: // pixel transfer
         if (this.modeClock >= MODE.PIXEL_TRANSFER) {
           this.modeClock -= MODE.PIXEL_TRANSFER;
           this.mode = 0; this.setStatMode(0);
           this.renderScanline();
           this.checkStatInterrupt(0x08);
-          this.mmu.serviceHDMABlock(); // H-Blank-mode HDMA transfers one block per H-Blank
+          this.mmu.serviceHDMABlock(); // one HDMA block per H-Blank
         }
         break;
 
-      case 0:
+      case 0: // H-Blank
         if (this.modeClock >= MODE.HBLANK) {
           this.modeClock -= MODE.HBLANK;
           this.ly++;
@@ -691,7 +625,7 @@ class CGBPPU {
         }
         break;
 
-      case 1:
+      case 1: // V-Blank
         if (this.modeClock >= FRAME.CYCLES_PER_LINE) {
           this.modeClock -= FRAME.CYCLES_PER_LINE;
           this.ly++;
@@ -716,25 +650,24 @@ class CGBPPU {
   renderScanline() {
     const y = this.ly;
     if (y >= EMU_CORE_CONFIG.SCREEN.HEIGHT) return;
-    // Per-pixel BG "wins" info for sprite priority: bit0 = BG/window color index was non-zero,
-    // bit1 = the BG-to-OAM priority attribute bit was set for that tile.
+    // Per-pixel BG info for sprite priority: bit0 = BG/window color was non-zero,
+    // bit1 = the tile's BG-to-OAM priority attribute was set.
     const bgPriority = new Uint8Array(EMU_CORE_CONFIG.SCREEN.WIDTH);
 
-    // On CGB, LCDC.0 isn't "BG/window off" like DMG - it's a master priority toggle: when
-    // clear, sprites are drawn on top of everything regardless of any priority bit.
+    // LCDC.0 is a master sprite-priority toggle on CGB (not "BG off" like DMG): when clear,
+    // sprites draw on top of everything regardless of any priority bit.
     this.renderBackgroundLine(y, bgPriority);
     if (this.lcdc & 0x20) this.renderWindowLine(y, bgPriority);
     if (this.lcdc & 0x02) this.renderSpritesLine(y, bgPriority);
   }
 
-  // Reads the tile map entry + its CGB attribute byte at tile-space (mapX, mapY). Tile
-  // indices/pixel data live in whichever VRAM bank the attribute byte's bit3 selects - NOT
-  // whatever VBK currently has selected, since VBK only affects direct CPU access to VRAM.
+  // Tile map entry + CGB attribute byte at tile-space (mapX, mapY). Tile pixel data lives in
+  // whichever VRAM bank the attribute byte's bit3 selects, independent of VBK.
   getTileInfo(tileMapBase, mapX, mapY) {
     const tileRow = mapY >> 3, tileCol = mapX >> 3;
     const mapOffset = (tileMapBase + tileRow * 32 + tileCol) - 0x8000;
-    const tileIndexRaw = this.mmu.vramBanks[0][mapOffset]; // tile map itself always lives in bank 0
-    const attrs = this.mmu.vramBanks[1][mapOffset];        // CGB tile attributes live in bank 1, same address
+    const tileIndexRaw = this.mmu.vramBanks[0][mapOffset]; // tile map always lives in bank 0
+    const attrs = this.mmu.vramBanks[1][mapOffset];        // attributes live in bank 1, same address
     return { tileIndexRaw, attrs };
   }
 
@@ -745,7 +678,7 @@ class CGBPPU {
     return this._tdConfig;
   }
 
-  // Color index (0-3) plus the resolved CGB palette number/bank/priority for a BG or window
+  // Color index (0-3) plus resolved CGB palette number/bank/priority for a BG or window
   // pixel at tile-space (mapX, mapY).
   getBGWindowPixel(tileMapBase, mapX, mapY) {
     const { tileIndexRaw, attrs } = this.getTileInfo(tileMapBase, mapX, mapY);
@@ -767,14 +700,8 @@ class CGBPPU {
     return { colorIndex, paletteNum, priority };
   }
 
-  // ---- DMG-PPU-compatible shims for emu-gb-debug.js ----
-  // The debug/layer-viewer module was written against the DMG PPU's API: a plain
-  // getBackgroundColorIndex(x,y)/getWindowColorIndex(winX,winY) returning a single color
-  // number (0-3), plus applyPalette(colorNum, paletteByte) turning that into [r,g,b] via one
-  // flat palette register. CGB has no such flat colorNum-only model (color depends on which
-  // of 8 BG or 8 OBJ palettes the tile/sprite selects), so these are approximations: they
-  // resolve color using BG palette 0, which matches real output for games using only one
-  // BG palette and is reasonable otherwise.
+  // DMG-PPU-compatible shims for emu-gb-debug.js's layer viewer. CGB color depends on which
+  // of 8 BG/OBJ palettes a tile/sprite selects, so these approximate using BG palette 0.
   getBackgroundColorIndex(x, y) {
     const tileMapBase = (this.lcdc & 0x08) ? 0x9C00 : 0x9800;
     const bgX = (x + this.scx) & 0xFF, bgY = (y + this.scy) & 0xFF;
@@ -786,8 +713,7 @@ class CGBPPU {
     return this.getBGWindowPixel(tileMapBase, winX, winY).colorIndex;
   }
 
-  // `palette` (a DMG-style register byte) is ignored - CGB has no such register - and BG
-  // palette 0 is used as the debug-view's reference palette instead.
+  // `palette` is ignored (CGB has no such register) - BG palette 0 is used as the reference.
   applyPalette(colorNum, palette) {
     return this.mmu.getPaletteRGB(false, 0, colorNum);
   }
@@ -838,8 +764,7 @@ class CGBPPU {
     const candidates = this._spriteCandidates;
     const pool = this._spriteSlotPool;
     candidates.length = 0;
-    // CGB default priority mode: OAM index order (lowest index drawn on top), NOT DMG's
-    // X-coordinate rule - see file header note on OPRI.
+    // CGB default priority: OAM index order, lowest index drawn on top (not DMG's X-coordinate rule).
     for (let i = 0; i < SPR.MAX_TOTAL && candidates.length < SPR.MAX_PER_LINE; i++) {
       const base = i * 4;
       const spriteY = this.mmu.oam[base] - 16;
@@ -853,8 +778,7 @@ class CGBPPU {
         candidates.push(slot);
       }
     }
-    // Draw lowest-priority (highest OAM index) first, so higher-priority (lower index)
-    // sprites are drawn last and correctly win overlaps.
+    // Draw lowest-priority (highest OAM index) first so higher-priority sprites win overlaps.
     candidates.sort((a, b) => b.oamIndex - a.oamIndex);
     return candidates;
   }
@@ -892,17 +816,15 @@ class CGBPPU {
     fs.spritesTotal += candidates.length;
     if (candidates.length > fs.spritesMaxLine) fs.spritesMaxLine = candidates.length;
 
-    // LCDC.0 master priority: when clear, sprites always draw on top, ignoring both the
-    // sprite's own OBJ-to-BG priority bit and the BG tile's priority attribute.
+    // LCDC.0 master priority: when clear, sprites always draw on top.
     const masterPriority = !!(this.lcdc & 0x01);
     const tint = this.emulator.layerTint;
 
     for (const s of candidates) {
       if (s.spriteX <= -8 || s.spriteX >= EMU_CORE_CONFIG.SCREEN.WIDTH) continue;
       const behindBG = !!(s.attrs & 0x80);
-      // CGB carts: full 3-bit OBJ palette index. Non-CGB carts only ever set attribute bit4
-      // (the DMG OBP0/OBP1 select bit) - bits0-2 stay 0, so reading them here would collapse
-      // every sprite onto OBJ palette 0 regardless of which DMG palette the game asked for.
+      // CGB carts use the full 3-bit OBJ palette index; non-CGB carts only set attribute
+      // bit4 (DMG OBP0/OBP1 select), so fall back to that bit for them.
       const paletteNum = this.mmu.isCGBCart ? (s.attrs & 0x07) : ((s.attrs & 0x10) ? 1 : 0);
       const { lo, hi, xFlip } = this.getSpriteRowBits(s, y, spriteHeight);
 
@@ -927,10 +849,7 @@ class CGBPPU {
     }
   }
 
-  // Blends a rendered pixel toward its layer's debug tint color when layer-tint mode is on;
-  // returns the color unchanged otherwise. `layer` is one of 'bg' | 'window' | 'sprite'.
-  // Mirrors DMG PPU.tintForLayer(), reusing the same EMU_CORE_CONFIG.LAYER_TINTS palette so
-  // the layer-viewer tab looks consistent across both cores.
+  // Blends a pixel toward its layer's debug tint color when layer-tint mode is on.
   tintForLayer(r, g, b, layer) {
     if (!this.emulator.layerTint) return [r, g, b];
     const [tr, tg, tb] = EMU_CORE_CONFIG.LAYER_TINTS[layer];
@@ -944,27 +863,19 @@ class CGBPPU {
 
 /* ============================== 4. GBEmulator / CGBEmulator ============================= */
 
-// Pure naming alias: DMG's Emulator already only ever builds DMG components, so this exists
-// purely so app.js can refer to "GBEmulator" and "CGBEmulator" symmetrically instead of one
-// side being the unprefixed base class.
 class GBEmulator extends Emulator {}
 
 class CGBEmulator extends Emulator {
   constructor(canvas) {
-    super(canvas); // builds the DMG mmu/cpu/ppu first; immediately replaced below
-
+    super(canvas); // builds DMG mmu/cpu/ppu first; replaced below
     this.mmu = new CGBMMU(this);
     this.cpu = new CGBCPU(this.mmu);
     this.ppu = new CGBPPU(this);
-    // timer/joypad/apu are already correct - Emulator's constructor built the shared,
-    // console-agnostic Timer/Joypad/APU classes, and those already point at `this`.
+    // timer/joypad/apu are already correct - they're console-agnostic and already point at `this`.
   }
 
-  // Double-speed cycle accounting: the CPU consumes T-cycles twice as fast in double-speed
-  // mode, but the PPU/APU must keep running at the same real-time rate, so they're fed half
-  // as many cycles. DIV/TIMA are driven directly off the faster clock, so the Timer gets the
-  // full, un-halved count. The returned frame-cycle-budget follows the PPU's pace, so a
-  // "frame" still means one real PPU frame regardless of CPU speed.
+  // In double-speed mode the CPU consumes T-cycles twice as fast, so the PPU/APU (which run
+  // at real-time rate) get half as many cycles. The Timer runs off the full, un-halved clock.
   stepHardware(cycles) {
     const speedDiv = this.cpu.doubleSpeed ? 2 : 1;
     const ppuCycles = cycles / speedDiv;

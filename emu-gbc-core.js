@@ -86,12 +86,6 @@ class CGBMMU {
     // (register read/write) need to see it.
     this.doubleSpeed = false;
     this.speedSwitchArmed = false;
-
-    // Instrumentation for the Memory Map / Banking debug views.
-    this.accessSeq = 0;
-    this.lastAccess = { addr: 0, region: 'ROM0', type: 'read', seq: 0 };
-    this.regionLastTouch = new Uint32Array(REGION_COUNT);
-    this.lastBankSwitch = null;
   }
 
   // Currently-mapped VRAM bank as a flat Uint8Array, mirroring reads to 0x8000-0x9FFF.
@@ -110,14 +104,6 @@ class CGBMMU {
     if (addr < MEM.IO_END) return REGION_IO;
     if (addr < MEM.HRAM_END) return REGION_HRAM;
     return REGION_IE;
-  }
-
-  noteAccess(addr, type) {
-    const regionId = this.regionForAddr(addr);
-    this.accessSeq++;
-    this.regionLastTouch[regionId] = this.accessSeq;
-    const a = this.lastAccess;
-    a.addr = addr; a.region = REGION_NAMES[regionId]; a.type = type; a.seq = this.accessSeq;
   }
 
   /* ---- ROM load / cartridge detection (same MBC1/2/3/5 support as the DMG MMU) ---- */
@@ -161,11 +147,6 @@ class CGBMMU {
     this.bcps = 0; this.ocps = 0;
     this.hdmaSrc = 0; this.hdmaDst = 0; this.hdmaActive = false; this.hdmaBlocksLeft = 0;
     this.doubleSpeed = false; this.speedSwitchArmed = false;
-
-    this.accessSeq = 0;
-    this.lastAccess.addr = 0; this.lastAccess.region = 'ROM0'; this.lastAccess.type = 'read'; this.lastAccess.seq = 0;
-    this.regionLastTouch.fill(0);
-    this.lastBankSwitch = null;
 
     const bootIO = EMU_CGB_CORE_CONFIG.BOOT.IO;
     this.io.fill(0);
@@ -229,7 +210,7 @@ class CGBMMU {
 
   read8(addr) {
     addr &= 0xFFFF;
-    if (this.emulator.trackMemMap) this.noteAccess(addr, 'read');
+    if (this.emulator.stats.trackMemMap) this.emulator.stats.recordMemAccess(addr, this.regionForAddr(addr), 'read');
     return this.peek8(addr);
   }
 
@@ -271,7 +252,7 @@ class CGBMMU {
 
   write8(addr, val) {
     addr &= 0xFFFF; val &= 0xFF;
-    if (this.emulator.trackMemMap) this.noteAccess(addr, 'write');
+    if (this.emulator.stats.trackMemMap) this.emulator.stats.recordMemAccess(addr, this.regionForAddr(addr), 'write');
     const MEM = EMU_CORE_CONFIG.MEMORY;
     if (addr < MEM.ROMX_END) { this.handleBanking(addr, val); return; }
     if (addr < MEM.VRAM_END) { this.vram[addr - MEM.ROMX_END] = val; return; }
@@ -333,22 +314,15 @@ class CGBMMU {
     }
 
     if (this.currentROMBank !== prevROM) {
-      this.lastBankSwitch = { kind: 'rom', addr, val, romBank: this.currentROMBank, ramBank: this.currentRAMBank, t: performance.now() };
+      this.emulator.stats.recordBankSwitch('rom', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     } else if (this.currentRAMBank !== prevRAM) {
-      this.lastBankSwitch = { kind: 'ram', addr, val, romBank: this.currentROMBank, ramBank: this.currentRAMBank, t: performance.now() };
+      this.emulator.stats.recordBankSwitch('ram', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     } else if (this.rtcSelect !== prevRtcSelect) {
-      this.lastBankSwitch = { kind: 'rtc', addr, val, romBank: this.currentROMBank, ramBank: this.currentRAMBank, t: performance.now() };
+      this.emulator.stats.recordBankSwitch('rtc', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     } else if (this.ramEnabled !== prevEnabled) {
-      this.lastBankSwitch = { kind: 'enable', addr, val, romBank: this.currentROMBank, ramBank: this.currentRAMBank, t: performance.now() };
+      this.emulator.stats.recordBankSwitch('enable', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     } else if (this.bankingMode !== prevMode) {
-      this.lastBankSwitch = { kind: 'mode', addr, val, romBank: this.currentROMBank, ramBank: this.currentRAMBank, t: performance.now() };
-    }
-
-    if (this.currentROMBank !== prevROM || this.currentRAMBank !== prevRAM || this.rtcSelect !== prevRtcSelect ||
-        this.ramEnabled !== prevEnabled || this.bankingMode !== prevMode) {
-      const fs = this.emulator.frameStats;
-      fs.bankSwitches++;
-      if (this.emulator.trackAccess) fs.events.push({ line: this.emulator.ppu.ly, kind: 'bank' });
+      this.emulator.stats.recordBankSwitch('mode', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     }
   }
 
@@ -483,9 +457,7 @@ class CGBMMU {
   doDMA(val) {
     const src = val << 8;
     for (let i = 0; i < EMU_CORE_CONFIG.OAM_DMA_BYTES; i++) this.oam[i] = this.read8(src + i);
-    const fs = this.emulator.frameStats;
-    fs.dma++;
-    if (this.emulator.trackAccess) fs.events.push({ line: this.emulator.ppu.ly, kind: 'dma' });
+    this.emulator.stats.recordDMA(this.emulator.ppu.ly);
   }
 
   // HDMA5 write: bit7 picks general-purpose (instant) vs H-Blank-mode transfer; bits0-6 are
@@ -811,10 +783,7 @@ class CGBPPU {
     const spriteHeight = (this.lcdc & 0x04) ? SPR.HEIGHT_TALL : SPR.HEIGHT_SMALL;
     const candidates = this.getSpriteCandidatesForLine(y, spriteHeight);
 
-    const fs = this.emulator.frameStats;
-    fs.spritesPerLine[y] = candidates.length;
-    fs.spritesTotal += candidates.length;
-    if (candidates.length > fs.spritesMaxLine) fs.spritesMaxLine = candidates.length;
+    this.emulator.stats.recordSprites(y, candidates.length);
 
     // LCDC.0 master priority: when clear, sprites always draw on top.
     const masterPriority = !!(this.lcdc & 0x01);

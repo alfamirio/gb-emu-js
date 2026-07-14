@@ -191,7 +191,7 @@ function drawMemMap() {
   const bankTag = document.getElementById('mmRomBankTag');
   if (bankTag) bankTag.textContent = 'Bank ' + mmu.currentROMBank;
 
-  const a = mmu.lastAccess;
+  const a = emulator.stats.lastAccess;
   if (a.seq === 0) return; // nothing accessed yet (no ROM loaded / not run)
 
   if (a.seq !== lastRenderedAccessSeq) {
@@ -320,7 +320,7 @@ function drawBanking() {
     t.classList.toggle('bank-active', ramBankMapped && Number(t.dataset.bank) === mmu.currentRAMBank);
   });
 
-  const bs = mmu.lastBankSwitch;
+  const bs = emulator.stats.lastBankSwitch;
   if (bs && bs.t !== lastRenderedBankSwitchT) {
     lastRenderedBankSwitchT = bs.t;
 
@@ -686,11 +686,11 @@ function updateCpuControlsVisibility(tool) {
   cpuDebugControls.classList.toggle('hidden', !TOOLS_NEEDING_CPU_CONTROLS.includes(tool));
 }
 
-// Keep emulator.trackMemMap/trackTrace synced to (debug mode on) AND (that tab active),
-// so the hot instrumentation only runs when its tab is actually open.
+// Keep emulator.stats.trackMemMap/emulator.trackTrace synced to (debug mode on) AND (that
+// tab active), so the hot instrumentation only runs when its tab is actually open.
 function syncAccessTracking(activeDebugTool) {
   const debugging = !document.body.classList.contains('playing-mode');
-  emulator.trackMemMap = debugging && (activeDebugTool === 'memmap' || activeDebugTool === 'banking');
+  emulator.stats.trackMemMap = debugging && (activeDebugTool === 'memmap' || activeDebugTool === 'banking');
   emulator.trackTrace = debugging && (activeDebugTool === 'trace');
 }
 
@@ -756,7 +756,7 @@ const modeLabelDebug = document.getElementById('modeLabelDebug');
 function applyMode() {
   const debugging = modeToggle.checked;
   document.body.classList.toggle('playing-mode', !debugging);
-  emulator.trackAccess = debugging; // skip the coarser frame-activity bookkeeping entirely while just playing
+  emulator.stats.trackAccess = debugging; // skip the coarser frame-activity bookkeeping entirely while just playing
   syncAccessTracking(debugToolsContainer.querySelector('.tool-tab.active').dataset.tool); // and the finer memmap/trace gates
   modeLabelDebug.classList.toggle('active', debugging);
   modeLabelPlay.classList.toggle('active', !debugging);
@@ -1784,13 +1784,13 @@ let selectedFrameStatsIndex = null; // frameStats.index, or null to follow the l
 let selectedAnatomyLine = null;     // scanline 0-153, or null if none chosen
 
 function getFrameActivitySlice() {
-  const hist = emulator.frameStatsHistory;
-  return hist.slice(Math.max(0, hist.length - emulator.FRAME_STATS_HISTORY));
+  const hist = emulator.stats.frameStatsHistory;
+  return hist.slice(Math.max(0, hist.length - emulator.stats.FRAME_STATS_HISTORY));
 }
 
 // The frame entry shown by both "Anatomy of frame" and "Anatomy of line".
 function getSelectedAnatomyEntry() {
-  const hist = emulator.frameStatsHistory;
+  const hist = emulator.stats.frameStatsHistory;
   if (hist.length === 0) return null;
   return (selectedFrameStatsIndex === null ? null : hist.find(f => f.index === selectedFrameStatsIndex))
          || hist[hist.length - 1];
@@ -2062,7 +2062,7 @@ function drawInterrupts() {
       `</div>`;
   }).join('');
 
-  const log = emulator.interruptLog;
+  const log = emulator.stats.interruptLog;
   intLog.innerHTML = log.length === 0
     ? '<div class="int-log-empty">No interrupts serviced yet.</div>'
     : log.slice().reverse().map(e =>

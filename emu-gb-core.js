@@ -136,13 +136,6 @@ class MMU {
     this.hram = new Uint8Array(MEM.HRAM_SIZE);
     this.io   = new Uint8Array(MEM.IO_SIZE);
     this.ie   = 0; // 0xFFFF interrupt enable register
-
-    // Debug-UI instrumentation: which region/address was last touched, and the last
-    // bank-switch event. Purely observational, no effect on emulation.
-    this.accessSeq = 0;
-    this.lastAccess = { addr: 0, region: 'ROM0', type: 'read', seq: 0 };
-    this.regionLastTouch = new Uint32Array(REGION_COUNT);
-    this.lastBankSwitch = null; // { kind, addr, val, romBank, ramBank, t } or null
   }
 
   // Classifies an address into a REGION_* id.
@@ -159,15 +152,6 @@ class MMU {
     if (addr < MEM.IO_END) return REGION_IO;
     if (addr < MEM.HRAM_END) return REGION_HRAM;
     return REGION_IE;
-  }
-
-  // Records a read/write for the Memory Map debug view.
-  noteAccess(addr, type) {
-    const regionId = this.regionForAddr(addr);
-    this.accessSeq++;
-    this.regionLastTouch[regionId] = this.accessSeq;
-    const a = this.lastAccess;
-    a.addr = addr; a.region = REGION_NAMES[regionId]; a.type = type; a.seq = this.accessSeq;
   }
 
   loadROM(bytes) {
@@ -195,11 +179,6 @@ class MMU {
       lastRealMs: Date.now(),
     };
     this.rtcSelect = -1;
-
-    this.accessSeq = 0;
-    this.lastAccess.addr = 0; this.lastAccess.region = 'ROM0'; this.lastAccess.type = 'read'; this.lastAccess.seq = 0;
-    this.regionLastTouch.fill(0);
-    this.lastBankSwitch = null;
 
     // I/O state as left by the boot ROM.
     const bootIO = EMU_CORE_CONFIG.BOOT.IO;
@@ -247,7 +226,7 @@ class MMU {
 
   read8(addr) {
     addr &= 0xFFFF;
-    if (this.emulator.trackMemMap) this.noteAccess(addr, 'read');
+    if (this.emulator.stats.trackMemMap) this.emulator.stats.recordMemAccess(addr, this.regionForAddr(addr), 'read');
     return this.peek8(addr);
   }
 
@@ -280,7 +259,7 @@ class MMU {
 
   write8(addr, val) {
     addr &= 0xFFFF; val &= 0xFF;
-    if (this.emulator.trackMemMap) this.noteAccess(addr, 'write');
+    if (this.emulator.stats.trackMemMap) this.emulator.stats.recordMemAccess(addr, this.regionForAddr(addr), 'write');
     const MEM = EMU_CORE_CONFIG.MEMORY;
     if (addr < MEM.ROMX_END) { this.handleBanking(addr, val); return; }
     if (addr < MEM.VRAM_END) { this.vram[addr - MEM.ROMX_END] = val; return; }
@@ -376,22 +355,15 @@ class MMU {
     // Track what changed, for the MBC Banking debug view (ROM bank change checked first,
     // since it's by far the most common event).
     if (this.currentROMBank !== prevROM) {
-      this.lastBankSwitch = { kind: 'rom', addr, val, romBank: this.currentROMBank, ramBank: this.currentRAMBank, t: performance.now() };
+      this.emulator.stats.recordBankSwitch('rom', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     } else if (this.currentRAMBank !== prevRAM) {
-      this.lastBankSwitch = { kind: 'ram', addr, val, romBank: this.currentROMBank, ramBank: this.currentRAMBank, t: performance.now() };
+      this.emulator.stats.recordBankSwitch('ram', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     } else if (this.rtcSelect !== prevRtcSelect) {
-      this.lastBankSwitch = { kind: 'rtc', addr, val, romBank: this.currentROMBank, ramBank: this.currentRAMBank, t: performance.now() };
+      this.emulator.stats.recordBankSwitch('rtc', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     } else if (this.ramEnabled !== prevEnabled) {
-      this.lastBankSwitch = { kind: 'enable', addr, val, romBank: this.currentROMBank, ramBank: this.currentRAMBank, t: performance.now() };
+      this.emulator.stats.recordBankSwitch('enable', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     } else if (this.bankingMode !== prevMode) {
-      this.lastBankSwitch = { kind: 'mode', addr, val, romBank: this.currentROMBank, ramBank: this.currentRAMBank, t: performance.now() };
-    }
-
-    if (this.currentROMBank !== prevROM || this.currentRAMBank !== prevRAM || this.rtcSelect !== prevRtcSelect ||
-        this.ramEnabled !== prevEnabled || this.bankingMode !== prevMode) {
-      const fs = this.emulator.frameStats;
-      fs.bankSwitches++;
-      if (this.emulator.trackAccess) fs.events.push({ line: this.emulator.ppu.ly, kind: 'bank' });
+      this.emulator.stats.recordBankSwitch('mode', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     }
   }
 
@@ -479,9 +451,7 @@ class MMU {
   doDMA(val) {
     const src = val << 8;
     for (let i = 0; i < EMU_CORE_CONFIG.OAM_DMA_BYTES; i++) this.oam[i] = this.read8(src + i);
-    const fs = this.emulator.frameStats;
-    fs.dma++;
-    if (this.emulator.trackAccess) fs.events.push({ line: this.emulator.ppu.ly, kind: 'dma' });
+    this.emulator.stats.recordDMA(this.emulator.ppu.ly);
   }
 }
 
@@ -1327,10 +1297,7 @@ class PPU {
     const spriteHeight = (this.lcdc & 0x04) ? SPR.HEIGHT_TALL : SPR.HEIGHT_SMALL;
     const candidates = this.getSpriteCandidatesForLine(y, spriteHeight);
 
-    const fs = this.emulator.frameStats;
-    fs.spritesPerLine[y] = candidates.length;
-    fs.spritesTotal += candidates.length;
-    if (candidates.length > fs.spritesMaxLine) fs.spritesMaxLine = candidates.length;
+    this.emulator.stats.recordSprites(y, candidates.length);
 
     const tint = this.emulator.layerTint;
 
@@ -1765,9 +1732,7 @@ class APU {
 
   /* ---- channel triggers (NRx4 bit 7 write) ---- */
   noteTrigger() {
-    const fs = this.emulator.frameStats;
-    fs.apuTriggers++;
-    if (this.emulator.trackAccess) fs.events.push({ line: this.emulator.ppu.ly, kind: 'apu' });
+    this.emulator.stats.recordAPUTrigger(this.emulator.ppu.ly);
   }
   triggerCh1() {
     this.noteTrigger();
@@ -1976,15 +1941,13 @@ class Emulator {
 
     this.running = false;
     this.onRunStateChange = null; // called with the new boolean whenever _setRunning() flips this.running
-    this.onFrame = null;      // called after a redraw-worthy point (frame/step/rewind), with this.frameStats
+    this.onFrame = null;      // called after a redraw-worthy point (frame/step/rewind), with this.stats.frameStats
     this.onInterrupt = null;  // called whenever an interrupt is actually dispatched, with (bit, pcBefore)
     this.onFpsUpdate = null;  // called ~once/sec during continuous play, with the rendered-frames-per-second count
     this.frameReady = false;
     this._rafId = null;
     this.layerTint = false;
 
-    this.trackAccess = true;  // gates frame-activity/interrupt-log bookkeeping
-    this.trackMemMap = false; // gates per-memory-access bookkeeping (Memory Map / MBC Banking views)
     this.trackTrace = false;  // gates per-instruction bookkeeping (Execution Trace view)
 
     this.speed = 1;          // 0.1-1.0 multiplier applied to how fast emulated frames advance
@@ -2017,12 +1980,10 @@ class Emulator {
     this.rewindBuffer = [];  // oldest first, most recent last
     this.rewindFrameAcc = 0; // frames since the last snapshot
 
-    /* ---- frame activity: per-frame counts of hardware events (instructions, interrupts,
-       sprites, DMA, banking, APU triggers), for the Frame Activity panel. ---- */
-    this.FRAME_STATS_HISTORY = 60; // ~1 second at 59.73fps
-    this.frameStatsHistory = [];
-    this.frameCounter = 0;
-    this.frameStats = this.newFrameStats();
+    /* ---- frame activity, interrupt log, and memory-access bookkeeping for the debug UI
+       (Frame Activity / Interrupts / Memory Map / MBC Banking panels). Purely observational,
+       no effect on emulation. ---- */
+    this.stats = new CoreStats();
 
     /* ---- execution trace: ring buffer of the last TRACE_SIZE fetched instructions ---- */
     this.TRACE_SIZE = 500;
@@ -2033,45 +1994,17 @@ class Emulator {
     this.traceDiff = new Array(this.TRACE_SIZE).fill(''); // "A: 0x00→0x05 Z:1→0" style string per entry
     this.traceWritePos = 0;
     this.traceFilled = 0;
-
-    /* ---- interrupt log: last INTERRUPT_LOG_SIZE interrupts actually dispatched (not just
-       requested), for the Interrupts debug panel. ---- */
-    this.INTERRUPT_LOG_SIZE = 60;
-    this.interruptLog = []; // oldest first; each entry { seq, frame, bit, pcBefore }
-    this.interruptSeq = 0;
-  }
-
-  // Fresh accumulator for one frame's hardware activity. spritesPerLine is indexed by
-  // scanline; events is an ordered { line, kind } list used by the Frame Activity strip.
-  newFrameStats() {
-    return {
-      index: this.frameCounter,
-      instructions: 0,
-      interrupts: { vblank: 0, stat: 0, timer: 0, serial: 0, joypad: 0 },
-      events: [],
-      dma: 0,
-      bankSwitches: 0,
-      apuTriggers: 0,
-      spritesPerLine: new Uint8Array(EMU_CORE_CONFIG.SCREEN.HEIGHT),
-      spritesTotal: 0,
-      spritesMaxLine: 0,
-    };
   }
 
   requestInterrupt(bit) {
     this.mmu.io[0x0F] |= (1 << bit);
-    const kind = INTERRUPT_KIND_NAMES[bit];
-    if (kind) {
-      this.frameStats.interrupts[kind]++;
-      if (this.trackAccess) this.frameStats.events.push({ line: this.ppu.ly, kind: 'int-' + kind });
-    }
+    this.stats.recordInterrupt(bit, this.ppu.ly);
   }
 
   // Called by CPU.tryDispatchInterrupt() the instant it actually dispatches (pushes PC and
   // jumps to the handler) — not just when the IF bit is set.
   logInterruptServiced(bit, pcBefore) {
-    this.interruptLog.push({ seq: this.interruptSeq++, frame: this.frameCounter, bit, pcBefore });
-    if (this.interruptLog.length > this.INTERRUPT_LOG_SIZE) this.interruptLog.shift();
+    this.stats.recordInterruptServiced(bit, pcBefore, this.stats.frameCounter);
     if (this.onInterrupt) this.onInterrupt(bit, pcBefore);
   }
 
@@ -2082,13 +2015,9 @@ class Emulator {
     this.timer.divCounter = 0; this.timer.divReg = 0; this.timer.timaCounter = 0; this.timer.tima = 0;
     this.apu.reset();
 
-    this.frameStatsHistory = [];
-    this.frameCounter = 0;
-    this.frameStats = this.newFrameStats();
+    this.stats.reset();
     this.rewindBuffer = [];
     this.rewindFrameAcc = 0;
-    this.interruptLog = [];
-    this.interruptSeq = 0;
 
     let title = '';
     for (let i = 0x134; i < 0x144; i++) {
@@ -2180,17 +2109,15 @@ class Emulator {
   }
 
   runFrame() {
-    this.frameStats = this.newFrameStats();
+    this.stats.startFrame();
     let cyclesThisFrame = 0;
     while (cyclesThisFrame < Emulator.CYCLES_PER_FRAME) {
       const cycles = this.stepInstruction();
-      this.frameStats.instructions++;
+      this.stats.recordInstruction();
       if (!this.running) return; // a breakpoint fired mid-frame; stop immediately
       cyclesThisFrame += cycles;
     }
-    this.frameStatsHistory.push(this.frameStats);
-    if (this.frameStatsHistory.length > this.FRAME_STATS_HISTORY) this.frameStatsHistory.shift();
-    this.frameCounter++;
+    this.stats.finishFrame();
 
     this.rewindFrameAcc++;
     const rewindIntervalFrames = Math.round(this.REWIND_SNAPSHOT_INTERVAL_SECONDS * 59.73);
@@ -2215,7 +2142,7 @@ class Emulator {
     const state = this.rewindBuffer.pop();
     this.loadSaveState(state);
     this.rewindFrameAcc = 0;
-    if (this.onFrame) this.onFrame(this.frameStats);
+    if (this.onFrame) this.onFrame(this.stats.frameStats);
     return true;
   }
 
@@ -2233,7 +2160,7 @@ class Emulator {
   stepOne() {
     if (this.running) this.pause();
     this.stepInstruction();
-    if (this.onFrame) this.onFrame(this.frameStats);
+    if (this.onFrame) this.onFrame(this.stats.frameStats);
   }
 
   // Runs until the PPU moves to the next scanline (LY changes), then redraws. Capped at one
@@ -2249,7 +2176,7 @@ class Emulator {
       cyclesSpent += cycles;
     }
     this._setRunning(false);
-    if (this.onFrame) this.onFrame(this.frameStats);
+    if (this.onFrame) this.onFrame(this.stats.frameStats);
   }
 
   // Runs exactly one full frame (same budget runFrame() uses for normal play), then redraws.
@@ -2258,7 +2185,7 @@ class Emulator {
     this._setRunning(true); // runFrame() bails early if this flips false mid-frame (breakpoint)
     this.runFrame();
     this._setRunning(false);
-    if (this.onFrame) this.onFrame(this.frameStats);
+    if (this.onFrame) this.onFrame(this.stats.frameStats);
   }
 
   // Runs 60 full frames back to back (~1.005s of emulated time), then redraws — a coarse
@@ -2272,7 +2199,7 @@ class Emulator {
       if (!this.running) break; // a breakpoint fired mid-frame
     }
     this._setRunning(false);
-    if (this.onFrame) this.onFrame(this.frameStats);
+    if (this.onFrame) this.onFrame(this.stats.frameStats);
   }
 
   // Resumes continuous execution, auto-pausing the moment PC reaches pcTarget and/or
@@ -2386,7 +2313,7 @@ class Emulator {
       if (now - this._lastRenderTime >= RENDER_MS - 1) { // -1ms slack absorbs rAF jitter
         this._lastRenderTime = now;
         this._fpsFrames++; // counts renders, not emulated frames, so the fps label stays ~60 even at 2x/3x/4x speed
-        if (this.onFrame) this.onFrame(this.frameStats);
+        if (this.onFrame) this.onFrame(this.stats.frameStats);
       }
     }
     if (now - this._fpsLast >= 1000) {

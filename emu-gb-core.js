@@ -226,7 +226,7 @@ class MMU {
 
   read8(addr) {
     addr &= 0xFFFF;
-    if (this.emulator.stats.trackMemMap) this.emulator.stats.recordMemAccess(addr, this.regionForAddr(addr), 'read');
+    if (this.emulator.stats?.trackMemMap) this.emulator.stats.recordMemAccess(addr, this.regionForAddr(addr), 'read');
     return this.peek8(addr);
   }
 
@@ -259,7 +259,7 @@ class MMU {
 
   write8(addr, val) {
     addr &= 0xFFFF; val &= 0xFF;
-    if (this.emulator.stats.trackMemMap) this.emulator.stats.recordMemAccess(addr, this.regionForAddr(addr), 'write');
+    if (this.emulator.stats?.trackMemMap) this.emulator.stats.recordMemAccess(addr, this.regionForAddr(addr), 'write');
     const MEM = EMU_CORE_CONFIG.MEMORY;
     if (addr < MEM.ROMX_END) { this.handleBanking(addr, val); return; }
     if (addr < MEM.VRAM_END) { this.vram[addr - MEM.ROMX_END] = val; return; }
@@ -355,15 +355,15 @@ class MMU {
     // Track what changed, for the MBC Banking debug view (ROM bank change checked first,
     // since it's by far the most common event).
     if (this.currentROMBank !== prevROM) {
-      this.emulator.stats.recordBankSwitch('rom', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
+      this.emulator.stats?.recordBankSwitch('rom', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     } else if (this.currentRAMBank !== prevRAM) {
-      this.emulator.stats.recordBankSwitch('ram', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
+      this.emulator.stats?.recordBankSwitch('ram', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     } else if (this.rtcSelect !== prevRtcSelect) {
-      this.emulator.stats.recordBankSwitch('rtc', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
+      this.emulator.stats?.recordBankSwitch('rtc', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     } else if (this.ramEnabled !== prevEnabled) {
-      this.emulator.stats.recordBankSwitch('enable', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
+      this.emulator.stats?.recordBankSwitch('enable', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     } else if (this.bankingMode !== prevMode) {
-      this.emulator.stats.recordBankSwitch('mode', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
+      this.emulator.stats?.recordBankSwitch('mode', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     }
   }
 
@@ -451,7 +451,7 @@ class MMU {
   doDMA(val) {
     const src = val << 8;
     for (let i = 0; i < EMU_CORE_CONFIG.OAM_DMA_BYTES; i++) this.oam[i] = this.read8(src + i);
-    this.emulator.stats.recordDMA(this.emulator.ppu.ly);
+    this.emulator.stats?.recordDMA(this.emulator.ppu.ly);
   }
 }
 
@@ -1067,7 +1067,7 @@ class PPU {
     const spriteHeight = (this.lcdc & 0x04) ? SPR.HEIGHT_TALL : SPR.HEIGHT_SMALL;
     const candidates = this.getSpriteCandidatesForLine(y, spriteHeight);
 
-    this.emulator.stats.recordSprites(y, candidates.length);
+    this.emulator.stats?.recordSprites(y, candidates.length);
 
     const tint = this.emulator.layerTint;
 
@@ -1502,7 +1502,7 @@ class APU {
 
   /* ---- channel triggers (NRx4 bit 7 write) ---- */
   noteTrigger() {
-    this.emulator.stats.recordAPUTrigger(this.emulator.ppu.ly);
+    this.emulator.stats?.recordAPUTrigger(this.emulator.ppu.ly);
   }
   triggerCh1() {
     this.noteTrigger();
@@ -1701,9 +1701,9 @@ class APU {
 class GBEmulator {
   static CYCLES_PER_FRAME = EMU_CORE_CONFIG.FRAME.CYCLES_PER_FRAME; // 154 scanlines x 456 T-cycles
 
-  // `stats`/`instrumentation` are injectable so this file has no hard dependency on
-  // emu-gb-stats-instrumentation.js
-  constructor({ stats, instrumentation } = {}) {
+  // `stats`/`instrumentation` are DI'd in by the composition root; GBEmulator never
+  // constructs them itself, and no-ops (via `?.`) if either is left null/undefined.
+  constructor({ stats = null, instrumentation = null } = {}) {
     this.mmu = new MMU(this);
     this.cpu = new CPU(this.mmu);
     this.ppu = new PPU(this);
@@ -1743,24 +1743,24 @@ class GBEmulator {
     this.rewindBuffer = [];  // oldest first, most recent last
     this.rewindFrameAcc = 0; // frames since the last snapshot
 
-    // Frame activity, interrupt log, and memory-access bookkeeping for the debug UI. Purely
-    // observational, no effect on emulation.
-    this.stats = stats || new CoreStats();
+    // Debug-UI bookkeeping; null unless injected. All uses elsewhere go through `?.`.
+    this.stats = stats;
 
-    // Execution trace ring buffer + breakpoint state, for the Execution Trace / Disassembler
-    // debug panels. Purely observational aside from triggerBreakpoint() pausing the run loop.
-    this.instrumentation = instrumentation || new Instrumentation(this);
+    // Execution trace / breakpoint state; same null-safety contract as `stats`.
+    this.instrumentation = instrumentation;
+    // May be constructed before its emulator exists, so wire the back-reference here.
+    if (this.instrumentation) this.instrumentation.emulator = this;
   }
 
   requestInterrupt(bit) {
     this.mmu.io[0x0F] |= (1 << bit);
-    this.stats.recordInterrupt(bit, this.ppu.ly);
+    this.stats?.recordInterrupt(bit, this.ppu.ly);
   }
 
   // Called by CPU.tryDispatchInterrupt() the instant it actually dispatches (pushes PC and
   // jumps to the handler) — not just when the IF bit is set.
   logInterruptServiced(bit, pcBefore) {
-    this.stats.recordInterruptServiced(bit, pcBefore, this.stats.frameCounter);
+    this.stats?.recordInterruptServiced(bit, pcBefore, this.stats.frameCounter);
     if (this.onInterrupt) this.onInterrupt(bit, pcBefore);
   }
 
@@ -1771,7 +1771,7 @@ class GBEmulator {
     this.timer.divCounter = 0; this.timer.divReg = 0; this.timer.timaCounter = 0; this.timer.tima = 0;
     this.apu.reset();
 
-    this.stats.reset();
+    this.stats?.reset();
     this.rewindBuffer = [];
     this.rewindFrameAcc = 0;
 
@@ -1818,17 +1818,17 @@ class GBEmulator {
   // number of T-cycles, recording it into the execution trace. Shared by the continuous
   // runFrame() loop and the single-step debugger.
   stepInstruction() {
-    const instr = this.instrumentation;
+    const instr = this.instrumentation; // may be null; every use below is guarded
 
     // A PC breakpoint fires the moment execution is about to fetch the opcode at that address.
-    if (instr.breakpointPC !== null && this.cpu.PC === instr.breakpointPC) {
+    if (instr && instr.breakpointPC !== null && this.cpu.PC === instr.breakpointPC) {
       if (instr._bpSkipFirstMatch) { instr._bpSkipFirstMatch = false; }
       else { instr.triggerBreakpoint(`PC reached ${hex16(instr.breakpointPC)}`); return 0; }
     }
 
     const pcBefore = this.cpu.PC;
     const wasHalted = this.cpu.halted;
-    const tracking = instr.trackTrace; // gates the trace snapshot/diff work below
+    const tracking = !!instr && instr.trackTrace; // gates the trace snapshot/diff work below
     let opcode = null;
     let traceIndex = -1;
     let regsBefore = null;
@@ -1849,7 +1849,7 @@ class GBEmulator {
       instr.traceDiff[traceIndex] = instr.diffRegs(regsBefore, instr.snapshotRegs());
     }
 
-    if (!wasHalted && instr.breakpointOpcode !== null && opcode === instr.breakpointOpcode) {
+    if (instr && !wasHalted && instr.breakpointOpcode !== null && opcode === instr.breakpointOpcode) {
       instr.triggerBreakpoint(`opcode ${hex8(instr.breakpointOpcode)} executed at ${hex16(pcBefore)}`);
     }
     return budgetCycles;
@@ -1867,15 +1867,15 @@ class GBEmulator {
   }
 
   runFrame() {
-    this.stats.startFrame();
+    this.stats?.startFrame();
     let cyclesThisFrame = 0;
     while (cyclesThisFrame < GBEmulator.CYCLES_PER_FRAME) {
       const cycles = this.stepInstruction();
-      this.stats.recordInstruction();
+      this.stats?.recordInstruction();
       if (!this.running) return; // a breakpoint fired mid-frame; stop immediately
       cyclesThisFrame += cycles;
     }
-    this.stats.finishFrame();
+    this.stats?.finishFrame();
 
     this.rewindFrameAcc++;
     const rewindIntervalFrames = Math.round(this.REWIND_SNAPSHOT_INTERVAL_SECONDS * 59.73);
@@ -1900,7 +1900,7 @@ class GBEmulator {
     const state = this.rewindBuffer.pop();
     this.loadSaveState(state);
     this.rewindFrameAcc = 0;
-    if (this.onFrame) this.onFrame(this.stats.frameStats);
+    if (this.onFrame) this.onFrame(this.stats?.frameStats);
     return true;
   }
 
@@ -1908,7 +1908,7 @@ class GBEmulator {
   stepOne() {
     if (this.running) this.pause();
     this.stepInstruction();
-    if (this.onFrame) this.onFrame(this.stats.frameStats);
+    if (this.onFrame) this.onFrame(this.stats?.frameStats);
   }
 
   // Runs until the PPU moves to the next scanline (LY changes), then redraws. Capped at one
@@ -1924,7 +1924,7 @@ class GBEmulator {
       cyclesSpent += cycles;
     }
     this._setRunning(false);
-    if (this.onFrame) this.onFrame(this.stats.frameStats);
+    if (this.onFrame) this.onFrame(this.stats?.frameStats);
   }
 
   // Runs exactly one full frame (same budget runFrame() uses for normal play), then redraws.
@@ -1933,7 +1933,7 @@ class GBEmulator {
     this._setRunning(true); // runFrame() bails early if this flips false mid-frame (breakpoint)
     this.runFrame();
     this._setRunning(false);
-    if (this.onFrame) this.onFrame(this.stats.frameStats);
+    if (this.onFrame) this.onFrame(this.stats?.frameStats);
   }
 
   // Runs 60 full frames back to back (~1.005s of emulated time), then redraws — a coarse
@@ -1947,7 +1947,7 @@ class GBEmulator {
       if (!this.running) break; // a breakpoint fired mid-frame
     }
     this._setRunning(false);
-    if (this.onFrame) this.onFrame(this.stats.frameStats);
+    if (this.onFrame) this.onFrame(this.stats?.frameStats);
   }
 
   // Resumes continuous execution, auto-pausing the moment PC reaches pcTarget and/or
@@ -1955,12 +1955,12 @@ class GBEmulator {
   // breakpoint state itself lives on this.instrumentation, but starting the run loop is
   // still GBEmulator's job.
   runToBreakpoint(pcTarget, opcodeTarget) {
-    this.instrumentation.arm(pcTarget, opcodeTarget);
+    this.instrumentation?.arm(pcTarget, opcodeTarget);
     this.start();
   }
 
   clearBreakpoints() {
-    this.instrumentation.clearBreakpoints();
+    this.instrumentation?.clearBreakpoints();
   }
 
   // Single choke point for flipping this.running. Fires onRunStateChange only on an actual
@@ -2012,7 +2012,7 @@ class GBEmulator {
       if (now - this._lastRenderTime >= RENDER_MS - 1) { // -1ms slack absorbs rAF jitter
         this._lastRenderTime = now;
         this._fpsFrames++; // counts renders, not emulated frames, so the fps label stays ~60 even at 2x/3x/4x speed
-        if (this.onFrame) this.onFrame(this.stats.frameStats);
+        if (this.onFrame) this.onFrame(this.stats?.frameStats);
       }
     }
     if (now - this._fpsLast >= 1000) {

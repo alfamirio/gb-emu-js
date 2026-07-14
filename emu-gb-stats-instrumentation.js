@@ -1,11 +1,14 @@
 /* emu-gb-stats-instrumentation.js — CoreStats + Instrumentation (debug-tool support)
-   Two independent classes in one file, no effect on emulation:
+   Two independent classes, no effect on emulation:
      - CoreStats: frame/interrupt/memory-access counters (Frame Activity, Interrupts,
        Memory Map, MBC Banking panels). No constructor args.
      - Disassembler + Instrumentation: LR35902 disassembler, execution trace, breakpoints
-       (Trace/Disasm/Registers/Stack panels). Takes `emulator`, since triggerBreakpoint()
-       pauses the run loop.
-   GBEmulator holds one of each: `this.stats`, `this.instrumentation`. */
+       (Trace/Disasm/Registers/Stack panels). Optional `emulator` back-reference (can be
+       attached later), needed for triggerBreakpoint() to pause the run loop.
+
+   GBEmulator never constructs either itself — `this.stats`/`this.instrumentation` are
+   plain constructor-injected deps from whichever composition root builds the emulator
+   (emu-gb-app.js here). Pass null/omit for a headless run with no debug tooling. */
 
 /* CoreStats — frame/interrupt/memory-access counters for the debug UI. */
 
@@ -364,7 +367,9 @@ function explainInstruction(mnemonicText) {
    must read this.emulator.cpu fresh, not a stale copy. */
 
 class Instrumentation {
-  constructor(emulator) {
+  // `emulator` optional: composition root may build this before its GBEmulator exists;
+  // GBEmulator sets `this.emulator` on whatever it's given.
+  constructor(emulator = null) {
     this.emulator = emulator;
 
     // Gate the per-instruction snapshot/diff work: only runs when the Trace panel is open.

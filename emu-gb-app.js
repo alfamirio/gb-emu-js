@@ -18,7 +18,13 @@
 // `emulator` is `let` since coreToggle below swaps it between GBEmulator (DMG) and CGBEmulator (GBC).
 const canvas = document.getElementById('screen');
 const coreToggle = document.getElementById('coreToggle'); // unchecked = GB core, checked = GBC core
-let emulator = new GBEmulator();
+
+// Composition root: GBEmulator never constructs stats/instrumentation itself (see
+// emu-gb-core.js). app.js decides debug tooling should be live and injects real instances.
+function createEmulator(EmulatorClass) {
+  return new EmulatorClass({ stats: new CoreStats(), instrumentation: new Instrumentation() });
+}
+let emulator = createEmulator(GBEmulator);
 
 /* ---- canvas rendering: the core GBEmulator has no idea a <canvas> exists; it only produces a
    framebuffer (emulator.ppu.framebuffer). app.js owns turning that into pixels on screen. ---- */
@@ -69,7 +75,7 @@ function ensureEmulatorMatchesCoreToggle() {
   const NeededClass = coreToggle.checked ? CGBEmulator : GBEmulator;
   if (emulator instanceof NeededClass) return;
   emulator.pause();
-  emulator = new NeededClass();
+  emulator = createEmulator(NeededClass);
   wireEmulatorCallbacks();
 }
 

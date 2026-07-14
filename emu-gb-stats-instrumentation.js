@@ -523,6 +523,37 @@ class Instrumentation {
     const oam = this.emulator.mmu.oam;
     return start === undefined ? oam : oam.subarray(start, start + length);
   }
+
+  /* ---- CGB-aware color helpers, shared by every visualization panel in debug.js. DMG uses
+     one flat BGP/OBP0/OBP1 register per layer; CGB resolves color per-tile/per-sprite from
+     palette RAM. Absorbed verbatim from debug.js (isCGBRun/bgWindowPixelRGB/spritePixelRGB
+     lived there, reaching into ppu internals and CGBPPU/PPU class references from outside
+     core) — this is the phase that lets PPU/CGBPPU disappear from debug.js entirely. ---- */
+
+  // Same check app.js's model-toggle-disable logic already uses — one consistent way to
+  // detect CGB mode, so CGBPPU no longer needs to be referenced from outside emu-gbc-core.js.
+  isCGBRun() { return this.emulator instanceof CGBEmulator; }
+
+  // BG/window pixel color at tile-map pixel-space (mapX, mapY) under the given map base.
+  bgWindowPixelRGB(ppu, tileMapBase, mapX, mapY) {
+    if (this.isCGBRun()) {
+      const { colorIndex, paletteNum } = ppu.getBGWindowPixel(tileMapBase, mapX, mapY);
+      return ppu.mmu.getPaletteRGB(false, paletteNum, colorIndex);
+    }
+    const { tileDataBase, signedIndex } = ppu.bgWindowTileDataConfig();
+    const colorNum = ppu.getTileColorIndex(tileMapBase, tileDataBase, signedIndex, mapX, mapY);
+    return ppu.applyPalette(colorNum, ppu.bgp);
+  }
+
+  // Sprite pixel color from the OAM attribute byte and a decoded 0-3 color number.
+  spritePixelRGB(ppu, attrs, colorNum) {
+    if (this.isCGBRun()) return ppu.mmu.getPaletteRGB(true, attrs & 0x07, colorNum);
+    return ppu.applyPalette(colorNum, (attrs & 0x10) ? ppu.obp1 : ppu.obp0);
+  }
+
+  // Thin forward to the static PPU decode helper, so debug.js's sprite-layer renderer
+  // never needs a bare `PPU` class reference either.
+  spriteRowColorIndex(lo, hi, xFlip, px) { return PPU.spriteRowColorIndex(lo, hi, xFlip, px); }
 }
 
 /* RafScheduler — real implementation of GBEmulator's scheduler contract

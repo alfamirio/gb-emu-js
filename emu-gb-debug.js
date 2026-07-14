@@ -902,34 +902,16 @@ const applyFrameActivityVisibility = makePanelVisToggle(
   () => { drawFrameActivity(); drawFrameAnatomy(); drawLineAnatomy(); }
 );
 
-/* ---- CGB-aware color helpers, shared by every visualization panel below. DMG uses one flat
-   BGP/OBP0/OBP1 register per layer; CGB resolves color per-tile/per-sprite from palette RAM. ---- */
-function isCGBRun() { return emulator.ppu instanceof CGBPPU; }
+/* ---- CGB-aware color helpers now live on emulator.instrumentation (isCGBRun/
+   bgWindowPixelRGB/spritePixelRGB/spriteRowColorIndex) — see emu-gb-stats-instrumentation.js. */
 
 // (raw VRAM bank access now goes through emulator.instrumentation.readVRAM())
-
-// BG/window pixel color at tile-map pixel-space (mapX, mapY) under the given map base.
-function bgWindowPixelRGB(ppu, tileMapBase, mapX, mapY) {
-  if (ppu instanceof CGBPPU) {
-    const { colorIndex, paletteNum } = ppu.getBGWindowPixel(tileMapBase, mapX, mapY);
-    return ppu.mmu.getPaletteRGB(false, paletteNum, colorIndex);
-  }
-  const { tileDataBase, signedIndex } = ppu.bgWindowTileDataConfig();
-  const colorNum = ppu.getTileColorIndex(tileMapBase, tileDataBase, signedIndex, mapX, mapY);
-  return ppu.applyPalette(colorNum, ppu.bgp);
-}
-
-// Sprite pixel color from the OAM attribute byte and a decoded 0-3 color number.
-function spritePixelRGB(ppu, attrs, colorNum) {
-  if (ppu instanceof CGBPPU) return ppu.mmu.getPaletteRGB(true, attrs & 0x07, colorNum);
-  return ppu.applyPalette(colorNum, (attrs & 0x10) ? ppu.obp1 : ppu.obp0);
-}
 
 /* ---- 1. VRAM tile viewer: every tile in a VRAM bank, raw, greyscale (no palette applied).
    CGB has two 384-tile banks; a bank selector below (CGB ROMs only) picks which is shown. ---- */
 let tileViewerBank = 0;
 function drawTileViewer() {
-  const cgb = isCGBRun();
+  const cgb = emulator.instrumentation.isCGBRun();
   tvBankRow.style.display = cgb ? 'inline' : 'none';
   const vram = emulator.instrumentation.readVRAM(cgb ? tileViewerBank : 0);
   const data = tileViewerImageData.data;
@@ -1016,12 +998,12 @@ function drawTileMap() {
   const mapBase = tileMapSelect === '9800' ? 0x9800 : 0x9C00;
   const data = tileMapImageData.data;
 
-  // bgWindowPixelRGB() handles the full tile lookup (index, bank, flip, palette).
+  // instrumentation.bgWindowPixelRGB() handles the full tile lookup (index, bank, flip, palette).
   for (let ty = 0; ty < 32; ty++) {
     for (let tx = 0; tx < 32; tx++) {
       for (let py = 0; py < 8; py++) {
         for (let px = 0; px < 8; px++) {
-          const [r, g, b] = bgWindowPixelRGB(ppu, mapBase, tx * 8 + px, ty * 8 + py);
+          const [r, g, b] = emulator.instrumentation.bgWindowPixelRGB(ppu, mapBase, tx * 8 + px, ty * 8 + py);
           const idx = ((ty * 8 + py) * 256 + (tx * 8 + px)) * 4;
           data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
         }
@@ -1149,9 +1131,9 @@ function renderSpriteLayerPixels(data, W, H) {
       for (let px = 0; px < 8; px++) {
         const sx = s.spriteX + px;
         if (sx < 0 || sx >= W) continue;
-        const colorNum = PPU.spriteRowColorIndex(lo, hi, xFlip, px);
+        const colorNum = emulator.instrumentation.spriteRowColorIndex(lo, hi, xFlip, px);
         if (colorNum === 0) continue; // color 0 is always transparent for sprites
-        const [r, g, b] = spritePixelRGB(ppu, s.attrs, colorNum);
+        const [r, g, b] = emulator.instrumentation.spritePixelRGB(ppu, s.attrs, colorNum);
         const idx = (y * W + sx) * 4;
         data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
       }
@@ -1175,7 +1157,7 @@ function drawLayers() {
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         const bgX = (x + ppu.scx) & 0xFF, bgY = (y + ppu.scy) & 0xFF;
-        const [r, g, b] = bgWindowPixelRGB(ppu, bgTileMapBase, bgX, bgY);
+        const [r, g, b] = emulator.instrumentation.bgWindowPixelRGB(ppu, bgTileMapBase, bgX, bgY);
         const idx = (y * W + x) * 4;
         data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
       }
@@ -1196,7 +1178,7 @@ function drawLayers() {
       for (let y = Math.max(wy, 0); y < H; y++) {
         const winY = y - wy;
         for (let x = Math.max(wx, 0); x < W; x++) {
-          const [r, g, b] = bgWindowPixelRGB(ppu, winTileMapBase, x - wx, winY);
+          const [r, g, b] = emulator.instrumentation.bgWindowPixelRGB(ppu, winTileMapBase, x - wx, winY);
           const idx = (y * W + x) * 4;
           data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
         }
@@ -1302,7 +1284,7 @@ function drawOAMTable() {
     const attrs = entry[3];
     const offscreen = spriteX <= -8 || spriteX >= EMU_CORE_CONFIG.SCREEN.WIDTH || spriteY <= -16 || spriteY >= EMU_CORE_CONFIG.SCREEN.HEIGHT;
     const xFlip = !!(attrs & 0x20), yFlip = !!(attrs & 0x40), behindBG = !!(attrs & 0x80);
-    const cgb = isCGBRun();
+    const cgb = emulator.instrumentation.isCGBRun();
     const vram = emulator.instrumentation.readVRAM((attrs & 0x08) ? 1 : 0);
 
     let idxTile = tileIndex;
@@ -1322,7 +1304,7 @@ function drawOAMTable() {
         const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
         const pidx = (row * 8 + px) * 4;
         if (colorNum === 0) { imgData.data[pidx + 3] = 0; continue; } // transparent
-        const [r3, g3, b3] = spritePixelRGB(ppu, attrs, colorNum);
+        const [r3, g3, b3] = emulator.instrumentation.spritePixelRGB(ppu, attrs, colorNum);
         imgData.data[pidx] = r3; imgData.data[pidx + 1] = g3; imgData.data[pidx + 2] = b3; imgData.data[pidx + 3] = 255;
       }
     }
@@ -1381,7 +1363,7 @@ function drawPalettes() {
   const bgCol = addColumn('Background');
   const objCol = addColumn('Objects (Sprites)');
 
-  if (isCGBRun()) {
+  if (emulator.instrumentation.isCGBRun()) {
     for (let p = 0; p < 8; p++) addBlock(bgCol, `BG ${p}`, '', (c) => ppu.mmu.getPaletteRGB(false, p, c));
     for (let p = 0; p < 8; p++) addBlock(objCol, `OBJ ${p}`, '', (c) => ppu.mmu.getPaletteRGB(true, p, c));
   } else {

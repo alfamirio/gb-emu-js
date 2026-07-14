@@ -344,7 +344,7 @@ buildMemMapStrip();
 buildBankingPanel();
 
 /* RAM Editor: read/write panel for RAM regions plus IE, with a bit-level view for I/O
-   registers; ROM stays read-only. Reads/writes go through mmu.peek8/write8. */
+   registers; ROM stays read-only. Reads/writes go through instrumentation.peekByte()/writeMemory(). */
 
 const ramEditRegionsEl = document.getElementById('ramEditRegions');
 const ramEditInfoEl = document.getElementById('ramEditInfo');
@@ -492,7 +492,7 @@ function commitRamEditCell(input) {
   if (input.value === '') return; // next live refresh repaints the real value
   const addr = parseInt(input.dataset.addr, 10);
   const val = parseInt(input.value, 16) & 0xFF;
-  emulator.mmu.write8(addr, val);
+  emulator.instrumentation.writeMemory(addr, val);
 }
 
 function makeRamEditHexInput(addr) {
@@ -559,10 +559,9 @@ function buildRamEditIoBitRow(row, addr, labels) {
     cb.type = 'checkbox';
     cb.dataset.bit = bit;
     cb.addEventListener('change', () => {
-      const mmu = emulator.mmu;
-      const cur = mmu.peek8(addr);
+      const cur = emulator.instrumentation.peekByte(addr);
       const next = cb.checked ? (cur | (1 << bit)) : (cur & ~(1 << bit));
-      mmu.write8(addr, next & 0xFF); // always through the real write path (handles IO side effects/masks)
+      emulator.instrumentation.writeMemory(addr, next & 0xFF); // always through the real write path (handles IO side effects/masks)
     });
     const lab = document.createElement('span');
     lab.textContent = labels ? labels[7 - bit] : ('b' + bit);
@@ -632,7 +631,7 @@ function buildRamEditBody() {
   drawRamEditor(); // paint real values immediately, don't wait for the next tick
 }
 
-// Live refresh: repaints visible cells from mmu.peek8, skipping any focused input.
+// Live refresh: repaints visible cells from instrumentation.peekByte(), skipping any focused input.
 function drawRamEditor() {
   const mmu = emulator.mmu;
   const meta = ramEditRegionMeta(ramEditKey);
@@ -646,7 +645,7 @@ function drawRamEditor() {
   if (meta.mode === 'io') {
     ramEditBodyEl.querySelectorAll('.ramedit-io-row').forEach(row => {
       const addr = parseInt(row.dataset.addr, 10);
-      const val = mmu.peek8(addr);
+      const val = emulator.instrumentation.peekByte(addr);
       const hexEl = row.querySelector('.ramedit-io-hex');
       if (hexEl) hexEl.textContent = hex8(val);
       row.querySelectorAll('.ramedit-bit input').forEach(cb => {
@@ -661,14 +660,14 @@ function drawRamEditor() {
 
   ramEditBodyEl.querySelectorAll('.ramedit-cell').forEach(input => {
     if (document.activeElement === input) return;
-    input.value = hex8(mmu.peek8(parseInt(input.dataset.addr, 10))).slice(2);
+    input.value = hex8(emulator.instrumentation.peekByte(parseInt(input.dataset.addr, 10))).slice(2);
   });
   ramEditBodyEl.querySelectorAll('.ramedit-cell-ro').forEach(span => {
-    span.textContent = hex8(mmu.peek8(parseInt(span.dataset.addr, 10))).slice(2);
+    span.textContent = hex8(emulator.instrumentation.peekByte(parseInt(span.dataset.addr, 10))).slice(2);
   });
   ramEditBodyEl.querySelectorAll('.ramedit-ascii').forEach(td => {
     const addrs = (td.dataset.addrs || '').split(',').filter(Boolean).map(Number);
-    td.textContent = addrs.map(a => { const v = mmu.peek8(a); return (v >= 32 && v < 127) ? String.fromCharCode(v) : '.'; }).join('');
+    td.textContent = addrs.map(a => { const v = emulator.instrumentation.peekByte(a); return (v >= 32 && v < 127) ? String.fromCharCode(v) : '.'; }).join('');
   });
 }
 
@@ -907,8 +906,7 @@ const applyFrameActivityVisibility = makePanelVisToggle(
    BGP/OBP0/OBP1 register per layer; CGB resolves color per-tile/per-sprite from palette RAM. ---- */
 function isCGBRun() { return emulator.ppu instanceof CGBPPU; }
 
-// Raw VRAM bank access: CGB has two banks (vramBanks[0/1]); DMG has one, exposed as `vram`.
-function vramBank(mmu, bank) { return mmu.vramBanks ? mmu.vramBanks[bank & 1] : mmu.vram; }
+// (raw VRAM bank access now goes through emulator.instrumentation.readVRAM())
 
 // BG/window pixel color at tile-map pixel-space (mapX, mapY) under the given map base.
 function bgWindowPixelRGB(ppu, tileMapBase, mapX, mapY) {
@@ -933,7 +931,7 @@ let tileViewerBank = 0;
 function drawTileViewer() {
   const cgb = isCGBRun();
   tvBankRow.style.display = cgb ? 'inline' : 'none';
-  const vram = cgb ? vramBank(emulator.mmu, tileViewerBank) : emulator.mmu.vram;
+  const vram = emulator.instrumentation.readVRAM(cgb ? tileViewerBank : 0);
   const data = tileViewerImageData.data;
 
   // Fill with the grid-line color first; tile pixels painted over it leave only the gaps visible.
@@ -1046,13 +1044,13 @@ function drawTileMap() {
 }
 
 /* ---- 2c. Tile inspector: decode+render the 16 bytes at tileInspectAddr as an 8x8 tile.
-   Uses mmu.peek8() so this never triggers real side effects or CPU-activity tracking. */
+   Uses peekByte() so this never triggers real side effects or CPU-activity tracking. */
 function drawTileInspector() {
-  const mmu = emulator.mmu;
+  const instr = emulator.instrumentation;
   const data = tileInspectImageData.data;
   for (let py = 0; py < 8; py++) {
-    const lo = mmu.peek8((tileInspectAddr + py * 2) & 0xFFFF);
-    const hi = mmu.peek8((tileInspectAddr + py * 2 + 1) & 0xFFFF);
+    const lo = instr.peekByte((tileInspectAddr + py * 2) & 0xFFFF);
+    const hi = instr.peekByte((tileInspectAddr + py * 2 + 1) & 0xFFFF);
     for (let px = 0; px < 8; px++) {
       const bit = 7 - px;
       const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
@@ -1066,7 +1064,7 @@ function drawTileInspector() {
   tileInspectCtx.drawImage(tileInspectSrcCanvas, 0, 0, 128, 128);
 
   const bytes = [];
-  for (let i = 0; i < 16; i++) bytes.push(hex8(mmu.peek8((tileInspectAddr + i) & 0xFFFF)).slice(2));
+  for (let i = 0; i < 16; i++) bytes.push(hex8(instr.peekByte((tileInspectAddr + i) & 0xFFFF)).slice(2));
   tileInspectBytesEl.textContent = `${hex16(tileInspectAddr)}\u2013${hex16((tileInspectAddr + 15) & 0xFFFF)}:  ${bytes.join(' ')}`;
 }
 
@@ -1223,12 +1221,11 @@ function makeTd(text) { const td = document.createElement('td'); td.textContent 
 
 // Screen-space X/Y for OAM entry i, and its tile-data offset (8x16 mode forces low tile bit to 0).
 function oamSpriteGeometry(i, spriteHeight) {
-  const mmu = emulator.mmu;
-  const base = i * 4;
-  const rawY = mmu.oam[base], rawX = mmu.oam[base + 1];
+  const entry = emulator.instrumentation.readOAM(i * 4, 4);
+  const rawY = entry[0], rawX = entry[1];
   const spriteX = rawX - 8, spriteY = rawY - 16;
-  const tileIndex = mmu.oam[base + 2];
-  const attrs = mmu.oam[base + 3];
+  const tileIndex = entry[2];
+  const attrs = entry[3];
   let idxTile = tileIndex;
   if (spriteHeight === 16) idxTile &= 0xFE;
   return { spriteX, spriteY, tileIndex, idxTile, attrs };
@@ -1298,15 +1295,15 @@ function drawOAMTable() {
   oamTableBody.innerHTML = '';
 
   for (let i = 0; i < 40; i++) {
-    const base = i * 4;
-    const rawY = mmu.oam[base], rawX = mmu.oam[base + 1];
+    const entry = emulator.instrumentation.readOAM(i * 4, 4);
+    const rawY = entry[0], rawX = entry[1];
     const spriteY = rawY - 16, spriteX = rawX - 8;
-    const tileIndex = mmu.oam[base + 2];
-    const attrs = mmu.oam[base + 3];
+    const tileIndex = entry[2];
+    const attrs = entry[3];
     const offscreen = spriteX <= -8 || spriteX >= EMU_CORE_CONFIG.SCREEN.WIDTH || spriteY <= -16 || spriteY >= EMU_CORE_CONFIG.SCREEN.HEIGHT;
     const xFlip = !!(attrs & 0x20), yFlip = !!(attrs & 0x40), behindBG = !!(attrs & 0x80);
     const cgb = isCGBRun();
-    const vram = cgb ? vramBank(mmu, (attrs & 0x08) ? 1 : 0) : mmu.vram;
+    const vram = emulator.instrumentation.readVRAM((attrs & 0x08) ? 1 : 0);
 
     let idxTile = tileIndex;
     if (spriteHeight === 16) idxTile &= 0xFE;
@@ -1974,15 +1971,16 @@ let disasmResyncCache = null; // { pc, rom, beforeLines, currentText, nextExpect
 
 function drawDisassembly() {
   if (!lastROMBytes) { disasmList.innerHTML = '<div class="disasm-empty">Load a ROM to see disassembly.</div>'; disasmResyncCache = null; return; }
-  const mmu = emulator.mmu, pc = emulator.cpu.PC;
+  const mmu = emulator.mmu, pc = emulator.instrumentation.readRegisters().PC;
+  const rom = emulator.instrumentation.readROM();
   const COUNT_BEFORE = 5, COUNT_AFTER = 9, MAX_LOOKBACK = 12;
 
   let beforeLines;
   const cache = disasmResyncCache;
-  if (cache && cache.rom === mmu.rom && cache.pc === pc) {
+  if (cache && cache.rom === rom && cache.pc === pc) {
     // PC hasn't moved (e.g. HALTed) - reuse as-is.
     beforeLines = cache.beforeLines;
-  } else if (cache && cache.rom === mmu.rom && cache.nextExpectedPc === pc) {
+  } else if (cache && cache.rom === rom && cache.nextExpectedPc === pc) {
     // Straight-line advance: slide the window forward instead of re-resyncing.
     beforeLines = cache.beforeLines.slice(1);
     beforeLines.push({ addr: cache.pc, text: cache.currentText });
@@ -2013,7 +2011,7 @@ function drawDisassembly() {
     addr += length;
   }
 
-  disasmResyncCache = { pc, rom: mmu.rom, beforeLines, currentText, nextExpectedPc: (pc + currentLength) & 0xFFFF };
+  disasmResyncCache = { pc, rom, beforeLines, currentText, nextExpectedPc: (pc + currentLength) & 0xFFFF };
 
   disasmList.innerHTML = lines.map(l =>
     `<div class="disasm-line${l.current ? ' current' : ''}">${hex16(l.addr)}&nbsp;&nbsp;${l.text}</div>`
@@ -2074,7 +2072,7 @@ function drawInterrupts() {
 /* ---- Stack panel: a window of 16-bit words around SP, row-aligned to SP itself ---- */
 function drawStack() {
   if (!lastROMBytes) { stackList.innerHTML = '<div class="disasm-empty">Load a ROM to see the stack.</div>'; stackSpReadout.textContent = '—'; return; }
-  const sp = emulator.cpu.SP;
+  const sp = emulator.instrumentation.readRegisters().SP;
   const WORDS_ABOVE = 6, WORDS_BELOW = 22;
 
   stackSpReadout.textContent = `SP = ${hex16(sp)}  (top of stack — next POP/RET reads from here)`;
@@ -2108,7 +2106,7 @@ function commitRegInput(input) {
   const spec = REG_INPUTS.find(r => r.el === input);
   if (!emulator.running && spec) {
     const parsed = parseHexInput(input.value, spec.bits === 16 ? 0xFFFF : 0xFF);
-    if (parsed !== null) emulator.cpu[spec.key] = parsed;
+    if (parsed !== null) emulator.instrumentation.writeRegister(spec.key, parsed);
   }
   drawRegisters();
 }
@@ -2116,7 +2114,7 @@ function commitRegInput(input) {
 function commitRegFlag(checkbox) {
   if (!emulator.running) {
     const spec = REG_FLAGS.find(r => r.el === checkbox);
-    if (spec) emulator.cpu[spec.key] = checkbox.checked;
+    if (spec) emulator.instrumentation.writeRegister(spec.key, checkbox.checked);
   }
   drawRegisters();
 }

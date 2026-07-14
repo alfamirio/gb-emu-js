@@ -496,6 +496,33 @@ class Instrumentation {
     }
     return words;
   }
+
+  // Register editor writes a single field by name — mirrors readRegisters() above, which
+  // already reads through this class. No validation here; callers (debug.js) parse/clamp
+  // the input themselves before calling.
+  writeRegister(key, value) { this.emulator.cpu[key] = value; }
+
+  // Memory editor write — deliberately the *real* write path (mmu.write8, side effects
+  // included: IO register masks, MBC bank-switch triggers, etc.), unlike walkStack()'s use
+  // of peek8 above.
+  writeMemory(addr, value) { this.emulator.mmu.write8(addr, value); }
+
+  // Generic byte/region reads for the memory/tile/sprite viewers. All go through peek8 (or
+  // a raw subarray), never read8 — inspection reads must never trigger real side effects.
+  peekByte(addr) { return this.emulator.mmu.peek8(addr); }
+  readROM(start, length) {
+    const rom = this.emulator.mmu.rom;
+    return start === undefined ? rom : rom.subarray(start, start + length);
+  }
+  readVRAM(bank, start, length) {
+    const mmu = this.emulator.mmu;
+    const src = mmu.vramBanks ? mmu.vramBanks[bank & 1] : mmu.vram;
+    return start === undefined ? src : src.subarray(start, start + length);
+  }
+  readOAM(start, length) {
+    const oam = this.emulator.mmu.oam;
+    return start === undefined ? oam : oam.subarray(start, start + length);
+  }
 }
 
 /* RafScheduler — real implementation of GBEmulator's scheduler contract

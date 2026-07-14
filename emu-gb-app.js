@@ -778,7 +778,7 @@ btnRewind.addEventListener('click', () => {
   const ok = emulator.rewind();
   if (ok) {
     btnPause.textContent = '▶ Start';
-    bpStatus.textContent = `Rewound ${emulator.REWIND_SNAPSHOT_INTERVAL_SECONDS}s — PC=${hex16(emulator.cpu.PC)}`;
+    bpStatus.textContent = `Rewound ${emulator.REWIND_SNAPSHOT_INTERVAL_SECONDS}s — PC=${hex16(emulator.instrumentation.readRegisters().PC)}`;
   }
   updateRewindButton();
 });
@@ -790,25 +790,25 @@ btnRewind.addEventListener('click', () => {
 btnStep.addEventListener('click', () => {
   emulator.stepOne();
   btnPause.textContent = '▶ Start';
-  bpStatus.textContent = `Stepped — now at PC=${hex16(emulator.cpu.PC)}`;
+  bpStatus.textContent = `Stepped — now at PC=${hex16(emulator.instrumentation.readRegisters().PC)}`;
 });
 
 btnStepLine.addEventListener('click', () => {
   emulator.stepLine();
   btnPause.textContent = '▶ Start';
-  bpStatus.textContent = `Stepped to line LY=${emulator.ppu.ly} — PC=${hex16(emulator.cpu.PC)}`;
+  bpStatus.textContent = `Stepped to line LY=${emulator.ppu.ly} — PC=${hex16(emulator.instrumentation.readRegisters().PC)}`;
 });
 
 btnStepFrame.addEventListener('click', () => {
   emulator.stepFrame();
   btnPause.textContent = '▶ Start';
-  bpStatus.textContent = `Stepped one frame — PC=${hex16(emulator.cpu.PC)}`;
+  bpStatus.textContent = `Stepped one frame — PC=${hex16(emulator.instrumentation.readRegisters().PC)}`;
 });
 
 btnStep1s.addEventListener('click', () => {
   emulator.stepOneSecond();
   btnPause.textContent = '▶ Start';
-  bpStatus.textContent = `Stepped 1s (60 frames) — PC=${hex16(emulator.cpu.PC)}`;
+  bpStatus.textContent = `Stepped 1s (60 frames) — PC=${hex16(emulator.instrumentation.readRegisters().PC)}`;
   selectedFrameStatsIndex = null; // let Frame Activity follow the 60 frames just stepped
 });
 

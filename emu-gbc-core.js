@@ -833,8 +833,8 @@ class CGBPPU {
 /* ================================== 4. CGBEmulator ======================================= */
 
 class CGBEmulator extends GBEmulator {
-  constructor() {
-    super(); // builds DMG mmu/cpu/ppu first; replaced below
+  constructor(opts = {}) {
+    super(opts); // builds DMG mmu/cpu/ppu first; replaced below
     this.mmu = new CGBMMU(this);
     this.cpu = new CGBCPU(this.mmu);
     this.ppu = new CGBPPU(this);

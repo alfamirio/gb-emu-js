@@ -1701,7 +1701,9 @@ class APU {
 class GBEmulator {
   static CYCLES_PER_FRAME = EMU_CORE_CONFIG.FRAME.CYCLES_PER_FRAME; // 154 scanlines x 456 T-cycles
 
-  constructor() {
+  // `stats`/`instrumentation` are injectable so this file has no hard dependency on
+  // emu-gb-stats-instrumentation.js
+  constructor({ stats, instrumentation } = {}) {
     this.mmu = new MMU(this);
     this.cpu = new CPU(this.mmu);
     this.ppu = new PPU(this);
@@ -1741,15 +1743,13 @@ class GBEmulator {
     this.rewindBuffer = [];  // oldest first, most recent last
     this.rewindFrameAcc = 0; // frames since the last snapshot
 
-    /* ---- frame activity, interrupt log, and memory-access bookkeeping for the debug UI
-       (Frame Activity / Interrupts / Memory Map / MBC Banking panels). Purely observational,
-       no effect on emulation. ---- */
-    this.stats = new CoreStats();
+    // Frame activity, interrupt log, and memory-access bookkeeping for the debug UI. Purely
+    // observational, no effect on emulation.
+    this.stats = stats || new CoreStats();
 
-    /* ---- execution trace ring buffer + breakpoint state, for the Execution Trace /
-       Disassembler debug panels. Purely observational aside from triggerBreakpoint()
-       pausing the run loop; no effect on emulation otherwise. ---- */
-    this.instrumentation = new Instrumentation(this);
+    // Execution trace ring buffer + breakpoint state, for the Execution Trace / Disassembler
+    // debug panels. Purely observational aside from triggerBreakpoint() pausing the run loop.
+    this.instrumentation = instrumentation || new Instrumentation(this);
   }
 
   requestInterrupt(bit) {

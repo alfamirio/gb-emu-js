@@ -782,7 +782,7 @@ function applyScreenModel() {
   modelLabelGB.classList.toggle('active', !isGBP);
   saveUIConfig({ gbp: isGBP });
   // Repaint immediately with the new palette and refresh any open color panels
-  if (emulator.mmu.rom && emulator.mmu.rom.length) emulator.draw();
+  if (emulator.mmu.rom && emulator.mmu.rom.length) draw();
   refreshDebugTools();
 }
 
@@ -797,10 +797,10 @@ const scanlineMarkLabelOn = document.getElementById('scanlineMarkLabelOn');
 
 function applyScanlineMark() {
   const on = scanlineMarkToggle.checked;
-  emulator.markCurrentLine = on;
+  markCurrentLine = on;
   scanlineMarkLabelOn.classList.toggle('active', on);
   // Repaint immediately so toggling is visible even while paused/no frame is running.
-  if (emulator.mmu.rom && emulator.mmu.rom.length) emulator.draw();
+  if (emulator.mmu.rom && emulator.mmu.rom.length) draw();
 }
 
 scanlineMarkToggle.addEventListener('change', applyScanlineMark);
@@ -824,7 +824,7 @@ function applyLayerTint() {
   layerTintLabelOn.classList.toggle('active', on);
   saveUIConfig({ layerTint: on });
   // Repaint immediately so toggling is visible even while paused/no frame is running.
-  if (emulator.mmu.rom && emulator.mmu.rom.length) emulator.draw();
+  if (emulator.mmu.rom && emulator.mmu.rom.length) draw();
 }
 
 if (typeof savedUIConfig.layerTint === 'boolean') layerTintToggle.checked = savedUIConfig.layerTint;

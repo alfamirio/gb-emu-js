@@ -1966,17 +1966,13 @@ class APU {
 class Emulator {
   static CYCLES_PER_FRAME = EMU_CORE_CONFIG.FRAME.CYCLES_PER_FRAME; // 154 scanlines x 456 T-cycles
 
-  constructor(canvas) {
+  constructor() {
     this.mmu = new MMU(this);
     this.cpu = new CPU(this.mmu);
     this.ppu = new PPU(this);
     this.timer = new Timer(this);
     this.joypad = new Joypad(this);
     this.apu = new APU(this);
-
-    this.canvas = canvas;
-    this.ctx = canvas.getContext('2d');
-    this.imageData = this.ctx.createImageData(EMU_CORE_CONFIG.SCREEN.WIDTH, EMU_CORE_CONFIG.SCREEN.HEIGHT);
 
     this.running = false;
     this.onRunStateChange = null; // called with the new boolean whenever _setRunning() flips this.running
@@ -1985,7 +1981,6 @@ class Emulator {
     this.onFpsUpdate = null;  // called ~once/sec during continuous play, with the rendered-frames-per-second count
     this.frameReady = false;
     this._rafId = null;
-    this.markCurrentLine = false;
     this.layerTint = false;
 
     this.trackAccess = true;  // gates frame-activity/interrupt-log bookkeeping
@@ -2399,27 +2394,6 @@ class Emulator {
       this._fpsFrames = 0; this._fpsLast = now;
     }
     this._rafId = requestAnimationFrame((t) => this.loop(t));
-  }
-
-  draw() {
-    this.imageData.data.set(this.ppu.framebuffer);
-    this.ctx.putImageData(this.imageData, 0, 0);
-    if (this.markCurrentLine) this.drawCurrentLineMarker();
-  }
-
-  // Draws a bright horizontal marker over the PPU's current scanline (LY), so the raster
-  // position is visible on the actual screen output too, not just in a debug panel.
-  drawCurrentLineMarker() {
-    const ly = this.ppu.ly;
-    if (ly > EMU_CORE_CONFIG.SCREEN.HEIGHT - 1) return; // VBlank lines are off the visible screen
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.fillStyle = 'rgba(255, 221, 0, 0.55)';
-    ctx.fillRect(0, ly, EMU_CORE_CONFIG.SCREEN.WIDTH, 1);
-    ctx.strokeStyle = 'rgba(255, 221, 0, 0.9)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(0, Math.max(0, ly - 0.5), EMU_CORE_CONFIG.SCREEN.WIDTH, 1);
-    ctx.restore();
   }
 }
 

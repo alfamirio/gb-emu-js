@@ -866,8 +866,8 @@ class CGBPPU {
 class GBEmulator extends Emulator {}
 
 class CGBEmulator extends Emulator {
-  constructor(canvas) {
-    super(canvas); // builds DMG mmu/cpu/ppu first; replaced below
+  constructor() {
+    super(); // builds DMG mmu/cpu/ppu first; replaced below
     this.mmu = new CGBMMU(this);
     this.cpu = new CGBCPU(this.mmu);
     this.ppu = new CGBPPU(this);

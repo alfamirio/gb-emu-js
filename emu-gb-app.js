@@ -18,7 +18,33 @@
 // `emulator` is `let` since coreToggle below swaps it between GBEmulator (DMG) and CGBEmulator (GBC).
 const canvas = document.getElementById('screen');
 const coreToggle = document.getElementById('coreToggle'); // unchecked = GB core, checked = GBC core
-let emulator = new GBEmulator(canvas);
+let emulator = new GBEmulator();
+
+/* ---- canvas rendering: the core Emulator has no idea a <canvas> exists; it only produces a
+   framebuffer (emulator.ppu.framebuffer). app.js owns turning that into pixels on screen. ---- */
+const ctx = canvas.getContext('2d');
+const imageData = ctx.createImageData(EMU_CORE_CONFIG.SCREEN.WIDTH, EMU_CORE_CONFIG.SCREEN.HEIGHT);
+let markCurrentLine = false; // debug-only "scanline mark" navbar toggle; app-side, not a core concept
+
+function draw() {
+  imageData.data.set(emulator.ppu.framebuffer);
+  ctx.putImageData(imageData, 0, 0);
+  if (markCurrentLine) drawCurrentLineMarker();
+}
+
+// Draws a bright horizontal marker over the PPU's current scanline (LY), so the raster
+// position is visible on the actual screen output too, not just in a debug panel.
+function drawCurrentLineMarker() {
+  const ly = emulator.ppu.ly;
+  if (ly > EMU_CORE_CONFIG.SCREEN.HEIGHT - 1) return; // VBlank lines are off the visible screen
+  ctx.save();
+  ctx.fillStyle = 'rgba(255, 221, 0, 0.55)';
+  ctx.fillRect(0, ly, EMU_CORE_CONFIG.SCREEN.WIDTH, 1);
+  ctx.strokeStyle = 'rgba(255, 221, 0, 0.9)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(0, Math.max(0, ly - 0.5), EMU_CORE_CONFIG.SCREEN.WIDTH, 1);
+  ctx.restore();
+}
 
 // Wires the cross-cutting hooks the core Emulator exposes (onFrame/onFpsUpdate/onBreakpointHit)
 // onto whichever Emulator instance is current. Called once at startup and again every time
@@ -27,7 +53,7 @@ let emulator = new GBEmulator(canvas);
 // rewind happened, now go repaint the canvas and the debug panels" — the core itself no longer
 // knows either of those things exist.
 function wireEmulatorCallbacks() {
-  emulator.onFrame = () => { emulator.draw(); refreshDebugTools(); };
+  emulator.onFrame = () => { draw(); refreshDebugTools(); };
   emulator.onFpsUpdate = (fps) => { document.getElementById('fps').textContent = fps + ' fps'; };
   emulator.onBreakpointHit = (reason) => {
     btnPause.textContent = '▶ Start';
@@ -42,7 +68,7 @@ function ensureEmulatorMatchesCoreToggle() {
   const NeededClass = coreToggle.checked ? CGBEmulator : GBEmulator;
   if (emulator instanceof NeededClass) return;
   emulator.pause();
-  emulator = new NeededClass(canvas);
+  emulator = new NeededClass();
   wireEmulatorCallbacks();
 }
 
@@ -915,7 +941,7 @@ function applyLoadedState(state) {
   const wasRunning = emulator.running;
   emulator.pause();
   emulator.loadSaveState(state);
-  emulator.draw();        // repaint immediately from the restored framebuffer
+  draw();        // repaint immediately from the restored framebuffer
   updateRtcTabAvailability();
   refreshDebugTools();
   if (wasRunning) emulator.start();

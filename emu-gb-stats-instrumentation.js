@@ -1,21 +1,140 @@
-/* =========================================================================================
-   emu-gb-instrumentation.js — disassembler + Instrumentation (execution trace, breakpoints)
-   -----------------------------------------------------------------------------------------
-   Everything here is debug-tool support: a standalone LR35902 disassembler (used by both the
-   live "next instructions" view and the execution trace), and an `Instrumentation` class that
-   owns the trace ring buffer and breakpoint state that used to be grafted directly onto
-   `Emulator`. None of it affects emulation behavior.
+/* emu-gb-stats-instrumentation.js — CoreStats + Instrumentation (debug-tool support)
+   Two independent classes in one file, no effect on emulation:
+     - CoreStats: frame/interrupt/memory-access counters (Frame Activity, Interrupts,
+       Memory Map, MBC Banking panels). No constructor args.
+     - Disassembler + Instrumentation: LR35902 disassembler, execution trace, breakpoints
+       (Trace/Disasm/Registers/Stack panels). Takes `emulator`, since triggerBreakpoint()
+       pauses the run loop.
+   Emulator holds one of each: `this.stats`, `this.instrumentation`. */
 
-   `Emulator` holds one instance (`this.instrumentation = new Instrumentation(this)`) and
-   calls into it (`pushTrace`, `triggerBreakpoint`, etc.) instead of mutating fields inline;
-   `debug.js` reads `emulator.instrumentation.*` instead of `emulator.*` directly.
-   ========================================================================================= */
+/* CoreStats — frame/interrupt/memory-access counters for the debug UI. */
 
-/* ============================== Disassembler (debug tool) ================================
-   A standalone decoder mirroring CPU.execute()/executeCB(), but read-only: it takes a
-   caller-supplied readByte(offset) function instead of touching CPU/MMU state, so it can
-   decode either live memory or a snapshot of bytes captured earlier.
-   ========================================================================================= */
+class CoreStats {
+  constructor() {
+    // Gate the hot read8/write8 path: skip bookkeeping unless a panel needs it.
+    this.trackAccess = true;
+    this.trackMemMap = false;
+
+    // Frame Activity panel: per-frame hardware event counts, last FRAME_STATS_HISTORY frames.
+    this.FRAME_STATS_HISTORY = 60; // ~1 second at 59.73fps
+    this.frameStatsHistory = [];
+    this.frameCounter = 0;
+    this.frameStats = this.newFrameStats();
+
+    // Interrupts panel: last INTERRUPT_LOG_SIZE interrupts actually dispatched (not just requested).
+    this.INTERRUPT_LOG_SIZE = 60;
+    this.interruptLog = []; // oldest first; each entry { seq, frame, bit, pcBefore }
+    this.interruptSeq = 0;
+
+    // Memory Map / MBC Banking panels: last touched region/address, last bank switch.
+    this.accessSeq = 0;
+    this.lastAccess = { addr: 0, region: 'ROM0', type: 'read', seq: 0 };
+    this.regionLastTouch = new Uint32Array(REGION_COUNT);
+    this.lastBankSwitch = null; // { kind, addr, val, romBank, ramBank, t } or null
+  }
+
+  // Fresh per-frame accumulator. spritesPerLine is indexed by scanline; events is an
+  // ordered { line, kind } list for the Frame Activity strip.
+  newFrameStats() {
+    return {
+      index: this.frameCounter,
+      instructions: 0,
+      interrupts: { vblank: 0, stat: 0, timer: 0, serial: 0, joypad: 0 },
+      events: [],
+      dma: 0,
+      bankSwitches: 0,
+      apuTriggers: 0,
+      spritesPerLine: new Uint8Array(EMU_CORE_CONFIG.SCREEN.HEIGHT),
+      spritesTotal: 0,
+      spritesMaxLine: 0,
+    };
+  }
+
+  // Back to power-on/ROM-load state. Called from Emulator.loadROM().
+  reset() {
+    this.frameStatsHistory = [];
+    this.frameCounter = 0;
+    this.frameStats = this.newFrameStats();
+
+    this.interruptLog = [];
+    this.interruptSeq = 0;
+
+    this.accessSeq = 0;
+    this.lastAccess.addr = 0; this.lastAccess.region = 'ROM0'; this.lastAccess.type = 'read'; this.lastAccess.seq = 0;
+    this.regionLastTouch.fill(0);
+    this.lastBankSwitch = null;
+  }
+
+  // Per-frame lifecycle, called from Emulator.runFrame().
+
+  startFrame() {
+    this.frameStats = this.newFrameStats();
+  }
+
+  recordInstruction() {
+    this.frameStats.instructions++;
+  }
+
+  finishFrame() {
+    this.frameStatsHistory.push(this.frameStats);
+    if (this.frameStatsHistory.length > this.FRAME_STATS_HISTORY) this.frameStatsHistory.shift();
+    this.frameCounter++;
+  }
+
+  // Hardware event recorders, called from Emulator/MMU/PPU/APU.
+
+  // bit: interrupt bit (0=vblank..4=joypad). ly: scanline it fired on.
+  recordInterrupt(bit, ly) {
+    const kind = INTERRUPT_KIND_NAMES[bit];
+    if (!kind) return;
+    this.frameStats.interrupts[kind]++;
+    if (this.trackAccess) this.frameStats.events.push({ line: ly, kind: 'int-' + kind });
+  }
+
+  // Called when an interrupt is actually dispatched (PC pushed, jumped to handler) —
+  // not just when the IF bit is set.
+  recordInterruptServiced(bit, pcBefore, frame) {
+    this.interruptLog.push({ seq: this.interruptSeq++, frame, bit, pcBefore });
+    if (this.interruptLog.length > this.INTERRUPT_LOG_SIZE) this.interruptLog.shift();
+  }
+
+  recordDMA(ly) {
+    this.frameStats.dma++;
+    if (this.trackAccess) this.frameStats.events.push({ line: ly, kind: 'dma' });
+  }
+
+  // ROM/RAM bank, RAM enable, banking mode, or RTC register select, for the MBC Banking panel.
+  recordBankSwitch(kind, addr, val, romBank, ramBank, ly) {
+    this.lastBankSwitch = { kind, addr, val, romBank, ramBank, t: performance.now() };
+    this.frameStats.bankSwitches++;
+    if (this.trackAccess) this.frameStats.events.push({ line: ly, kind: 'bank' });
+  }
+
+  recordAPUTrigger(ly) {
+    this.frameStats.apuTriggers++;
+    if (this.trackAccess) this.frameStats.events.push({ line: ly, kind: 'apu' });
+  }
+
+  recordSprites(y, count) {
+    this.frameStats.spritesPerLine[y] = count;
+    this.frameStats.spritesTotal += count;
+    if (count > this.frameStats.spritesMaxLine) this.frameStats.spritesMaxLine = count;
+  }
+
+  // Single memory read/write for the Memory Map panel. regionId: REGION_* id (emu-gb-core.js).
+  recordMemAccess(addr, regionId, type) {
+    this.accessSeq++;
+    this.regionLastTouch[regionId] = this.accessSeq;
+    const a = this.lastAccess;
+    a.addr = addr; a.region = REGION_NAMES[regionId]; a.type = type; a.seq = this.accessSeq;
+  }
+}
+
+/* Disassembler + Instrumentation — execution trace, breakpoints. Takes an `emulator`
+   back-reference (unlike CoreStats): triggerBreakpoint() needs to pause the run loop. */
+
+/* Disassembler: mirrors CPU.execute()/executeCB(), but read-only via a caller-supplied
+   readByte(offset), so it can decode live memory or a captured snapshot. */
 
 const REG8_NAMES = ['B', 'C', 'D', 'E', 'H', 'L', '(HL)', 'A'];
 const ALU_NAMES  = ['ADD A,', 'ADC A,', 'SUB ', 'SBC A,', 'AND ', 'XOR ', 'OR ', 'CP '];
@@ -156,9 +275,8 @@ function disassembleAt(mmu, addr) {
   return disassembleBytes((off) => mmu.read8((addr + off) & 0xFFFF), addr & 0xFFFF);
 }
 
-// Plain-English gloss for a decoded mnemonic, for the execution trace view. Checked against
-// full-text prefixes first (addressing modes worth calling out specifically), then falls
-// back to a description keyed on the base mnemonic word.
+// Plain-English gloss for a decoded mnemonic, for the execution trace. Checked against
+// full-text prefixes first, then falls back to the base mnemonic word.
 const INSTRUCTION_PREFIX_NOTES = [
   ['ADD HL,', 'Adds a 16-bit register pair into HL.'],
   ['ADD SP,', 'Adds a signed offset to the stack pointer.'],
@@ -231,8 +349,7 @@ function explainInstruction(mnemonicText) {
   const opWord = mnemonicText.split(/[ ,]/)[0];
   let note = INSTRUCTION_WORD_NOTES[opWord];
   if (!note) return 'Executes this CPU opcode.';
-  // Conditional control-flow ops (JP NZ, JR Z, CALL C, RET NC, ...) only act when the
-  // named flag condition holds.
+  // JP/JR/CALL/RET with a condition (NZ/Z/NC/C) only act when that flag holds.
   if (opWord === 'JP' || opWord === 'JR' || opWord === 'CALL' || opWord === 'RET') {
     const rest = mnemonicText.slice(opWord.length).trim();
     const condMatch = rest.match(/^(NZ|NC|Z|C)\b/);
@@ -241,27 +358,19 @@ function explainInstruction(mnemonicText) {
   return note;
 }
 
-/* ==================================== Instrumentation ====================================
-   Execution trace ring buffer + breakpoint state, for the Execution Trace / Disassembler
-   debug panels. Pure bookkeeping plus the one bit of control-flow (triggerBreakpoint) needed
-   to actually pause emulation when a breakpoint fires.
-
-   Holds a back-reference to the emulator rather than caching `cpu`/`mmu` at construction
-   time, the same way Timer/Joypad/APU do — a CGBEmulator replaces `this.cpu`/`this.mmu`
-   with CGB-specific instances right after calling super(), so anything that wants "the
-   current cpu" needs to read `this.emulator.cpu` fresh each time, not a stale copy from
-   before the swap.
-   ========================================================================================= */
+/* Instrumentation — execution trace ring buffer + breakpoint state.
+   Holds a back-reference to `emulator` rather than caching cpu/mmu, since CGBEmulator
+   replaces this.cpu/this.mmu right after super() — anything needing "the current cpu"
+   must read this.emulator.cpu fresh, not a stale copy. */
 
 class Instrumentation {
   constructor(emulator) {
     this.emulator = emulator;
 
-    // opt-in gate: skip the per-instruction snapshot/diff bookkeeping below unless the
-    // Execution Trace panel is actually open, since it runs on every stepInstruction().
+    // Gate the per-instruction snapshot/diff work: only runs when the Trace panel is open.
     this.trackTrace = false;
 
-    /* ---- execution trace: ring buffer of the last TRACE_SIZE fetched instructions ---- */
+    // Execution trace: ring buffer of the last TRACE_SIZE fetched instructions.
     this.TRACE_SIZE = 500;
     this.traceAddr = new Uint16Array(this.TRACE_SIZE);
     this.traceB0 = new Uint8Array(this.TRACE_SIZE);
@@ -271,11 +380,11 @@ class Instrumentation {
     this.traceWritePos = 0;
     this.traceFilled = 0;
 
-    /* ---- step / breakpoint debugging ---- */
+    // Step / breakpoint debugging.
     this.breakpointPC = null;
     this.breakpointOpcode = null;
     this.breakHitReason = null;
-    this._bpSkipFirstMatch = false; // avoids instantly re-triggering a PC breakpoint we're already sitting on
+    this._bpSkipFirstMatch = false; // don't re-trigger a PC breakpoint we're already sitting on
     this.onBreakpointHit = null;
   }
 
@@ -288,8 +397,7 @@ class Instrumentation {
     return i;
   }
 
-  // Snapshot of everything an instruction could plausibly change, used to compute the
-  // before/after diff shown in the execution trace.
+  // Snapshot of everything an instruction could change, for the trace's before/after diff.
   snapshotRegs() {
     const c = this.emulator.cpu;
     return {
@@ -298,8 +406,7 @@ class Instrumentation {
     };
   }
 
-  // Compares two snapshots into a compact "A: 0x00→0x05 Z:1→0" string of only the
-  // registers/flags that changed — empty string if nothing changed.
+  // "A: 0x00→0x05 Z:1→0" style string of only what changed; empty if nothing did.
   diffRegs(before, after) {
     const parts = [];
     for (const r of ['A', 'B', 'C', 'D', 'E', 'H', 'L']) {
@@ -312,8 +419,8 @@ class Instrumentation {
     return parts.join(' ');
   }
 
-  // Returns trace entries oldest-first. Each includes the ring buffer's physical `idx`,
-  // letting callers cache decoded text per slot instead of recomputing it every redraw.
+  // Trace entries oldest-first, tagged with the ring buffer's physical `idx` so callers
+  // can cache decoded text per slot instead of recomputing it every redraw.
   getTraceEntries() {
     const entries = [];
     const oldest = this.traceFilled < this.TRACE_SIZE ? 0 : this.traceWritePos;
@@ -324,8 +431,8 @@ class Instrumentation {
     return entries;
   }
 
-  // Arms PC/opcode breakpoints, called from Emulator.runToBreakpoint() right before it
-  // resumes continuous execution. Either target may be null to leave it unset.
+  // Arms PC/opcode breakpoints, called from Emulator.runToBreakpoint() before resuming.
+  // Either target may be null to leave it unset.
   arm(pcTarget, opcodeTarget) {
     this.breakpointPC = pcTarget;
     this.breakpointOpcode = opcodeTarget;
@@ -340,10 +447,9 @@ class Instrumentation {
     this._bpSkipFirstMatch = false;
   }
 
-  // Pauses emulation and records why, so a breakpoint hit looks the same in the UI as
-  // pressing Pause. Needs to reach back into the emulator to actually stop the run loop —
-  // that part isn't "instrumentation data", it's the one bit of control-flow a breakpoint
-  // requires.
+  // Pauses emulation and records why, so a breakpoint hit looks like pressing Pause.
+  // Reaches into the emulator to stop the run loop — the one bit of control-flow a
+  // breakpoint requires.
   triggerBreakpoint(reason) {
     const e = this.emulator;
     e._setRunning(false);
@@ -354,15 +460,11 @@ class Instrumentation {
     if (this.onBreakpointHit) this.onBreakpointHit(reason);
   }
 
-  /* ---- generic register/stack introspection ----
-     Read-only snapshots for any CPU-state-inspecting debug panel (register editor, stack
-     view, and anywhere else that just wants "what does the machine look like right now").
-     Generic to any LR35902-based core (DMG or GBC) since they're keyed off the same field
-     names on `cpu`/`mmu` either core exposes. */
+  // Generic register/stack introspection for any CPU-state panel (register editor, stack
+  // view). Generic to DMG or GBC since it's keyed off the same cpu/mmu field names.
 
-  // A plain-object snapshot of every CPU register/flag worth displaying, including the
-  // 16-bit pairs (BC/DE/HL) computed from their 8-bit halves. Distinct from snapshotRegs()
-  // above, which is a narrower, hot-path snapshot used only for the trace diff.
+  // Snapshot of every displayable register/flag, plus BC/DE/HL pairs. Wider than
+  // snapshotRegs() above, which is just the hot-path trace-diff snapshot.
   readRegisters() {
     const c = this.emulator.cpu;
     return {
@@ -374,12 +476,9 @@ class Instrumentation {
     };
   }
 
-  // Returns a window of 16-bit words straddling `sp`: `aboveWords` words above it (lower
-  // addresses — i.e. already-popped stack space) through `belowWords` words below it
-  // (higher addresses — i.e. what's still on the stack), each tagged with its signed
-  // word-offset from sp so callers can tell which entry is "the top of stack" without
-  // recomputing it. Uses peek8, not read8: this is debugger inspection, not real CPU
-  // memory activity.
+  // Window of 16-bit words around `sp`: `aboveWords` above (already-popped) through
+  // `belowWords` below (still on the stack), each tagged with its signed word-offset.
+  // Uses peek8, not read8 — debugger inspection, not real CPU memory activity.
   walkStack(sp, aboveWords, belowWords) {
     const mmu = this.emulator.mmu;
     const words = [];

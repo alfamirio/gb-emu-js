@@ -20,7 +20,7 @@ const canvas = document.getElementById('screen');
 const coreToggle = document.getElementById('coreToggle'); // unchecked = GB core, checked = GBC core
 let emulator = new GBEmulator();
 
-/* ---- canvas rendering: the core Emulator has no idea a <canvas> exists; it only produces a
+/* ---- canvas rendering: the core GBEmulator has no idea a <canvas> exists; it only produces a
    framebuffer (emulator.ppu.framebuffer). app.js owns turning that into pixels on screen. ---- */
 const ctx = canvas.getContext('2d');
 const imageData = ctx.createImageData(EMU_CORE_CONFIG.SCREEN.WIDTH, EMU_CORE_CONFIG.SCREEN.HEIGHT);
@@ -46,8 +46,8 @@ function drawCurrentLineMarker() {
   ctx.restore();
 }
 
-// Wires the cross-cutting hooks the core Emulator (and its Instrumentation) exposes
-// (onFrame/onFpsUpdate/onBreakpointHit) onto whichever Emulator instance is current. Called
+// Wires the cross-cutting hooks the core GBEmulator (and its Instrumentation) exposes
+// (onFrame/onFpsUpdate/onBreakpointHit) onto whichever GBEmulator instance is current. Called
 // once at startup and again every time ensureEmulatorMatchesCoreToggle() swaps in a new
 // instance, so a GB<->GBC toggle mid-session doesn't silently drop debug-panel wiring. This
 // is the one place app.js decides "a frame/step/rewind/breakpoint happened, now go repaint
@@ -695,8 +695,8 @@ function resetEmulator(statusMsg) {
 
 btnReset.addEventListener('click', () => resetEmulator('Reset.'));
 
-// Rewind: in-memory only, up to Emulator.REWIND_MAX_SNAPSHOTS deep, one snapshot every
-// Emulator.REWIND_SNAPSHOT_INTERVAL_SECONDS of emulated time.
+// Rewind: in-memory only, up to GBEmulator.REWIND_MAX_SNAPSHOTS deep, one snapshot every
+// GBEmulator.REWIND_SNAPSHOT_INTERVAL_SECONDS of emulated time.
 function updateRewindButton() {
   const snapshots = emulator.rewindBuffer.length;
   const interval = emulator.REWIND_SNAPSHOT_INTERVAL_SECONDS;

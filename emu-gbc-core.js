@@ -830,11 +830,9 @@ class CGBPPU {
   setPixel(x, y, r, g, b) { const i = (y * EMU_CORE_CONFIG.SCREEN.WIDTH + x) * 4; this.framebuffer[i] = r; this.framebuffer[i + 1] = g; this.framebuffer[i + 2] = b; this.framebuffer[i + 3] = 255; }
 }
 
-/* ============================== 4. GBEmulator / CGBEmulator ============================= */
+/* ================================== 4. CGBEmulator ======================================= */
 
-class GBEmulator extends Emulator {}
-
-class CGBEmulator extends Emulator {
+class CGBEmulator extends GBEmulator {
   constructor() {
     super(); // builds DMG mmu/cpu/ppu first; replaced below
     this.mmu = new CGBMMU(this);

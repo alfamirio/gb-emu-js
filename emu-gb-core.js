@@ -1,7 +1,7 @@
 /* =========================================================================================
    emu-gb-core.js — JS GB (DMG) emulation core
    -----------------------------------------------------------------------------------------
-   Hardware emulation: MMU, CPU, PPU, Timer, Joypad, APU, and the Emulator that drives them.
+   Hardware emulation: MMU, CPU, PPU, Timer, Joypad, APU, and the GBEmulator that drives them.
 
    Organized into seven parts, one per hardware component:
      1. MMU      - memory map: ROM banking, RAM, VRAM, OAM, I/O registers
@@ -10,7 +10,7 @@
      4. Timer    - DIV/TIMA/TMA/TAC timer circuit
      5. Joypad   - button state + joypad I/O register
      6. APU      - 4-channel sound generator (Web Audio output)
-     7. Emulator - glues everything together and drives the main loop
+     7. GBEmulator - glues everything together and drives the main loop
 
    New to GB internals? Start with the CPU: opcodes are decoded as bit fields, the same
    way the hardware does it, so ~500 instruction/CB combinations stay compact.
@@ -806,7 +806,7 @@ class CPU {
 
 class PPU {
   // Classic DMG green tint, and the neutral grayscale of the GB Pocket. SHADES points at
-  // whichever palette is active (see Emulator.setScreenModel()).
+  // whichever palette is active (see GBEmulator.setScreenModel()).
   static PALETTE_GB  = EMU_CORE_CONFIG.PALETTE_GB;
   static PALETTE_GBP = EMU_CORE_CONFIG.PALETTE_GBP;
   static SHADES = PPU.PALETTE_GBP;
@@ -1696,9 +1696,9 @@ class APU {
   }
 }
 
-/* ================================= 7. Emulator (glue) ==================================== */
+/* ================================= 7. GBEmulator (glue) ==================================== */
 
-class Emulator {
+class GBEmulator {
   static CYCLES_PER_FRAME = EMU_CORE_CONFIG.FRAME.CYCLES_PER_FRAME; // 154 scanlines x 456 T-cycles
 
   constructor() {
@@ -1869,7 +1869,7 @@ class Emulator {
   runFrame() {
     this.stats.startFrame();
     let cyclesThisFrame = 0;
-    while (cyclesThisFrame < Emulator.CYCLES_PER_FRAME) {
+    while (cyclesThisFrame < GBEmulator.CYCLES_PER_FRAME) {
       const cycles = this.stepInstruction();
       this.stats.recordInstruction();
       if (!this.running) return; // a breakpoint fired mid-frame; stop immediately
@@ -1918,7 +1918,7 @@ class Emulator {
     this._setRunning(true);
     const startLy = this.ppu.ly;
     let cyclesSpent = 0;
-    while (this.ppu.ly === startLy && cyclesSpent < Emulator.CYCLES_PER_FRAME) {
+    while (this.ppu.ly === startLy && cyclesSpent < GBEmulator.CYCLES_PER_FRAME) {
       const cycles = this.stepInstruction();
       if (!this.running) break; // a breakpoint fired mid-step
       cyclesSpent += cycles;
@@ -1953,7 +1953,7 @@ class Emulator {
   // Resumes continuous execution, auto-pausing the moment PC reaches pcTarget and/or
   // opcodeTarget is fetched. Either may be null to leave it unset. Thin wrapper: the
   // breakpoint state itself lives on this.instrumentation, but starting the run loop is
-  // still Emulator's job.
+  // still GBEmulator's job.
   runToBreakpoint(pcTarget, opcodeTarget) {
     this.instrumentation.arm(pcTarget, opcodeTarget);
     this.start();
@@ -2026,7 +2026,7 @@ class Emulator {
 function hex8(v) { return '0x' + v.toString(16).padStart(2, '0').toUpperCase(); }
 function hex16(v) { return '0x' + v.toString(16).padStart(4, '0').toUpperCase(); }
 
-// Interrupt bit -> name, shared by Emulator.requestInterrupt().
+// Interrupt bit -> name, shared by GBEmulator.requestInterrupt().
 const INTERRUPT_KIND_NAMES = ['vblank', 'stat', 'timer', 'serial', 'joypad'];
 
 // Typed arrays (VRAM, WRAM, etc.) go into save-state JSON as base64 rather than number

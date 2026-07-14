@@ -5,7 +5,7 @@
      - Disassembler + Instrumentation: LR35902 disassembler, execution trace, breakpoints
        (Trace/Disasm/Registers/Stack panels). Takes `emulator`, since triggerBreakpoint()
        pauses the run loop.
-   Emulator holds one of each: `this.stats`, `this.instrumentation`. */
+   GBEmulator holds one of each: `this.stats`, `this.instrumentation`. */
 
 /* CoreStats — frame/interrupt/memory-access counters for the debug UI. */
 
@@ -50,7 +50,7 @@ class CoreStats {
     };
   }
 
-  // Back to power-on/ROM-load state. Called from Emulator.loadROM().
+  // Back to power-on/ROM-load state. Called from GBEmulator.loadROM().
   reset() {
     this.frameStatsHistory = [];
     this.frameCounter = 0;
@@ -65,7 +65,7 @@ class CoreStats {
     this.lastBankSwitch = null;
   }
 
-  // Per-frame lifecycle, called from Emulator.runFrame().
+  // Per-frame lifecycle, called from GBEmulator.runFrame().
 
   startFrame() {
     this.frameStats = this.newFrameStats();
@@ -81,7 +81,7 @@ class CoreStats {
     this.frameCounter++;
   }
 
-  // Hardware event recorders, called from Emulator/MMU/PPU/APU.
+  // Hardware event recorders, called from GBEmulator/MMU/PPU/APU.
 
   // bit: interrupt bit (0=vblank..4=joypad). ly: scanline it fired on.
   recordInterrupt(bit, ly) {
@@ -431,7 +431,7 @@ class Instrumentation {
     return entries;
   }
 
-  // Arms PC/opcode breakpoints, called from Emulator.runToBreakpoint() before resuming.
+  // Arms PC/opcode breakpoints, called from GBEmulator.runToBreakpoint() before resuming.
   // Either target may be null to leave it unset.
   arm(pcTarget, opcodeTarget) {
     this.breakpointPC = pcTarget;

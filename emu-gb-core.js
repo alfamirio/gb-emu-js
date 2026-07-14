@@ -1357,6 +1357,28 @@ class APU {
     else this.readPos = (this.readPos + 1) % this.RING_SIZE; // full: drop oldest sample
   }
 
+  // Drains `bufferSize` samples out of the ring buffer for whoever owns the real output
+  // device (app.js's ScriptProcessorNode). An underrun (ring buffer empty) decays toward
+  // silence via lastL/lastR instead of a hard click. This used to be app.js's own
+  // drainAudioRing() loop, poking ringL/ringR/readPos/RING_SIZE/available/lastL/lastR
+  // directly — moved here since it's really one operation on APU's own state.
+  drain(bufferSize) {
+    const left = new Float32Array(bufferSize);
+    const right = new Float32Array(bufferSize);
+    for (let i = 0; i < bufferSize; i++) {
+      if (this.available > 0) {
+        this.lastL = this.ringL[this.readPos];
+        this.lastR = this.ringR[this.readPos];
+        this.readPos = (this.readPos + 1) % this.RING_SIZE;
+        this.available--;
+      } else {
+        this.lastL *= 0.9; this.lastR *= 0.9;
+      }
+      left[i] = this.lastL; right[i] = this.lastR;
+    }
+    return { left, right };
+  }
+
   /* ---- register read/write (mapped from MMU.readIO/writeIO for 0xFF10-0xFF3F) ---- */
   read(reg) {
     if (reg === 0xFF26) {
@@ -1753,6 +1775,47 @@ class GBEmulator {
   logInterruptServiced(bit, pcBefore) {
     this.stats?.recordInterruptServiced(bit, pcBefore, this.stats.frameCounter);
     if (this.onInterrupt) this.onInterrupt(bit, pcBefore);
+  }
+
+  /* ==================== Public runtime API ====================
+     Everything below is what a host (app.js) needs to actually run the emulator: video
+     output, audio output, input, and ROM/battery-save state. Debug-only introspection
+     (registers, memory, PPU/MBC/RTC panel state, etc.) lives on `this.instrumentation`
+     instead — see emu-gb-stats-instrumentation.js. */
+
+  // ---- Video ----
+  getFramebuffer() { return this.ppu.framebuffer; }
+
+  // ---- Audio output ----
+  // Drains `bufferSize` samples of mixed stereo output for whatever's driving playback.
+  drainAudioSamples(bufferSize) { return this.apu.drain(bufferSize); }
+  // Tells the APU the real output device's sample rate (e.g. audioCtx.sampleRate),
+  // so its internal sampling cadence matches reality instead of an assumed default.
+  setSampleRate(hz) { this.apu.setSampleRate(hz); }
+
+  // ---- Input ----
+  setButton(bit, pressed, isDirection) { this.joypad.setButton(bit, pressed, isDirection); }
+
+  // ---- ROM / battery-save state ----
+  hasROM() { return !!(this.mmu.rom && this.mmu.rom.length); }
+  getCartRAM(size) { return this.mmu.cartRAM.slice(0, size ?? this.mmu.cartRAM.length); }
+  setCartRAM(bytes) {
+    const n = Math.min(bytes.length, this.mmu.cartRAM.length);
+    this.mmu.cartRAM.set(bytes.subarray(0, n));
+  }
+
+  // ---- Channel mute ----
+  // A real audio-engine parameter (gates amp1..amp4 in the mixer) that app.js persists on
+  // every save regardless of whether any debug panel is open — not just a debug readout —
+  // so it lives here even though the toggle UI for it lives in the debugger's oscilloscope
+  // panel.
+  getChannelMuted(ch) { return this.apu.chMuted[ch]; }
+  setChannelMuted(ch, muted) { this.apu.chMuted[ch] = muted; }
+  getAllChannelMuted() { return this.apu.chMuted.slice(); }
+
+  // ---- Screen model / tint ----
+  setScreenModel(mode /* 'gb' | 'gbp' */) {
+    PPU.SHADES = mode === 'gbp' ? PPU.PALETTE_GBP : PPU.PALETTE_GB;
   }
 
   loadROM(bytes) {

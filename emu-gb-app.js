@@ -33,13 +33,14 @@ function createEmulator(EmulatorClass) {
 let emulator = createEmulator(GBEmulator);
 
 /* ---- canvas rendering: the core GBEmulator has no idea a <canvas> exists; it only produces a
-   framebuffer (emulator.ppu.framebuffer). app.js owns turning that into pixels on screen. ---- */
+   framebuffer, exposed via emulator.getFramebuffer(). app.js owns turning that into pixels on
+   screen. ---- */
 const ctx = canvas.getContext('2d');
 const imageData = ctx.createImageData(EMU_CORE_CONFIG.SCREEN.WIDTH, EMU_CORE_CONFIG.SCREEN.HEIGHT);
 let markCurrentLine = false; // debug-only "scanline mark" navbar toggle; app-side, not a core concept
 
 function draw() {
-  imageData.data.set(emulator.ppu.framebuffer);
+  imageData.data.set(emulator.getFramebuffer());
   ctx.putImageData(imageData, 0, 0);
   if (markCurrentLine) drawCurrentLineMarker();
 }
@@ -59,33 +60,13 @@ function drawCurrentLineMarker() {
 }
 
 /* ---- audio engine: mirrors the canvas rendering section above. The core APU has no idea
-   an AudioContext exists — it only produces mixed stereo samples into a ring buffer
-   (emulator.apu.ringL/ringR). app.js owns turning that into actual sound, the same way it
+   an AudioContext exists — it only produces mixed stereo samples, drained via
+   emulator.drainAudioSamples(). app.js owns turning that into actual sound, the same way it
    owns turning the PPU framebuffer into canvas pixels via draw(). No injected backend, no
    pull-callback contract — app.js just reads the buffer on its own schedule. ---- */
 let audioCtx = null;
 let masterGain = null;
 let audioNode = null; // ScriptProcessorNode feeding masterGain, pulling from the ring buffer
-
-// Drains bufferSize samples out of the *current* emulator's APU ring buffer. An underrun
-// (ring buffer empty) decays toward silence instead of a hard click.
-function drainAudioRing(bufferSize) {
-  const apu = emulator.apu;
-  const left = new Float32Array(bufferSize);
-  const right = new Float32Array(bufferSize);
-  for (let i = 0; i < bufferSize; i++) {
-    if (apu.available > 0) {
-      apu.lastL = apu.ringL[apu.readPos];
-      apu.lastR = apu.ringR[apu.readPos];
-      apu.readPos = (apu.readPos + 1) % apu.RING_SIZE;
-      apu.available--;
-    } else {
-      apu.lastL *= 0.9; apu.lastR *= 0.9;
-    }
-    left[i] = apu.lastL; right[i] = apu.lastR;
-  }
-  return { left, right };
-}
 
 // Lazily creates the AudioContext/GainNode/ScriptProcessorNode on first use. Must happen
 // inside a user gesture (click/drop) per browser autoplay policy, so this is only ever
@@ -97,12 +78,12 @@ function ensureAudioEngine() {
   audioCtx = new Ctx();
   masterGain = audioCtx.createGain();
   masterGain.connect(audioCtx.destination);
-  emulator.apu.setSampleRate(audioCtx.sampleRate); // real device rate, not an assumed 44100
+  emulator.setSampleRate(audioCtx.sampleRate); // real device rate, not an assumed 44100
 
   const bufferSize = 2048;
   audioNode = audioCtx.createScriptProcessor(bufferSize, 0, 2);
   audioNode.onaudioprocess = (e) => {
-    const { left, right } = drainAudioRing(bufferSize);
+    const { left, right } = emulator.drainAudioSamples(bufferSize);
     e.outputBuffer.getChannelData(0).set(left);
     e.outputBuffer.getChannelData(1).set(right);
   };
@@ -144,7 +125,7 @@ function wireEmulatorCallbacks() {
   emulator.onAudioSuspend = () => { if (audioCtx?.state === 'running') audioCtx.suspend(); };
   // A GB<->GBC core swap gives us a fresh APU defaulting to 44100 — if the audio engine is
   // already running, tell it the real rate immediately rather than waiting for a resume.
-  if (audioCtx) emulator.apu.setSampleRate(audioCtx.sampleRate);
+  if (audioCtx) emulator.setSampleRate(audioCtx.sampleRate);
 }
 wireEmulatorCallbacks();
 
@@ -834,7 +815,7 @@ btnStep1s.addEventListener('click', () => {
 // Sound controls: mute state + volume persisted in localStorage.
 const soundConfigStore = makePersistedConfig('jsgb-config:sound');
 function saveSoundConfig() {
-  soundConfigStore.save({ muted: isMuted, volume: Number(soundControls.volumeSlider.value), channelMuted: emulator.apu.chMuted });
+  soundConfigStore.save({ muted: isMuted, volume: Number(soundControls.volumeSlider.value), channelMuted: emulator.getAllChannelMuted() });
 }
 function loadSoundConfig() { return soundConfigStore.load(); }
 
@@ -905,8 +886,8 @@ const KEY_MAP = {
   Shift: [2, false],             // Select
   Enter: [3, false],             // Start
 };
-window.addEventListener('keydown', (e) => { const m = KEY_MAP[e.key]; if (m) { emulator.joypad.setButton(m[0], true, m[1]); e.preventDefault(); } });
-window.addEventListener('keyup', (e) => { const m = KEY_MAP[e.key]; if (m) { emulator.joypad.setButton(m[0], false, m[1]); e.preventDefault(); } });
+window.addEventListener('keydown', (e) => { const m = KEY_MAP[e.key]; if (m) { emulator.setButton(m[0], true, m[1]); e.preventDefault(); } });
+window.addEventListener('keyup', (e) => { const m = KEY_MAP[e.key]; if (m) { emulator.setButton(m[0], false, m[1]); e.preventDefault(); } });
 
 
 /* ===================================== Save / load states =====================================
@@ -954,7 +935,7 @@ function writeSlots(slots) {
 }
 
 function updateStateButtons() {
-  const hasROM = emulator.mmu.rom && emulator.mmu.rom.length > 0;
+  const hasROM = emulator.hasROM();
   btnSaveState.disabled = !hasROM;
   btnExportState.disabled = !hasROM;
   btnImportStateLabel.classList.toggle('disabled', !hasROM);
@@ -1033,7 +1014,7 @@ function applyLoadedState(state) {
 }
 
 function quickSaveState() {
-  if (!(emulator.mmu.rom && emulator.mmu.rom.length)) return;
+  if (!emulator.hasROM()) return;
   const slots = loadSlots();
   slots.unshift({ id: 'slot-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
                   savedAt: new Date().toISOString(), state: emulator.getSaveState() });
@@ -1148,7 +1129,7 @@ btnDownloadSav.addEventListener('click', () => {
   if (!lastROMBytes || !hasBatteryBackedRAM(lastROMBytes)) return;
   const size = getCartRAMByteSize(lastROMBytes);
   if (size === 0) { alert('This cartridge has no save RAM to export.'); return; }
-  const data = emulator.mmu.cartRAM.slice(0, size);
+  const data = emulator.getCartRAM(size);
   downloadBlob(new Blob([data], { type: 'application/octet-stream' }), `${safeRomName()}.sav`);
   savInfo.textContent = 'Save file downloaded ✓';
 });
@@ -1172,9 +1153,8 @@ importSavInput.addEventListener('change', (e) => {
       );
       if (!proceed) return;
     }
-    const mmu = emulator.mmu;
-    const n = Math.min(bytes.length, mmu.cartRAM.length, expectedSize || bytes.length);
-    mmu.cartRAM.set(bytes.subarray(0, n));
+    const n = Math.min(bytes.length, expectedSize || bytes.length);
+    emulator.setCartRAM(bytes.subarray(0, n));
     // Game only re-reads save RAM at boot, so reset to apply it.
     resetEmulator('Save file loaded, game reset to apply it.');
     savInfo.textContent = 'Save file loaded ✓ (game reset to apply it)';

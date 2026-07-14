@@ -776,13 +776,13 @@ const modelLabelGBP = document.getElementById('modelLabelGBP');
 
 function applyScreenModel() {
   const isGBP = modelToggle.checked;
-  PPU.SHADES = isGBP ? PPU.PALETTE_GBP : PPU.PALETTE_GB;
+  emulator.setScreenModel(isGBP ? 'gbp' : 'gb');
   document.documentElement.style.setProperty('--screen-bg', isGBP ? '#343434' : '#0f380f');
   modelLabelGBP.classList.toggle('active', isGBP);
   modelLabelGB.classList.toggle('active', !isGBP);
   saveUIConfig({ gbp: isGBP });
   // Repaint immediately with the new palette and refresh any open color panels
-  if (emulator.mmu.rom && emulator.mmu.rom.length) draw();
+  if (emulator.hasROM()) draw();
   refreshDebugTools();
 }
 
@@ -800,7 +800,7 @@ function applyScanlineMark() {
   markCurrentLine = on;
   scanlineMarkLabelOn.classList.toggle('active', on);
   // Repaint immediately so toggling is visible even while paused/no frame is running.
-  if (emulator.mmu.rom && emulator.mmu.rom.length) draw();
+  if (emulator.hasROM()) draw();
 }
 
 scanlineMarkToggle.addEventListener('change', applyScanlineMark);
@@ -824,7 +824,7 @@ function applyLayerTint() {
   layerTintLabelOn.classList.toggle('active', on);
   saveUIConfig({ layerTint: on });
   // Repaint immediately so toggling is visible even while paused/no frame is running.
-  if (emulator.mmu.rom && emulator.mmu.rom.length) draw();
+  if (emulator.hasROM()) draw();
 }
 
 if (typeof savedUIConfig.layerTint === 'boolean') layerTintToggle.checked = savedUIConfig.layerTint;
@@ -1403,24 +1403,24 @@ const scopeCanvases = {
   4: document.getElementById('scopeCh4'),
 };
 
-// Per-channel mute buttons: toggles emulator.apu.chMuted[i], silencing both audio output
-// and the scope trace for that channel. Persisted with the master sound settings.
+// Per-channel mute buttons: toggles emulator's channel-mute state, silencing both audio
+// output and the scope trace for that channel. Persisted with the master sound settings.
 const scopeMuteButtons = document.querySelectorAll('.scope-mute-btn');
 scopeMuteButtons.forEach(btn => {
   const ch = Number(btn.dataset.ch);
   if (savedSoundConfig && Array.isArray(savedSoundConfig.channelMuted) && savedSoundConfig.channelMuted[ch]) {
-    emulator.apu.chMuted[ch] = true;
+    emulator.setChannelMuted(ch, true);
   }
   updateScopeMuteButton(btn, ch);
   btn.addEventListener('click', () => {
-    emulator.apu.chMuted[ch] = !emulator.apu.chMuted[ch];
+    emulator.setChannelMuted(ch, !emulator.getChannelMuted(ch));
     updateScopeMuteButton(btn, ch);
     saveSoundConfig();
   });
 });
 
 function updateScopeMuteButton(btn, ch) {
-  const muted = emulator.apu.chMuted[ch];
+  const muted = emulator.getChannelMuted(ch);
   btn.textContent = muted ? '🔇' : '🔊';
   btn.title = (muted ? 'Unmute CH' : 'Mute CH') + (ch + 1);
   btn.classList.toggle('muted', muted);

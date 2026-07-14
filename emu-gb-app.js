@@ -46,16 +46,17 @@ function drawCurrentLineMarker() {
   ctx.restore();
 }
 
-// Wires the cross-cutting hooks the core Emulator exposes (onFrame/onFpsUpdate/onBreakpointHit)
-// onto whichever Emulator instance is current. Called once at startup and again every time
-// ensureEmulatorMatchesCoreToggle() swaps in a new instance, so a GB<->GBC toggle mid-session
-// doesn't silently drop debug-panel wiring. This is the one place app.js decides "a frame/step/
-// rewind happened, now go repaint the canvas and the debug panels" — the core itself no longer
-// knows either of those things exist.
+// Wires the cross-cutting hooks the core Emulator (and its Instrumentation) exposes
+// (onFrame/onFpsUpdate/onBreakpointHit) onto whichever Emulator instance is current. Called
+// once at startup and again every time ensureEmulatorMatchesCoreToggle() swaps in a new
+// instance, so a GB<->GBC toggle mid-session doesn't silently drop debug-panel wiring. This
+// is the one place app.js decides "a frame/step/rewind/breakpoint happened, now go repaint
+// the canvas and the debug panels" — the core itself no longer knows either of those things
+// exist.
 function wireEmulatorCallbacks() {
   emulator.onFrame = () => { draw(); refreshDebugTools(); };
   emulator.onFpsUpdate = (fps) => { document.getElementById('fps').textContent = fps + ' fps'; };
-  emulator.onBreakpointHit = (reason) => {
+  emulator.instrumentation.onBreakpointHit = (reason) => {
     btnPause.textContent = '▶ Start';
     bpStatus.textContent = `⏹ Stopped — ${reason}`;
     refreshDebugTools();

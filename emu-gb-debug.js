@@ -686,12 +686,12 @@ function updateCpuControlsVisibility(tool) {
   cpuDebugControls.classList.toggle('hidden', !TOOLS_NEEDING_CPU_CONTROLS.includes(tool));
 }
 
-// Keep emulator.stats.trackMemMap/emulator.trackTrace synced to (debug mode on) AND (that
-// tab active), so the hot instrumentation only runs when its tab is actually open.
+// Keep emulator.stats.trackMemMap/emulator.instrumentation.trackTrace synced to (debug mode
+// on) AND (that tab active), so the hot instrumentation only runs when its tab is actually open.
 function syncAccessTracking(activeDebugTool) {
   const debugging = !document.body.classList.contains('playing-mode');
   emulator.stats.trackMemMap = debugging && (activeDebugTool === 'memmap' || activeDebugTool === 'banking');
-  emulator.trackTrace = debugging && (activeDebugTool === 'trace');
+  emulator.instrumentation.trackTrace = debugging && (activeDebugTool === 'trace');
 }
 
 function setupTabGroup(container) {
@@ -2184,7 +2184,7 @@ function isTraceAtBottom() {
 
 // Cache of decoded mnemonic + explanation per trace ring-buffer slot, keyed by (addr,b0,b1,b2)
 // so a slot is only recomputed when its content actually changed.
-const traceDecodeCache = new Array(emulator.TRACE_SIZE).fill(null);
+const traceDecodeCache = new Array(emulator.instrumentation.TRACE_SIZE).fill(null);
 
 function getTraceDecoded(idx, addr, b0, b1, b2) {
   const cached = traceDecodeCache[idx];
@@ -2211,7 +2211,7 @@ function drawTrace() {
   btnTraceFollow.style.display = 'none';
   traceFrozenNote.style.display = 'none';
 
-  const entries = emulator.getTraceEntries();
+  const entries = emulator.instrumentation.getTraceEntries();
   if (entries.length === 0) { traceList.innerHTML = '<div class="trace-empty">No instructions executed yet.</div>'; return; }
   const recent = entries.slice(-200); // cap rendered rows; ring buffer holds more
 
@@ -2254,7 +2254,7 @@ btnTraceFollow.addEventListener('click', () => {
 // Exports the entire trace ring buffer as plain text: address, opcode, disassembly, diff,
 // and explanation per line. Consecutive repeats are collapsed with "x N", same as on screen.
 function buildTraceExportText() {
-  const entries = emulator.getTraceEntries();
+  const entries = emulator.instrumentation.getTraceEntries();
   const lines = [];
   lines.push(`; JS GB Emulator — execution trace export`);
   lines.push(`; ROM: ${emulator.romTitle || 'Unknown'}`);

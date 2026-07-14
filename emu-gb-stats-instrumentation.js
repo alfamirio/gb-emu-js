@@ -1,14 +1,17 @@
-/* emu-gb-stats-instrumentation.js — CoreStats + Instrumentation (debug-tool support)
-   Two independent classes, no effect on emulation:
+/* emu-gb-stats-instrumentation.js — classes injected into GBEmulator
+   Everything GBEmulator/APU accept as an optional constructor dependency lives here.
+   None of it is required — GBEmulator never constructs any of these itself, and no-ops
+   (via `?.`) around whichever ones are left null/undefined (see emu-gb-core.js). It's
+   app.js's job, as composition root, to build real instances and inject them:
      - CoreStats: frame/interrupt/memory-access counters (Frame Activity, Interrupts,
        Memory Map, MBC Banking panels). No constructor args.
-     - Disassembler + Instrumentation: LR35902 disassembler, execution trace, breakpoints
-       (Trace/Disasm/Registers/Stack panels). Optional `emulator` back-reference (can be
-       attached later), needed for triggerBreakpoint() to pause the run loop.
-
-   GBEmulator never constructs either itself — `this.stats`/`this.instrumentation` are
-   plain constructor-injected deps from whichever composition root builds the emulator
-   (emu-gb-app.js here). Pass null/omit for a headless run with no debug tooling. */
+     - Instrumentation (+ disassembler): execution trace, breakpoints (Trace/Disasm/
+       Registers/Stack panels). Optional `emulator` back-reference (can be attached
+       later), needed for triggerBreakpoint() to pause the run loop.
+     - WebAudioBackend: real implementation of APU's audio contract (init/resume/
+       suspend/setGain), using the Web Audio API.
+     - RafScheduler: real implementation of GBEmulator's scheduler contract
+       (requestFrame/cancelFrame), using requestAnimationFrame. */
 
 /* CoreStats — frame/interrupt/memory-access counters for the debug UI. */
 
@@ -496,3 +499,46 @@ class Instrumentation {
     return words;
   }
 }
+
+/* RafScheduler — real implementation of GBEmulator's scheduler contract
+   (requestFrame/cancelFrame), using requestAnimationFrame. Browser/DOM concern the core
+   itself has no business knowing about. */
+
+class RafScheduler {
+  requestFrame(cb) { return requestAnimationFrame(cb); }
+  cancelFrame(id) { cancelAnimationFrame(id); }
+}
+
+/* WebAudioBackend — real implementation of APU's audio contract (init/resume/suspend/
+   setGain), using the Web Audio API. A ScriptProcessorNode (rather than AudioWorklet)
+   keeps this synchronous and inline, with no separate module file to load.
+   `audioCtx`/`masterGain` are public since app.js's clip/audio-export code reads them
+   directly to fan its recording destinations out of the same node feeding the speakers. */
+
+class WebAudioBackend {
+  constructor() {
+    this.audioCtx = null;
+    this.masterGain = null;
+  }
+  init(pullSample) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    this.audioCtx = new Ctx();
+    this.masterGain = this.audioCtx.createGain();
+    this.masterGain.connect(this.audioCtx.destination);
+
+    const bufferSize = 2048;
+    const node = this.audioCtx.createScriptProcessor(bufferSize, 0, 2);
+    node.onaudioprocess = (e) => {
+      const { left, right } = pullSample(bufferSize);
+      e.outputBuffer.getChannelData(0).set(left);
+      e.outputBuffer.getChannelData(1).set(right);
+    };
+    node.connect(this.masterGain);
+    return this.audioCtx.sampleRate;
+  }
+  resume() { if (this.audioCtx?.state === 'suspended') this.audioCtx.resume(); }
+  suspend() { if (this.audioCtx?.state === 'running') this.audioCtx.suspend(); }
+  setGain(v) { if (this.masterGain) this.masterGain.gain.value = v; }
+}
+

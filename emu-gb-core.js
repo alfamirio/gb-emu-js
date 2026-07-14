@@ -1237,9 +1237,20 @@ const APU_IO_MASK = {
   0xFF24: 0x00, 0xFF25: 0x00,
 };
 
+/* Audio backend contract, injected via GBEmulator({ audio }) — APU never touches
+   AudioContext/window itself, only these four methods (duck-typed, no base class needed):
+     - init(pullSample) -> sampleRate (number), or falsy if audio isn't available.
+         pullSample(bufferSize) must return { left: Float32Array, right: Float32Array },
+         exactly bufferSize samples each; the backend calls it whenever it needs more audio.
+     - resume() / suspend(): mirror AudioContext.resume()/suspend().
+     - setGain(value): master volume, 0..1.
+   `audio` may be null/undefined — every call against it below is optional-chained, so an
+   emulator built with no audio backend just runs silently instead of crashing. */
+
 class APU {
-  constructor(emulator) {
+  constructor(emulator, audio = null) {
     this.emulator = emulator;
+    this.audio = audio; // contract instance, or null — never constructed here
     this.enabled = false; // NR52 master power bit
 
     this.ch1 = this.newCh1State();
@@ -1287,9 +1298,7 @@ class APU {
     this.scopeCh4 = new Float32Array(this.SCOPE_SIZE);
     this.scopeWritePos = 0;
 
-    this.audioCtx = null;
-    this.scriptNode = null;
-    this.masterGain = null;
+    this._audioReady = false; // set once audio.init() has succeeded; guards re-init
     this.muted = false;
     this.chMuted = [false, false, false, false]; // per-channel mute (oscilloscope UI), indexed CH1-CH4
     this.volume = 0.5;
@@ -1334,47 +1343,43 @@ class APU {
     this.writePos = 0; this.readPos = 0; this.available = 0; this.lastL = 0; this.lastR = 0;
   }
 
-  /* ---- Web Audio plumbing ---- */
-  // ScriptProcessorNode (rather than AudioWorklet) keeps this synchronous and inline,
-  // with no separate module file to load.
+  /* ---- audio output, via the injected `audio` contract (see class comment above) ---- */
   initAudio() {
-    if (this.audioCtx) return;
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) return;
-    this.audioCtx = new Ctx();
+    if (this._audioReady || !this.audio) return;
+    const rate = this.audio.init((bufferSize) => this._pullSamples(bufferSize));
+    if (!rate) return; // backend unavailable/failed — stay silent, don't retry every call
+    this._audioReady = true;
 
     // Use the real hardware/OS sample rate rather than assuming 44100.
-    this.sampleRate = this.audioCtx.sampleRate;
+    this.sampleRate = rate;
     this.cyclesPerSample = EMU_CORE_CONFIG.CLOCK_HZ / this.sampleRate;
-
-    this.masterGain = this.audioCtx.createGain();
-    this.masterGain.gain.value = this.muted ? 0 : this.volume;
-    this.masterGain.connect(this.audioCtx.destination);
-
-    const bufferSize = 2048;
-    this.scriptNode = this.audioCtx.createScriptProcessor(bufferSize, 0, 2);
-    this.scriptNode.onaudioprocess = (e) => {
-      const left = e.outputBuffer.getChannelData(0);
-      const right = e.outputBuffer.getChannelData(1);
-      for (let i = 0; i < bufferSize; i++) {
-        if (this.available > 0) {
-          this.lastL = this.ringL[this.readPos];
-          this.lastR = this.ringR[this.readPos];
-          this.readPos = (this.readPos + 1) % this.RING_SIZE;
-          this.available--;
-        } else {
-          this.lastL *= 0.9; this.lastR *= 0.9; // underrun: decay toward silence, not a hard click
-        }
-        left[i] = this.lastL; right[i] = this.lastR;
-      }
-    };
-    this.scriptNode.connect(this.masterGain);
+    this.audio.setGain(this.muted ? 0 : this.volume);
   }
 
-  resume() { if (this.audioCtx && this.audioCtx.state === 'suspended') this.audioCtx.resume(); }
-  suspend() { if (this.audioCtx && this.audioCtx.state === 'running') this.audioCtx.suspend(); }
-  setVolume(v) { this.volume = v; if (this.masterGain) this.masterGain.gain.value = this.muted ? 0 : v; }
-  setMuted(m) { this.muted = m; if (this.masterGain) this.masterGain.gain.value = m ? 0 : this.volume; }
+  // Called by the audio backend whenever it needs more output samples. Drains the ring
+  // buffer (producer: emulator loop via pushSample()); an underrun decays toward silence
+  // instead of a hard click.
+  _pullSamples(bufferSize) {
+    const left = new Float32Array(bufferSize);
+    const right = new Float32Array(bufferSize);
+    for (let i = 0; i < bufferSize; i++) {
+      if (this.available > 0) {
+        this.lastL = this.ringL[this.readPos];
+        this.lastR = this.ringR[this.readPos];
+        this.readPos = (this.readPos + 1) % this.RING_SIZE;
+        this.available--;
+      } else {
+        this.lastL *= 0.9; this.lastR *= 0.9;
+      }
+      left[i] = this.lastL; right[i] = this.lastR;
+    }
+    return { left, right };
+  }
+
+  resume() { this.audio?.resume(); }
+  suspend() { this.audio?.suspend(); }
+  setVolume(v) { this.volume = v; this.audio?.setGain(this.muted ? 0 : v); }
+  setMuted(m) { this.muted = m; this.audio?.setGain(m ? 0 : this.volume); }
 
   pushSample(l, r) {
     this.ringL[this.writePos] = l; this.ringR[this.writePos] = r;
@@ -1696,20 +1701,30 @@ class APU {
   }
 }
 
+/* Scheduler contract, injected via GBEmulator({ scheduler }) — GBEmulator never touches
+   requestAnimationFrame/setTimeout itself, only these two methods:
+     - requestFrame(cb): schedule cb(timestamp) for the next tick; returns an id.
+     - cancelFrame(id): cancel a pending requestFrame().
+   `scheduler` may be null/undefined — every call against it below is optional-chained, so
+   an emulator built with no scheduler still runs (runFrame()/stepFrame() etc. all work),
+   it just won't drive itself continuously via start(). */
+
 /* ================================= 7. GBEmulator (glue) ==================================== */
 
 class GBEmulator {
   static CYCLES_PER_FRAME = EMU_CORE_CONFIG.FRAME.CYCLES_PER_FRAME; // 154 scanlines x 456 T-cycles
 
-  // `stats`/`instrumentation` are DI'd in by the composition root; GBEmulator never
-  // constructs them itself, and no-ops (via `?.`) if either is left null/undefined.
-  constructor({ stats = null, instrumentation = null } = {}) {
+  // `stats`/`instrumentation`/`audio`/`scheduler` are all DI'd in by the composition root.
+  // GBEmulator never constructs any of them itself, and no-ops (via `?.`) if left
+  // null/undefined — see the APU class comment for the audio contract.
+  constructor({ stats = null, instrumentation = null, audio = null, scheduler = null } = {}) {
     this.mmu = new MMU(this);
     this.cpu = new CPU(this.mmu);
     this.ppu = new PPU(this);
     this.timer = new Timer(this);
     this.joypad = new Joypad(this);
-    this.apu = new APU(this);
+    this.apu = new APU(this, audio);
+    this.scheduler = scheduler;
 
     this.running = false;
     this.onRunStateChange = null; // called with the new boolean whenever _setRunning() flips this.running
@@ -1980,7 +1995,7 @@ class GBEmulator {
     this.apu.resume();
     this.loop(performance.now());
   }
-  pause() { this._setRunning(false); if (this._rafId) cancelAnimationFrame(this._rafId); this.apu.suspend(); }
+  pause() { this._setRunning(false); if (this._rafId) this.scheduler?.cancelFrame(this._rafId); this.apu.suspend(); }
 
   // Paces emulated frames against real elapsed time, scaled by this.speed (1 = normal,
   // 0.1 = 10%, etc). An accumulator (rather than "one frame per rAF tick") means slowing
@@ -2019,7 +2034,7 @@ class GBEmulator {
       if (this.onFpsUpdate) this.onFpsUpdate(this._fpsFrames);
       this._fpsFrames = 0; this._fpsLast = now;
     }
-    this._rafId = requestAnimationFrame((t) => this.loop(t));
+    this._rafId = this.scheduler?.requestFrame((t) => this.loop(t));
   }
 }
 

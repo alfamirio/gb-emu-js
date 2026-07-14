@@ -19,10 +19,16 @@
 const canvas = document.getElementById('screen');
 const coreToggle = document.getElementById('coreToggle'); // unchecked = GB core, checked = GBC core
 
-// Composition root: GBEmulator never constructs stats/instrumentation itself (see
-// emu-gb-core.js). app.js decides debug tooling should be live and injects real instances.
+// Composition root: GBEmulator never constructs stats/instrumentation/audio/scheduler
+// itself (see emu-gb-core.js) — app.js decides these should be live and injects real ones
+// (CoreStats/Instrumentation/WebAudioBackend/RafScheduler, all from emu-gb-stats-instrumentation.js).
 function createEmulator(EmulatorClass) {
-  return new EmulatorClass({ stats: new CoreStats(), instrumentation: new Instrumentation() });
+  return new EmulatorClass({
+    stats: new CoreStats(),
+    instrumentation: new Instrumentation(),
+    audio: new WebAudioBackend(),
+    scheduler: new RafScheduler(),
+  });
 }
 let emulator = createEmulator(GBEmulator);
 
@@ -1171,9 +1177,10 @@ function startClipRecording() {
 
   const videoStream = canvas.captureStream(APP_CONFIG.VIDEO_CAPTURE_FPS);
   const tracks = [...videoStream.getVideoTracks()];
-  if (emulator.apu.audioCtx && emulator.apu.masterGain) {
-    clipAudioDest = emulator.apu.audioCtx.createMediaStreamDestination();
-    emulator.apu.masterGain.connect(clipAudioDest); // fans out alongside the existing speaker connection
+  const audio = emulator.apu.audio;
+  if (audio?.audioCtx && audio?.masterGain) {
+    clipAudioDest = audio.audioCtx.createMediaStreamDestination();
+    audio.masterGain.connect(clipAudioDest); // fans out alongside the existing speaker connection
     tracks.push(...clipAudioDest.stream.getAudioTracks());
   }
 
@@ -1185,7 +1192,7 @@ function startClipRecording() {
   });
   clipRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) clipChunks.push(e.data); };
   clipRecorder.onstop = () => {
-    if (clipAudioDest) { emulator.apu.masterGain.disconnect(clipAudioDest); clipAudioDest = null; }
+    if (clipAudioDest) { audio.masterGain.disconnect(clipAudioDest); clipAudioDest = null; }
     videoStream.getTracks().forEach(t => t.stop());
     clearInterval(clipTimerId);
     const blob = new Blob(clipChunks, { type: mimeType.split(';')[0] });
@@ -1248,10 +1255,11 @@ function startAudioRecording() {
   if (!mimeType) { alert('No supported Opus audio codec found in this browser.'); return; }
 
   emulator.apu.initAudio(); // no-op if already set up; safe here since a click is a user gesture
-  if (!emulator.apu.audioCtx || !emulator.apu.masterGain) { alert('Audio is not available in this browser.'); return; }
+  const audio = emulator.apu.audio;
+  if (!audio?.audioCtx || !audio?.masterGain) { alert('Audio is not available in this browser.'); return; }
 
-  audioDest = emulator.apu.audioCtx.createMediaStreamDestination();
-  emulator.apu.masterGain.connect(audioDest); // fans out alongside the existing speaker connection
+  audioDest = audio.audioCtx.createMediaStreamDestination();
+  audio.masterGain.connect(audioDest); // fans out alongside the existing speaker connection
 
   audioChunks = [];
   audioRecorder = new MediaRecorder(audioDest.stream, {
@@ -1260,7 +1268,7 @@ function startAudioRecording() {
   });
   audioRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
   audioRecorder.onstop = () => {
-    emulator.apu.masterGain.disconnect(audioDest);
+    audio.masterGain.disconnect(audioDest);
     audioDest = null;
     clearInterval(audioTimerId);
     const blob = new Blob(audioChunks, { type: mimeType.split(';')[0] });

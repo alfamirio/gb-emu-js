@@ -48,7 +48,7 @@ function draw() {
 // Draws a bright horizontal marker over the PPU's current scanline (LY), so the raster
 // position is visible on the actual screen output too, not just in a debug panel.
 function drawCurrentLineMarker() {
-  const ly = emulator.ppu.ly;
+  const ly = emulator.instrumentation.readPPUState().ly;
   if (ly > EMU_CORE_CONFIG.SCREEN.HEIGHT - 1) return; // VBlank lines are off the visible screen
   ctx.save();
   ctx.fillStyle = 'rgba(255, 221, 0, 0.55)';
@@ -796,7 +796,7 @@ btnStep.addEventListener('click', () => {
 btnStepLine.addEventListener('click', () => {
   emulator.stepLine();
   btnPause.textContent = '▶ Start';
-  bpStatus.textContent = `Stepped to line LY=${emulator.ppu.ly} — PC=${hex16(emulator.instrumentation.readRegisters().PC)}`;
+  bpStatus.textContent = `Stepped to line LY=${emulator.instrumentation.readPPUState().ly} — PC=${hex16(emulator.instrumentation.readRegisters().PC)}`;
 });
 
 btnStepFrame.addEventListener('click', () => {

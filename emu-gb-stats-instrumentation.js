@@ -604,6 +604,14 @@ class Instrumentation {
              scx: p.scx, scy: p.scy, wx: p.wx, wy: p.wy };
   }
 
+  // Oscilloscope scope buffers (one ring per channel) plus the shared write position, for
+  // the APU oscilloscope panel. Raw typed-array references, same as readROM/readVRAM/readOAM
+  // above — inspection reads, not copies, since these are redrawn every frame.
+  readOscilloscope() {
+    const a = this.emulator.apu;
+    return { ch1: a.scopeCh1, ch2: a.scopeCh2, ch3: a.scopeCh3, ch4: a.scopeCh4, writePos: a.scopeWritePos };
+  }
+
   // Per-scanline sprite candidates plus their decoded row bits, for the sprite-layer
   // renderer (Layers > Sprites and the OAM composited view). `ppu` still passed through
   // to spritePixelRGB()/spriteRowColorIndex() by the caller — this just replaces the two

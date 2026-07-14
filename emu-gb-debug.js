@@ -232,15 +232,15 @@ function ramBankTarget(mbc, ramBankTotal) {
 }
 
 function buildBankingPanel() {
-  const mmu = emulator.mmu;
+  const rom = emulator.instrumentation.readROM();
   const mbc = emulator.instrumentation.readMBCState();
-  const romBytes = mmu.rom ? mmu.rom.length : 0;
+  const romBytes = rom ? rom.length : 0;
   const romBankTotal = romBytes > 0 ? Math.max(1, Math.ceil(romBytes / 0x4000)) : 0;
   const ramBankTotal = getRamBankTotal(mbc);
 
   bankingDesc.innerHTML = romBytes === 0
     ? 'Load a ROM to see its mapper and which ROM/RAM banks are currently switched in.'
-    : `Mapper: <b>${getMBCName(mmu.rom)}</b> &middot; ${romBankTotal} ROM bank(s) of 16KB` +
+    : `Mapper: <b>${getMBCName(rom)}</b> &middot; ${romBankTotal} ROM bank(s) of 16KB` +
       (mbc.mbcType === 2 ? ' &middot; 512×4-bit built-in RAM (no banking)'
         : ramBankTotal ? ` &middot; up to ${ramBankTotal} RAM bank(s) of 8KB` : ' &middot; no external RAM') +
       (!mbc.cartTypeSupported ? `<br><span style="color:#e8794b">⚠ Unsupported mapper - banking below is simulated as MBC1 and won't match real hardware.</span>` : '');
@@ -304,8 +304,8 @@ let lastRenderedBankSwitchT = -1;
 const BANK_KIND_LABEL = { rom: 'ROM bank switch', ram: 'RAM bank switch', enable: 'RAM enable/disable', mode: 'banking mode switch', rtc: 'RTC register select' };
 
 function drawBanking() {
-  const mmu = emulator.mmu; // .rom is still checked directly — battery/ROM presence, not banking state
-  if (!mmu.rom || mmu.rom.length === 0) return;
+  const rom = emulator.instrumentation.readROM(); // ROM presence check, not banking state
+  if (!rom || rom.length === 0) return;
   const mbc = emulator.instrumentation.readMBCState();
 
   // Keep readouts and active-tile highlight correct every frame
@@ -1438,11 +1438,11 @@ function drawScopeChannel(canvas, buffer, writePos, color) {
 }
 
 function drawOscilloscope() {
-  const apu = emulator.apu;
-  drawScopeChannel(scopeCanvases[1], apu.scopeCh1, apu.scopeWritePos, SCOPE_COLORS[1]);
-  drawScopeChannel(scopeCanvases[2], apu.scopeCh2, apu.scopeWritePos, SCOPE_COLORS[2]);
-  drawScopeChannel(scopeCanvases[3], apu.scopeCh3, apu.scopeWritePos, SCOPE_COLORS[3]);
-  drawScopeChannel(scopeCanvases[4], apu.scopeCh4, apu.scopeWritePos, SCOPE_COLORS[4]);
+  const scope = emulator.instrumentation.readOscilloscope();
+  drawScopeChannel(scopeCanvases[1], scope.ch1, scope.writePos, SCOPE_COLORS[1]);
+  drawScopeChannel(scopeCanvases[2], scope.ch2, scope.writePos, SCOPE_COLORS[2]);
+  drawScopeChannel(scopeCanvases[3], scope.ch3, scope.writePos, SCOPE_COLORS[3]);
+  drawScopeChannel(scopeCanvases[4], scope.ch4, scope.writePos, SCOPE_COLORS[4]);
 }
 
 /* ---- 4c. Scanline timeline: PPU position within the 154-line frame, plus a zoomed-in view

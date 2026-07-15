@@ -1408,6 +1408,71 @@
   .ramedit-bit span { font-size: 0.6rem; color: #999; font-family: 'Consolas', monospace; max-width: 54px; text-align: center; line-height: 1.2; }
   .ramedit-io-hexrow { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
   .ramedit-io-unknown-note { color: #666; font-size: 0.64rem; font-style: italic; }
+
+  /* ---- Memory Scanner ---- */
+  .memscan-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .memscan-row label { font-size: 0.72rem; color: #999; display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .memscan-row input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; }
+  .memscan-value-input {
+    background: #1b1b22; border: 1px solid #444; border-radius: 5px; color: #fff;
+    padding: 5px 8px; font-family: 'Consolas', monospace; font-size: 0.78rem; width: 110px;
+  }
+  .memscan-value-input:focus { outline: none; border-color: var(--accent); }
+  .memscan-value-input:disabled { opacity: .4; cursor: not-allowed; }
+  .memscan-regions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .memscan-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 12px; }
+  .memscan-summary {
+    font-family: 'Consolas', monospace; font-size: 0.72rem; color: #7fa8d6;
+    background: #1b1b22; border: 1px solid #333; border-radius: 6px; padding: 8px 10px; margin-bottom: 10px;
+  }
+  .memscan-summary .memscan-warn { color: #e8c15a; }
+  table.memscan-table { border-collapse: collapse; width: 100%; font-family: 'Consolas', monospace; font-size: 0.72rem; }
+  table.memscan-table th {
+    text-align: left; color: #888; font-weight: 600; font-size: 0.66rem; text-transform: uppercase;
+    letter-spacing: .04em; padding: 5px 8px; border-bottom: 1px solid #333; position: sticky; top: 0; background: #17171d;
+  }
+  table.memscan-table td { padding: 4px 8px; border-bottom: 1px solid #2a2a32; color: #ddd; vertical-align: middle; }
+  table.memscan-table tbody tr:hover td { background: #22222a; }
+  table.memscan-table td.memscan-addr { color: #7fa8d6; cursor: pointer; }
+  table.memscan-table td.memscan-addr:hover { text-decoration: underline; }
+  table.memscan-table td.memscan-region { color: #999; }
+  table.memscan-table td.memscan-cur { color: #fff; font-weight: 700; }
+  table.memscan-table td.memscan-cur.changed { color: #e8c15a; }
+  table.memscan-table td.memscan-prev { color: #777; }
+  .memscan-body { max-height: 360px; overflow-y: auto; border: 1px solid #2a2a32; border-radius: 6px; }
+  .memscan-empty { padding: 14px; text-align: center; color: #666; font-style: italic; font-size: 0.75rem; }
+  .memscan-freeze-cell { text-align: center; }
+  .memscan-freeze-cell input[type="checkbox"] { accent-color: #d9534f; cursor: pointer; }
+  .memscan-frozen-section { margin-top: 14px; }
+  .memscan-frozen-section h4 { margin: 0 0 6px; font-size: 0.78rem; color: #ccc; }
+  .memscan-frozen-row {
+    display: flex; align-items: center; gap: 8px; background: #1b1b22; border: 1px solid #333;
+    border-radius: 6px; padding: 6px 10px; margin-bottom: 5px; font-family: 'Consolas', monospace; font-size: 0.72rem;
+  }
+  .memscan-frozen-row .memscan-frozen-addr { color: #7fa8d6; min-width: 62px; }
+  .memscan-frozen-row .memscan-frozen-val { color: #d9534f; font-weight: 700; }
+  .memscan-frozen-row button { margin-left: auto; }
+
+  table.memscan-table td.memscan-name-cell { display: flex; align-items: center; gap: 4px; }
+  .memscan-name-input { width: 84px !important; padding: 4px 6px !important; }
+  .memscan-name-input.memscan-name-error { border-color: #d9534f !important; }
+  .memscan-save-btn { padding: 4px 7px !important; font-size: 0.8rem !important; line-height: 1; }
+
+  .memscan-saved-section { margin-bottom: 16px; }
+  .memscan-saved-section h4 { margin: 0 0 6px; font-size: 0.78rem; color: #ccc; }
+  .memscan-saved-row {
+    display: flex; align-items: center; gap: 8px; background: #1b1b22; border: 1px solid #333;
+    border-radius: 6px; padding: 6px 10px; margin-bottom: 5px; font-family: 'Consolas', monospace; font-size: 0.72rem;
+  }
+  .memscan-saved-row input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+  .memscan-saved-name {
+    flex: 1; color: #fff; font-weight: 700; font-family: system-ui, sans-serif; font-size: 0.76rem;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .memscan-saved-addr { color: #7fa8d6; }
+  .memscan-saved-size { color: #888; font-size: 0.64rem; }
+  .memscan-saved-value { width: 64px !important; }
+  .memscan-saved-row .ui-btn { flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -1546,6 +1611,7 @@
     <div class="tools-tabs">
       <button class="tool-tab active" data-tool="registers">Registers</button>
       <button class="tool-tab" data-tool="ramedit">RAM Editor</button>
+      <button class="tool-tab" data-tool="memscan">Mem Scanner</button>
       <button class="tool-tab" data-tool="interrupts">Interrupts</button>
       <button class="tool-tab" data-tool="trace">Trace</button>
       <button class="tool-tab" data-tool="eventlog">Event Log</button>
@@ -1782,6 +1848,51 @@
       <div class="ramedit-info" id="ramEditInfo"></div>
       <div class="ramedit-nav" id="ramEditNav"><!-- built in JS --></div>
       <div class="ramedit-body" id="ramEditBody"><!-- built in JS: hex dump or I/O register list --></div>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-memscan">
+      <p class="tool-desc">
+        Cheat Engine-style value scanner. Take a snapshot of memory, play until a stat like lives, health,
+        coins, or a timer changes, then narrow down the snapshot to the addresses that changed the way you
+        expect. A few rounds of narrowing usually gets you down to one or two candidate addresses - name one
+        and save it, and it'll be waiting here ready to apply next time you load this ROM.
+      </p>
+      <div class="memscan-saved-section" id="memScanSavedSection">
+        <h4>Saved cheats for this ROM</h4>
+        <div id="memScanSavedList"><!-- built in JS --></div>
+      </div>
+      <div class="memscan-row">
+        <span class="ramedit-nav-label">Search in:</span>
+        <div class="memscan-regions" id="memScanRegions"><!-- built in JS --></div>
+      </div>
+      <div class="memscan-row">
+        <label>Size
+          <select class="ui-select" id="memScanSize">
+            <option value="1">1 byte</option>
+            <option value="2">2 bytes (LE)</option>
+          </select>
+        </label>
+        <label>Scan type
+          <select class="ui-select" id="memScanType">
+            <option value="exact">Exact value</option>
+            <option value="unknown">Unknown initial value</option>
+          </select>
+        </label>
+        <label id="memScanValueWrap">Value
+          <input type="text" class="memscan-value-input" id="memScanValue" placeholder="e.g. 3">
+        </label>
+      </div>
+      <div class="memscan-actions">
+        <button class="ui-btn small" id="memScanNewBtn">New Scan</button>
+        <button class="ui-btn small ghost" id="memScanNextBtn" disabled>Next Scan</button>
+        <button class="ui-btn small ghost" id="memScanResetBtn" disabled>Reset</button>
+      </div>
+      <div class="memscan-summary" id="memScanSummary">No scan yet — pick regions above and hit New Scan.</div>
+      <div class="memscan-body" id="memScanBody"><!-- built in JS --></div>
+      <div class="memscan-frozen-section" id="memScanFrozenSection" style="display:none;">
+        <h4>Frozen addresses (written every frame)</h4>
+        <div id="memScanFrozenList"><!-- built in JS --></div>
+      </div>
     </div>
   </div>
 

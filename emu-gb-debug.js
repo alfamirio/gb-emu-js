@@ -774,6 +774,460 @@ setupTabGroup(visualToolsContainer);
 updateCpuControlsVisibility(debugToolsContainer.querySelector('.tool-tab.active').dataset.tool);
 syncAccessTracking(debugToolsContainer.querySelector('.tool-tab.active').dataset.tool);
 
+/* ---- Memory Scanner: Cheat Engine-style value search, used to hunt down which address holds
+   something like lives/HP/coins/a timer. Two-phase workflow:
+     1. "New Scan" snapshots every byte (or LE word) in the checked regions, optionally filtered
+        to an exact starting value.
+     2. "Next Scan" repeatedly narrows that candidate set by comparing each candidate's *live*
+        value against the value it had at the last scan (changed/unchanged/increased/decreased/
+        exact/by-delta) until only a couple of addresses are left.
+   Also supports freezing a found address so its value is rewritten every frame - handy for
+   confirming a find (infinite lives) or just for a permanent cheat. ---- */
+const memScanRegionsEl = document.getElementById('memScanRegions');
+const memScanSizeEl = document.getElementById('memScanSize');
+const memScanTypeEl = document.getElementById('memScanType');
+const memScanValueEl = document.getElementById('memScanValue');
+const memScanValueWrapEl = document.getElementById('memScanValueWrap');
+const memScanNewBtn = document.getElementById('memScanNewBtn');
+const memScanNextBtn = document.getElementById('memScanNextBtn');
+const memScanResetBtn = document.getElementById('memScanResetBtn');
+const memScanSummaryEl = document.getElementById('memScanSummary');
+const memScanBodyEl = document.getElementById('memScanBody');
+const memScanFrozenSectionEl = document.getElementById('memScanFrozenSection');
+const memScanFrozenListEl = document.getElementById('memScanFrozenList');
+const memScanSavedListEl = document.getElementById('memScanSavedList');
+
+// Regions worth scanning for live game state. ROM/banking regs are constant or side-effecting,
+// and IO/IE are covered far better by the RAM Editor's per-bit view, so they're left out here.
+const MEMSCAN_REGIONS = [
+  { key: 'WRAM', base: 0xC000, length: 0x2000, defaultOn: true },
+  { key: 'HRAM', base: 0xFF80, length: 0x007F, defaultOn: true },
+  { key: 'OAM',  base: 0xFE00, length: 0x00A0, defaultOn: false },
+  { key: 'ERAM', base: 0xA000, length: 0x2000, defaultOn: false },
+  { key: 'VRAM', base: 0x8000, length: 0x2000, defaultOn: false },
+];
+const MEMSCAN_MAX_ROWS = 300; // render cap - narrow the scan further if you hit this
+
+const MEMSCAN_INITIAL_TYPES = [
+  { value: 'exact',   label: 'Exact value' },
+  { value: 'unknown', label: 'Unknown initial value' },
+];
+const MEMSCAN_NEXT_TYPES = [
+  { value: 'exact',       label: 'Equal to value' },
+  { value: 'changed',     label: 'Changed' },
+  { value: 'unchanged',   label: 'Unchanged' },
+  { value: 'increased',   label: 'Increased' },
+  { value: 'decreased',   label: 'Decreased' },
+  { value: 'increasedby', label: 'Increased by...' },
+  { value: 'decreasedby', label: 'Decreased by...' },
+];
+
+let memScanCandidates = null;      // null until a scan has run; else Map<addr, {value, size}>
+let memScanActiveSize = 1;         // byte width locked in for the current scan
+let memScanFrozen = new Map();     // addr -> {value, size} - rewritten every emulated frame
+
+// ---- Saved cheats: name + address + size, persisted in localStorage keyed by the loaded
+// ROM's CRC32 (plus its title, kept just for display/debugging the storage). Reappears in the
+// "Saved cheats for this ROM" list any time this same ROM is loaded again, ready to re-apply
+// (apply = freeze, same mechanism as the manual Freeze checkboxes below). ----
+const MEMSCAN_CHEATS_STORAGE_KEY = 'jsgb-config:memscan-cheats';
+
+function loadCheatStore() {
+  try { return JSON.parse(localStorage.getItem(MEMSCAN_CHEATS_STORAGE_KEY)) || {}; }
+  catch (e) { return {}; } // corrupt JSON or storage blocked - fail to an empty store
+}
+
+function saveCheatStore(store) {
+  try { localStorage.setItem(MEMSCAN_CHEATS_STORAGE_KEY, JSON.stringify(store)); }
+  catch (e) { /* storage full/blocked - silently ignore, matches saveSlots() precedent in app.js */ }
+}
+
+// CRC32 of the currently loaded ROM's raw bytes, used as the storage key so cheats are matched
+// to the exact ROM image (not just its title, which different hacks/homebrews can share).
+function currentRomCrc32() {
+  if (!lastROMBytes) return null;
+  return crc32(lastROMBytes).toString(16).toUpperCase().padStart(8, '0');
+}
+
+function getCheatsForCurrentRom() {
+  const key = currentRomCrc32();
+  if (!key) return [];
+  return loadCheatStore()[key]?.cheats || [];
+}
+
+// Adds a new named cheat, or overwrites an existing one already saved at the same address+size.
+function saveCheatForCurrentRom(name, addr, size) {
+  const key = currentRomCrc32();
+  if (!key) return;
+  const store = loadCheatStore();
+  if (!store[key]) store[key] = { romName: emulator.romTitle || 'Untitled', cheats: [] };
+  store[key].romName = emulator.romTitle || store[key].romName || 'Untitled';
+  const idx = store[key].cheats.findIndex(c => c.addr === addr && c.size === size);
+  const entry = { name, addr, size };
+  if (idx >= 0) store[key].cheats[idx] = entry; else store[key].cheats.push(entry);
+  saveCheatStore(store);
+}
+
+function deleteCheatForCurrentRom(addr, size) {
+  const key = currentRomCrc32();
+  if (!key) return;
+  const store = loadCheatStore();
+  if (!store[key]) return;
+  store[key].cheats = store[key].cheats.filter(c => !(c.addr === addr && c.size === size));
+  saveCheatStore(store);
+}
+
+// Saved cheat names are user text rendered via innerHTML below - escape before inserting.
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function buildMemScanRegionCheckboxes() {
+  memScanRegionsEl.innerHTML = '';
+  MEMSCAN_REGIONS.forEach(r => {
+    const meta = MEM_REGIONS.find(m => m.key === r.key) || {};
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.dataset.region = r.key;
+    cb.checked = r.defaultOn;
+    label.appendChild(cb);
+    label.append(`${meta.label || r.key} (${meta.range || ''})`);
+    memScanRegionsEl.appendChild(label);
+  });
+}
+
+function memScanPopulateTypeOptions(list) {
+  const prevValue = memScanTypeEl.value;
+  memScanTypeEl.innerHTML = '';
+  list.forEach(o => {
+    const opt = document.createElement('option');
+    opt.value = o.value; opt.textContent = o.label;
+    memScanTypeEl.appendChild(opt);
+  });
+  memScanTypeEl.value = list.some(o => o.value === prevValue) ? prevValue : list[0].value;
+  memScanUpdateValueVisibility();
+}
+
+function memScanUpdateValueVisibility() {
+  const needsValue = ['exact', 'increasedby', 'decreasedby'].includes(memScanTypeEl.value);
+  memScanValueEl.disabled = !needsValue;
+  memScanValueWrapEl.style.opacity = needsValue ? '1' : '.4';
+}
+memScanTypeEl.addEventListener('change', memScanUpdateValueVisibility);
+
+// Accepts decimal ("3") or hex ("0x03"); returns null if empty/invalid/out of range for `size`.
+function parseMemScanValue(str, size) {
+  if (str == null) return null;
+  const s = str.trim();
+  if (s === '') return null;
+  const v = /^0x/i.test(s) ? parseInt(s, 16) : parseInt(s, 10);
+  if (Number.isNaN(v)) return null;
+  const max = size === 1 ? 0xFF : 0xFFFF;
+  if (v < 0 || v > max) return null;
+  return v;
+}
+
+function memScanReadValue(addr, size) {
+  const lo = emulator.instrumentation.peekByte(addr);
+  if (size === 1) return lo;
+  return lo | (emulator.instrumentation.peekByte(addr + 1) << 8);
+}
+
+function memScanRegionKeyForAddr(addr) {
+  const r = MEMSCAN_REGIONS.find(m => addr >= m.base && addr < m.base + m.length);
+  return r ? r.key : '?';
+}
+
+// Jumps into the RAM Editor tab focused on `addr` - lets a scan result be inspected/edited
+// with the fuller hex-dump view (ASCII column, surrounding bytes, etc).
+function jumpToRamEditor(addr) {
+  const key = RAMEDIT_ORDER.find(k => addr >= RAMEDIT_BASE[k] && addr < RAMEDIT_BASE[k] + RAMEDIT_LEN[k]);
+  if (!key) return;
+  ramEditKey = key;
+  const rel = addr - RAMEDIT_BASE[key];
+  ramEditOffset = Math.max(0, Math.min(RAMEDIT_LEN[key] - RAMEDIT_PAGE, Math.floor(rel / 16) * 16));
+  buildRamEditRegionTabs();
+  buildRamEditBody();
+  debugToolsContainer.querySelector('.tool-tab[data-tool="ramedit"]').click();
+}
+
+function toggleMemScanFreeze(addr, size, checked) {
+  if (checked) memScanFrozen.set(addr, { value: memScanReadValue(addr, size), size });
+  else memScanFrozen.delete(addr);
+  refreshFreezeRelatedUI();
+}
+
+// Freeze state is shown in three places at once (scan-table checkboxes, the Frozen addresses
+// list, and the Apply checkboxes in Saved Cheats) - whenever memScanFrozen changes, redraw all
+// three from it rather than trying to keep each mutation in sync by hand.
+function refreshFreezeRelatedUI() {
+  drawMemScanFrozenList();
+  drawSavedCheats();
+  memScanBodyEl.querySelectorAll('.memscan-freeze-cell input').forEach(cb => {
+    cb.checked = memScanFrozen.has(parseInt(cb.dataset.addr, 10));
+  });
+}
+
+function drawMemScanFrozenList() {
+  memScanFrozenSectionEl.style.display = memScanFrozen.size > 0 ? '' : 'none';
+  memScanFrozenListEl.innerHTML = '';
+  memScanFrozen.forEach((entry, addr) => {
+    const row = document.createElement('div');
+    row.className = 'memscan-frozen-row';
+    row.innerHTML = `
+      <span class="memscan-frozen-addr">${hex16(addr)}</span>
+      <input type="text" class="memscan-value-input" style="width:70px" value="${entry.value}">
+      <button class="ui-btn small ghost" type="button">Unfreeze</button>
+    `;
+    row.querySelector('input').addEventListener('change', e => {
+      const v = parseMemScanValue(e.target.value, entry.size);
+      if (v !== null) entry.value = v;
+      else e.target.value = entry.value; // reject bad input, restore last-good value
+    });
+    row.querySelector('button').addEventListener('click', () => {
+      memScanFrozen.delete(addr);
+      refreshFreezeRelatedUI();
+    });
+    memScanFrozenListEl.appendChild(row);
+  });
+}
+
+// Renders the persistent "Saved cheats for this ROM" list from localStorage. Each row's Apply
+// checkbox just drives the same memScanFrozen map as the ad-hoc Freeze checkboxes in the scan
+// results table - saving a cheat only remembers the address; it doesn't apply it by itself.
+function drawSavedCheats() {
+  if (!lastROMBytes) {
+    memScanSavedListEl.innerHTML = '<div class="memscan-empty">Load a ROM to manage cheats.</div>';
+    return;
+  }
+  const cheats = getCheatsForCurrentRom();
+  if (cheats.length === 0) {
+    memScanSavedListEl.innerHTML = '<div class="memscan-empty">No saved cheats for this ROM yet — find an address below, name it, and save it.</div>';
+    return;
+  }
+  memScanSavedListEl.innerHTML = '';
+  cheats.forEach(({ name, addr, size }) => {
+    const applied = memScanFrozen.has(addr);
+    const curVal = applied ? memScanFrozen.get(addr).value : memScanReadValue(addr, size);
+    const row = document.createElement('div');
+    row.className = 'memscan-saved-row';
+    row.innerHTML = `
+      <input type="checkbox" class="memscan-saved-apply" ${applied ? 'checked' : ''} title="Apply (freeze this address)">
+      <span class="memscan-saved-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+      <span class="memscan-saved-addr">${hex16(addr)}</span>
+      <span class="memscan-saved-size">${size === 1 ? '1B' : '2B'}</span>
+      <input type="text" class="memscan-value-input memscan-saved-value" value="${curVal}" ${applied ? '' : 'disabled'}>
+      <button class="ui-btn small ghost" type="button" data-action="view">View</button>
+      <button class="ui-btn small ghost" type="button" data-action="delete">Delete</button>
+    `;
+    row.querySelector('.memscan-saved-apply').addEventListener('change', e => {
+      toggleMemScanFreeze(addr, size, e.target.checked);
+    });
+    row.querySelector('.memscan-saved-value').addEventListener('change', e => {
+      const v = parseMemScanValue(e.target.value, size);
+      const frozen = memScanFrozen.get(addr);
+      if (v !== null && frozen) frozen.value = v;
+      else e.target.value = frozen ? frozen.value : curVal;
+    });
+    row.querySelector('[data-action="view"]').addEventListener('click', () => jumpToRamEditor(addr));
+    row.querySelector('[data-action="delete"]').addEventListener('click', () => {
+      deleteCheatForCurrentRom(addr, size);
+      if (memScanFrozen.has(addr)) { memScanFrozen.delete(addr); refreshFreezeRelatedUI(); }
+      else drawSavedCheats();
+    });
+    memScanSavedListEl.appendChild(row);
+  });
+}
+
+// Called every emulated frame (play or step), independent of which debug tab is open, so a
+// freeze keeps working while actually playing and not just while the scanner panel is visible.
+function applyMemScanFreezes() {
+  memScanFrozen.forEach((entry, addr) => {
+    emulator.instrumentation.writeMemory(addr, entry.value & 0xFF);
+    if (entry.size === 2) emulator.instrumentation.writeMemory(addr + 1, (entry.value >> 8) & 0xFF);
+  });
+}
+const _memScanPrevOnFrame = emulator.onFrame;
+emulator.onFrame = frameStats => {
+  applyMemScanFreezes();
+  if (_memScanPrevOnFrame) _memScanPrevOnFrame(frameStats);
+};
+
+// Full rebuild of the results table - only called when the candidate *set* changes (New/Next/
+// Reset), not on every refresh tick, since redoing ~300 rows of DOM every frame would be wasteful.
+function buildMemScanTable() {
+  memScanBodyEl.innerHTML = '';
+  if (!memScanCandidates || memScanCandidates.size === 0) {
+    memScanBodyEl.innerHTML = `<div class="memscan-empty">${
+      memScanCandidates ? 'No addresses match — hit Reset and try a different scan.' : 'No scan yet.'
+    }</div>`;
+    return;
+  }
+  const entries = [...memScanCandidates.entries()].slice(0, MEMSCAN_MAX_ROWS);
+  const table = document.createElement('table');
+  table.className = 'memscan-table';
+  table.innerHTML = '<thead><tr><th>Address</th><th>Region</th><th>Value</th><th>Prev</th><th>Freeze</th><th>Name &amp; save</th></tr></thead><tbody></tbody>';
+  const tbody = table.querySelector('tbody');
+  entries.forEach(([addr, entry]) => {
+    const tr = document.createElement('tr');
+    const cur = memScanReadValue(addr, entry.size);
+    tr.innerHTML = `
+      <td class="memscan-addr" data-addr="${addr}">${hex16(addr)}</td>
+      <td class="memscan-region">${memScanRegionKeyForAddr(addr)}</td>
+      <td class="memscan-cur" data-addr="${addr}" data-size="${entry.size}">${cur}</td>
+      <td class="memscan-prev">${entry.value}</td>
+      <td class="memscan-freeze-cell"><input type="checkbox" data-addr="${addr}" ${memScanFrozen.has(addr) ? 'checked' : ''}></td>
+      <td class="memscan-name-cell">
+        <input type="text" class="memscan-value-input memscan-name-input" placeholder="e.g. Lives">
+        <button class="ui-btn small ghost memscan-save-btn" type="button" title="Save as a cheat for this ROM">💾</button>
+      </td>
+    `;
+    tr.querySelector('.memscan-addr').addEventListener('click', () => jumpToRamEditor(addr));
+    tr.querySelector('.memscan-freeze-cell input').addEventListener('change', e => toggleMemScanFreeze(addr, entry.size, e.target.checked));
+    const nameInput = tr.querySelector('.memscan-name-input');
+    tr.querySelector('.memscan-save-btn').addEventListener('click', evt => {
+      const name = nameInput.value.trim();
+      if (!name) {
+        nameInput.classList.add('memscan-name-error');
+        setTimeout(() => nameInput.classList.remove('memscan-name-error'), 700);
+        nameInput.focus();
+        return;
+      }
+      saveCheatForCurrentRom(name, addr, entry.size);
+      const btn = evt.currentTarget;
+      const original = btn.textContent;
+      btn.textContent = '✓';
+      setTimeout(() => { btn.textContent = original; }, 900);
+      drawSavedCheats();
+    });
+    tbody.appendChild(tr);
+  });
+  memScanBodyEl.appendChild(table);
+}
+
+// Cheap per-tick refresh: just repaints the live "Value" column and flags cells that have
+// drifted from what they were at the last New/Next scan. Called from refreshDebugTools().
+function drawMemScan() {
+  if (!emulator.hasROM()) { memScanSummaryEl.textContent = 'Load a ROM first.'; return; }
+  if (memScanCandidates) {
+    const n = memScanCandidates.size;
+    const capped = n > MEMSCAN_MAX_ROWS;
+    memScanSummaryEl.innerHTML = `${n} candidate${n === 1 ? '' : 's'}` +
+      (capped ? ` <span class="memscan-warn">(showing first ${MEMSCAN_MAX_ROWS} — narrow it down with another scan)</span>` : '');
+  }
+  memScanBodyEl.querySelectorAll('.memscan-cur').forEach(td => {
+    const addr = parseInt(td.dataset.addr, 10);
+    const size = parseInt(td.dataset.size, 10);
+    const cur = memScanReadValue(addr, size);
+    const prevVal = memScanCandidates?.get(addr)?.value;
+    td.textContent = cur;
+    td.classList.toggle('changed', prevVal !== undefined && cur !== prevVal);
+  });
+}
+
+memScanNewBtn.addEventListener('click', () => {
+  if (!emulator.hasROM()) { memScanSummaryEl.textContent = 'Load a ROM first.'; return; }
+  const size = parseInt(memScanSizeEl.value, 10);
+  const type = memScanTypeEl.value;
+  const targetVal = parseMemScanValue(memScanValueEl.value, size);
+  if (type === 'exact' && targetVal === null) {
+    memScanSummaryEl.textContent = 'Enter a valid value (decimal or 0x hex) to search for.';
+    return;
+  }
+  const checkedRegions = MEMSCAN_REGIONS.filter(r => memScanRegionsEl.querySelector(`input[data-region="${r.key}"]`).checked);
+  if (checkedRegions.length === 0) {
+    memScanSummaryEl.textContent = 'Check at least one region to search in.';
+    return;
+  }
+  memScanActiveSize = size;
+  memScanCandidates = new Map();
+  checkedRegions.forEach(region => {
+    const maxAddr = region.base + region.length - size;
+    for (let addr = region.base; addr <= maxAddr; addr++) {
+      const v = memScanReadValue(addr, size);
+      if (type === 'unknown' || v === targetVal) memScanCandidates.set(addr, { value: v, size });
+    }
+  });
+  memScanSizeEl.disabled = true;
+  memScanRegionsEl.querySelectorAll('input').forEach(cb => cb.disabled = true);
+  memScanNextBtn.disabled = false;
+  memScanResetBtn.disabled = false;
+  memScanPopulateTypeOptions(MEMSCAN_NEXT_TYPES);
+  buildMemScanTable();
+  drawMemScan();
+});
+
+memScanNextBtn.addEventListener('click', () => {
+  if (!memScanCandidates) return;
+  const type = memScanTypeEl.value;
+  const cmpVal = parseMemScanValue(memScanValueEl.value, memScanActiveSize);
+  if (['exact', 'increasedby', 'decreasedby'].includes(type) && cmpVal === null) {
+    memScanSummaryEl.textContent = 'Enter a valid value.';
+    return;
+  }
+  const next = new Map();
+  memScanCandidates.forEach((entry, addr) => {
+    const cur = memScanReadValue(addr, entry.size);
+    let keep = false;
+    switch (type) {
+      case 'exact':       keep = cur === cmpVal; break;
+      case 'changed':     keep = cur !== entry.value; break;
+      case 'unchanged':   keep = cur === entry.value; break;
+      case 'increased':   keep = cur > entry.value; break;
+      case 'decreased':   keep = cur < entry.value; break;
+      case 'increasedby': keep = cur === (entry.value + cmpVal) % (memScanActiveSize === 1 ? 0x100 : 0x10000); break;
+      case 'decreasedby': keep = cur === (((entry.value - cmpVal) % (memScanActiveSize === 1 ? 0x100 : 0x10000)) + (memScanActiveSize === 1 ? 0x100 : 0x10000)) % (memScanActiveSize === 1 ? 0x100 : 0x10000); break;
+    }
+    if (keep) next.set(addr, { value: cur, size: entry.size });
+  });
+  memScanCandidates = next;
+  buildMemScanTable();
+  drawMemScan();
+});
+
+memScanResetBtn.addEventListener('click', () => {
+  memScanCandidates = null;
+  memScanSizeEl.disabled = false;
+  memScanRegionsEl.querySelectorAll('input').forEach(cb => cb.disabled = false);
+  memScanNextBtn.disabled = true;
+  memScanResetBtn.disabled = true;
+  memScanPopulateTypeOptions(MEMSCAN_INITIAL_TYPES);
+  memScanSummaryEl.textContent = 'No scan yet — pick regions above and hit New Scan.';
+  buildMemScanTable();
+});
+
+// Any candidate set or freeze from before is meaningless once a (possibly different) ROM is
+// (re)loaded - the address space is the same, but what lives there has changed. The Saved
+// Cheats list is rebuilt from localStorage for the newly-active ROM's CRC32 instead.
+function onRomChangedForMemScan() {
+  memScanCandidates = null;
+  memScanFrozen.clear();
+  memScanSizeEl.disabled = false;
+  memScanRegionsEl.querySelectorAll('input').forEach(cb => cb.disabled = false);
+  memScanNextBtn.disabled = true;
+  memScanResetBtn.disabled = true;
+  memScanPopulateTypeOptions(MEMSCAN_INITIAL_TYPES);
+  memScanSummaryEl.textContent = 'No scan yet — pick regions above and hit New Scan.';
+  buildMemScanTable();
+  drawMemScanFrozenList();
+  drawSavedCheats();
+}
+
+// refreshBankingAndRtcPanels() (app.js) is the shared "a ROM was just (re)loaded" hook - it's
+// called from both loadROMBytes() and resetEmulator(), which is exactly when the Memory
+// Scanner needs to reset itself and reload the Saved Cheats list for whichever ROM is now active.
+const _memScanPrevRefreshBankingAndRtcPanels = window.refreshBankingAndRtcPanels;
+window.refreshBankingAndRtcPanels = function () {
+  _memScanPrevRefreshBankingAndRtcPanels();
+  onRomChangedForMemScan();
+};
+
+buildMemScanRegionCheckboxes();
+memScanPopulateTypeOptions(MEMSCAN_INITIAL_TYPES);
+buildMemScanTable();
+drawSavedCheats();
+
 // RTC only exists on MBC3+TIMER carts (0x0F/0x10); the tab hides otherwise.
 // Called on every ROM (re)load/reset.
 function rtcUsable() {
@@ -2696,6 +3150,7 @@ function refreshDebugTools() {
   else if (activeDebug === 'banking') drawBanking();
   else if (activeDebug === 'interrupts') drawInterrupts();
   else if (activeDebug === 'ramedit') drawRamEditor();
+  else if (activeDebug === 'memscan') drawMemScan();
 
   const activeVisual = visualToolsContainer.querySelector('.tool-tab.active').dataset.tool;
   if (activeVisual === 'tiles') drawTileViewer();

@@ -45,15 +45,24 @@ class CGBMMU extends MMU {
 
     // Two VRAM banks (0x8000-0x9FFF window), eight 4KB WRAM banks.
     this.vramBanks = [new Uint8Array(CGB.VRAM_BANK_SIZE), new Uint8Array(CGB.VRAM_BANK_SIZE)];
-    this.vbk = 0; // 0xFF4F bit0: which VRAM bank is mapped
     this.wramBanks = Array.from({ length: CGB.WRAM_BANK_COUNT }, () => new Uint8Array(CGB.WRAM_BANK_SIZE));
-    this.svbk = 1; // 0xFF70 bits0-2: which bank maps to 0xD000-0xDFFF (0 behaves as 1)
 
     // BG and OBJ palette RAM: 8 palettes x 4 colors x 2 bytes (RGB555) each.
     this.bgPaletteRAM  = new Uint8Array(CGB.PALETTE_RAM_SIZE);
     this.objPaletteRAM = new Uint8Array(CGB.PALETTE_RAM_SIZE);
-    this.bcps = 0; // 0xFF68: bit7 = auto-increment, bits0-5 = index into bgPaletteRAM
-    this.ocps = 0; // 0xFF6A: same, for objPaletteRAM
+
+    this._resetCGBRegisters();
+  }
+
+  // Scalar CGB-only register defaults: bank-select/auto-increment/HDMA/speed-switch state.
+  // Shared by _initVRAMAndWRAM() (first-time setup, arrays not yet zeroed) and loadROM()
+  // (arrays already exist and are cleared separately via .fill(0)) so the two default sets
+  // can't drift apart.
+  _resetCGBRegisters() {
+    this.vbk = 0;   // 0xFF4F bit0: which VRAM bank is mapped
+    this.svbk = 1;  // 0xFF70 bits0-2: which bank maps to 0xD000-0xDFFF (0 behaves as 1)
+    this.bcps = 0;  // 0xFF68: bit7 = auto-increment, bits0-5 = index into bgPaletteRAM
+    this.ocps = 0;  // 0xFF6A: same, for objPaletteRAM
 
     // HDMA (0xFF51-0xFF55)
     this.hdmaSrc = 0;
@@ -96,13 +105,10 @@ class CGBMMU extends MMU {
     this.cgbFlag = cgbFlag;
     this.isCGBCart = (cgbFlag === 0x80 || cgbFlag === 0xC0);
 
-    this.vramBanks[0].fill(0); this.vramBanks[1].fill(0); this.vbk = 0;
+    this.vramBanks[0].fill(0); this.vramBanks[1].fill(0);
     for (const bank of this.wramBanks) bank.fill(0);
-    this.svbk = 1;
     this.bgPaletteRAM.fill(0); this.objPaletteRAM.fill(0);
-    this.bcps = 0; this.ocps = 0;
-    this.hdmaSrc = 0; this.hdmaDst = 0; this.hdmaActive = false; this.hdmaBlocksLeft = 0;
-    this.doubleSpeed = false; this.speedSwitchArmed = false;
+    this._resetCGBRegisters();
 
     const bootIO = EMU_CGB_CORE_CONFIG.BOOT.IO;
     this.io.fill(0);
@@ -376,22 +382,15 @@ class CGBPPU extends PPU {
     }
   }
 
-  _renderWindowLine(y, bgPriority) {
-    if (y < this.wy) return;
-    const wx = this.wx - 7;
-    if (wx > EMU_CORE_CONFIG.SCREEN.WIDTH - 1) return;
+  // CGB window pixel: banked VRAM tile lookup + per-tile CGB palette/priority, via the
+  // shared getBGWindowPixel() helper. Loop skeleton (WY/WX bounds, windowLineCounter
+  // bookkeeping) is inherited unchanged from PPU._renderWindowLine().
+  _plotWindowPixel(x, y, winX, winY, bgPriority) {
     const tileMapBase = (this.lcdc & 0x40) ? 0x9C00 : 0x9800;
-    const winY = this.windowLineCounter;
-    let drewAny = false;
-
-    for (let x = Math.max(wx, 0); x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
-      const { colorIndex, paletteNum, priority } = this.getBGWindowPixel(tileMapBase, x - wx, winY);
-      bgPriority[x] = (colorIndex !== 0 ? 1 : 0) | (priority ? 2 : 0);
-      const [r, g, b] = this.mmu.getPaletteRGB(false, paletteNum, colorIndex);
-      this._plotTintedPixel(x, y, r, g, b, 'window');
-      drewAny = true;
-    }
-    if (drewAny) this.windowLineCounter++;
+    const { colorIndex, paletteNum, priority } = this.getBGWindowPixel(tileMapBase, winX, winY);
+    bgPriority[x] = (colorIndex !== 0 ? 1 : 0) | (priority ? 2 : 0);
+    const [r, g, b] = this.mmu.getPaletteRGB(false, paletteNum, colorIndex);
+    this._plotTintedPixel(x, y, r, g, b, 'window');
   }
 
   // CGB default priority: OAM index order, lowest index drawn on top (not DMG's X-coordinate
@@ -399,56 +398,33 @@ class CGBPPU extends PPU {
   // comparator via `this.constructor._compareSpritePriority`.
   static _compareSpritePriority(a, b) { return b.oamIndex - a.oamIndex; }
 
-  getSpriteRowBits(sprite, y, spriteHeight) {
-    const yFlip = !!(sprite.attrs & 0x40), xFlip = !!(sprite.attrs & 0x20);
+  // CGB sprites can select VRAM bank 1 via attrs bit3. Tile-offset/row math is inherited
+  // unchanged from PPU.getSpriteRowBits().
+  _spriteTileBytes(sprite, tileOffset, rowInSprite) {
     const bank = (sprite.attrs & 0x08) ? 1 : 0;
-    let tileIndex = sprite.tileIndex;
-    if (spriteHeight === 16) tileIndex &= 0xFE;
-
-    let rowInSprite = y - sprite.spriteY;
-    if (yFlip) rowInSprite = spriteHeight - 1 - rowInSprite;
-    let tileOffset = tileIndex * 16;
-    if (rowInSprite >= 8) { tileOffset += 16; rowInSprite -= 8; }
-
     return {
       lo: this.mmu.vramBanks[bank][tileOffset + rowInSprite * 2],
       hi: this.mmu.vramBanks[bank][tileOffset + rowInSprite * 2 + 1],
-      xFlip,
     };
   }
 
-  _renderSpritesLine(y, bgPriority) {
-    const SPR = EMU_CORE_CONFIG.SPRITES;
-    const spriteHeight = (this.lcdc & 0x04) ? SPR.HEIGHT_TALL : SPR.HEIGHT_SMALL;
-    const candidates = this.getSpriteCandidatesForLine(y, spriteHeight);
-
-    this.emulator.stats?.recordSprites(y, candidates.length);
-
-    // LCDC.0 master priority: when clear, sprites always draw on top.
-    const masterPriority = !!(this.lcdc & 0x01);
-
-    for (const s of candidates) {
-      if (s.spriteX <= -8 || s.spriteX >= EMU_CORE_CONFIG.SCREEN.WIDTH) continue;
-      const behindBG = !!(s.attrs & 0x80);
-      // CGB carts use the full 3-bit OBJ palette index; non-CGB carts only set attribute
-      // bit4 (DMG OBP0/OBP1 select), so fall back to that bit for them.
-      const paletteNum = this.mmu.isCGBCart ? (s.attrs & 0x07) : ((s.attrs & 0x10) ? 1 : 0);
-      const { lo, hi, xFlip } = this.getSpriteRowBits(s, y, spriteHeight);
-
-      for (let px = 0; px < 8; px++) {
-        const sx = s.spriteX + px;
-        if (sx < 0 || sx >= EMU_CORE_CONFIG.SCREEN.WIDTH) continue;
-        const colorNum = CGBPPU.spriteRowColorIndex(lo, hi, xFlip, px);
-        if (colorNum === 0) continue;
-        if (masterPriority) {
-          const bgHasColor = !!(bgPriority[sx] & 1);
-          const bgHasPriority = !!(bgPriority[sx] & 2);
-          if ((behindBG || bgHasPriority) && bgHasColor) continue;
-        }
-        const [r, g, b] = this.mmu.getPaletteRGB(true, paletteNum, colorNum);
-        this._plotTintedPixel(sx, y, r, g, b, 'sprite');
-      }
+  // CGB sprite pixel: LCDC.0 master-priority toggle instead of DMG's plain behind-BG test,
+  // and a per-sprite OBJ palette (attrs bits0-2 on CGB carts, DMG OBP0/OBP1 select
+  // otherwise) instead of BGP. Candidate-gather/loop skeleton is inherited unchanged from
+  // PPU._renderSpritesLine().
+  _plotSpritePixel(sx, y, sprite, behindBG, colorNum, bgPriority) {
+    // LCDC.0 master priority: when clear, sprites always draw on top regardless of any
+    // per-tile/per-sprite priority bit.
+    if (this.lcdc & 0x01) {
+      const bgHasColor = !!(bgPriority[sx] & 1);
+      const bgHasPriority = !!(bgPriority[sx] & 2);
+      if ((behindBG || bgHasPriority) && bgHasColor) return;
     }
+    // CGB carts use the full 3-bit OBJ palette index; non-CGB carts only set attribute
+    // bit4 (DMG OBP0/OBP1 select), so fall back to that bit for them.
+    const paletteNum = this.mmu.isCGBCart ? (sprite.attrs & 0x07) : ((sprite.attrs & 0x10) ? 1 : 0);
+    const [r, g, b] = this.mmu.getPaletteRGB(true, paletteNum, colorNum);
+    this._plotTintedPixel(sx, y, r, g, b, 'sprite');
   }
 }
 

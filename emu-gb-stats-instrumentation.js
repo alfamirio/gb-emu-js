@@ -19,22 +19,15 @@ class CoreStats {
     this.trackAccess = true;
     this.trackMemMap = false;
 
-    // Frame Activity panel: per-frame hardware event counts, last FRAME_STATS_HISTORY frames.
-    this.FRAME_STATS_HISTORY = 60; // ~1 second at 59.73fps
-    this.frameStatsHistory = [];
-    this.frameCounter = 0;
-    this.frameStats = this.newFrameStats();
+    this.FRAME_STATS_HISTORY = 60; // ~1 second at 59.73fps, for the Frame Activity panel
+    this.INTERRUPT_LOG_SIZE = 60;  // last N dispatched (not just requested) interrupts
 
-    // Interrupts panel: last INTERRUPT_LOG_SIZE interrupts actually dispatched (not just requested).
-    this.INTERRUPT_LOG_SIZE = 60;
-    this.interruptLog = []; // oldest first; each entry { seq, frame, bit, pcBefore }
-    this.interruptSeq = 0;
-
-    // Memory Map / MBC Banking panels: last touched region/address, last bank switch.
-    this.accessSeq = 0;
+    // Containers reset() mutates/fills in place rather than recreating, so they need to
+    // exist before the first reset() call.
     this.lastAccess = { addr: 0, region: 'ROM0', type: 'read', seq: 0 };
     this.regionLastTouch = new Uint32Array(REGION_COUNT);
-    this.lastBankSwitch = null; // { kind, addr, val, romBank, ramBank, t } or null
+
+    this.reset();
   }
 
   // Fresh per-frame accumulator. spritesPerLine is indexed by scanline; events is an

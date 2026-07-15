@@ -560,6 +560,16 @@ function renderChecksumBadges(checksums) {
   });
 }
 
+// After any emulator.loadROM() call (fresh load or reset/reboot), the banking panel and RTC
+// tab need to be rebuilt against the new ROM's mapper state. Shared by loadROMBytes() and
+// resetEmulator() so the two can't drift apart.
+function refreshBankingAndRtcPanels() {
+  lastRenderedAccessSeq = -1;
+  lastRenderedBankSwitchT = -1;
+  buildBankingPanel();
+  updateRtcTabAvailability(); // show/hide the RTC tab depending on whether this ROM is MBC3+TIMER
+}
+
 // Finishes loading a ROM once its raw bytes are in hand, shared by the plain-file and zip paths.
 async function loadROMBytes(bytes) {
   // Commercial-ROM check, run before touching any state so a blocked ROM leaves the
@@ -589,10 +599,7 @@ async function loadROMBytes(bytes) {
     (mbcWarning ? `<br><span style="color:#e8794b">⚠ ${mbcWarning}</span>` : '') +
     (!mbcWarning && mbcInfo ? `<br><span style="color:#9aa0a6">ℹ ${mbcInfo}</span>` : '');
   renderChecksumBadges(checksums);
-  lastRenderedAccessSeq = -1;
-  lastRenderedBankSwitchT = -1;
-  buildBankingPanel();
-  updateRtcTabAvailability(); // show/hide the RTC tab depending on whether this ROM is MBC3+TIMER
+  refreshBankingAndRtcPanels();
   selectedFrameStatsIndex = null; // follow the latest frame again for this newly-loaded ROM
   selectedAnatomyLine = null;     // clear any pinned scanline from the previous ROM
   btnPause.disabled = false; btnReset.disabled = false;
@@ -720,10 +727,7 @@ btnPause.addEventListener('click', () => {
 function resetEmulator(statusMsg) {
   if (!lastROMBytes) return;
   emulator.loadROM(lastROMBytes);
-  lastRenderedAccessSeq = -1;
-  lastRenderedBankSwitchT = -1;
-  buildBankingPanel();
-  updateRtcTabAvailability();
+  refreshBankingAndRtcPanels();
   emulator.start();
   btnPause.textContent = '⏸ Pause';
   bpStatus.textContent = statusMsg;

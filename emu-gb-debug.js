@@ -1760,10 +1760,18 @@ function getSelectedAnatomyEntry() {
          || hist[hist.length - 1];
 }
 
+// Shared by the Frame Activity / Frame Anatomy / Line Anatomy panels: grabs the 2D context,
+// reads the canvas's pixel dimensions, and clears it to the panels' common dark background.
+function setupDebugCanvas(canvas) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
 function drawFrameActivity() {
-  const ctx = frameActivityCanvas.getContext('2d');
-  const w = frameActivityCanvas.width, h = frameActivityCanvas.height;
-  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, w, h);
+  const { ctx, w, h } = setupDebugCanvas(frameActivityCanvas);
 
   const slice = getFrameActivitySlice();
   frameActivityCountEl.textContent = slice.length;
@@ -1808,9 +1816,7 @@ const FRAME_EVENT_LABELS = {
 };
 
 function drawFrameAnatomy() {
-  const ctx = frameAnatomyCanvas.getContext('2d');
-  const w = frameAnatomyCanvas.width, h = frameAnatomyCanvas.height;
-  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, w, h);
+  const { ctx, w, h } = setupDebugCanvas(frameAnatomyCanvas);
 
   const entry = getSelectedAnatomyEntry();
   if (!entry) {
@@ -1871,9 +1877,7 @@ frameAnatomyCanvas.addEventListener('click', (e) => {
 
 // Draws the selected scanline's 456T mode timeline plus its recorded sprites/events.
 function drawLineAnatomy() {
-  const ctx = lineAnatomyCanvas.getContext('2d');
-  const w = lineAnatomyCanvas.width, h = lineAnatomyCanvas.height;
-  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, w, h);
+  const { ctx, w, h } = setupDebugCanvas(lineAnatomyCanvas);
 
   const entry = getSelectedAnatomyEntry();
   if (!entry || selectedAnatomyLine === null) {

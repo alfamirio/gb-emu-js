@@ -208,10 +208,7 @@ class MMU {
     this.rom = new Uint8Array(0);
     this.mbcType = 0;        // 0 = ROM only, 1 = MBC1, 2 = MBC2, 3 = MBC3, 5 = MBC5
     this.hasRumble = false;  // MBC5+RUMBLE masks an extra bit out of the RAM bank register
-    this.currentROMBank = 1;
-    this.currentRAMBank = 0;
-    this.ramEnabled = false;
-    this.bankingMode = 0;    // MBC1: 0 = ROM banking mode, 1 = RAM banking mode
+    this._resetBankingRegisters();
 
     this.cartRAM = new Uint8Array(EMU_CORE_CONFIG.MEMORY.CART_RAM_SIZE);
 
@@ -244,6 +241,17 @@ class MMU {
   _readWRAM(offset) { return this.wram[offset]; }
   _writeWRAM(offset, val) { this.wram[offset] = val; }
 
+  // MBC bank-select register defaults: bank 1 is always mapped at boot (bank 0 can't be
+  // selected into the 0x4000-0x7FFF window), everything else starts off/zeroed. Shared by
+  // the constructor and _detectCartType() (called again on every loadROM) so the two can't
+  // drift out of sync.
+  _resetBankingRegisters() {
+    this.currentROMBank = 1;
+    this.currentRAMBank = 0;
+    this.ramEnabled = false;
+    this.bankingMode = 0;    // MBC1: 0 = ROM banking mode, 1 = RAM banking mode
+  }
+
   // Classifies an address into a REGION_* id.
   _regionForAddr(addr) {
     const MEM = EMU_CORE_CONFIG.MEMORY;
@@ -274,10 +282,7 @@ class MMU {
     this.hasRumble = (cartType >= 0x1C && cartType <= 0x1E);
     this.hasTimer = (cartType === 0x0F || cartType === 0x10);
 
-    this.currentROMBank = 1;
-    this.currentRAMBank = 0;
-    this.ramEnabled = false;
-    this.bankingMode = 0;
+    this._resetBankingRegisters();
 
     this.rtc.reset();
     this.rtcSelect = -1;
@@ -1096,7 +1101,10 @@ class PPU {
   }
 
   // Decodes a sprite's bit-planes for its row on scanline y, honoring Y-flip and (for
-  // 8x16 sprites) which half-tile the row falls in.
+  // 8x16 sprites) which half-tile the row falls in. The tile-offset/row math is identical
+  // for DMG and CGB; only which VRAM bytes back it differs (CGB sprites can select VRAM
+  // bank 1 via attrs bit3), so that part is delegated to _spriteTileBytes(), which CGBPPU
+  // overrides.
   getSpriteRowBits(sprite, y, spriteHeight) {
     const yFlip = !!(sprite.attrs & 0x40), xFlip = !!(sprite.attrs & 0x20);
     let tileIndex = sprite.tileIndex;
@@ -1107,10 +1115,15 @@ class PPU {
     let tileOffset = tileIndex * 16;
     if (rowInSprite >= 8) { tileOffset += 16; rowInSprite -= 8; }
 
+    const { lo, hi } = this._spriteTileBytes(sprite, tileOffset, rowInSprite);
+    return { lo, hi, xFlip };
+  }
+
+  // DMG: sprites always read the single flat VRAM bank.
+  _spriteTileBytes(sprite, tileOffset, rowInSprite) {
     return {
       lo: this.mmu.vram[tileOffset + rowInSprite * 2],
       hi: this.mmu.vram[tileOffset + rowInSprite * 2 + 1],
-      xFlip,
     };
   }
 
@@ -1129,6 +1142,11 @@ class PPU {
     }
   }
 
+  // Shared by PPU and CGBPPU: bounds-check against WY/WX, walk the visible window columns,
+  // and bump windowLineCounter only if a pixel actually drew this scanline (the window's
+  // internal line counter freezes on scanlines where it's off-screen). Per-pixel color
+  // resolution differs (DMG: flat tile map + BGP; CGB: banked VRAM + per-tile CGB palette),
+  // so that part is delegated to _plotWindowPixel(), which CGBPPU overrides.
   _renderWindowLine(y, bgPriority) {
     if (y < this.wy) return;
     const wx = this.wx - 7;
@@ -1137,15 +1155,25 @@ class PPU {
     let drewAny = false;
 
     for (let x = Math.max(wx, 0); x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
-      const colorNum = this._getWindowColorIndex(x - wx, winY);
-      bgPriority[x] = colorNum;
-      const shade = this.applyPalette(colorNum, this.bgp);
-      this._plotTintedPixel(x, y, shade[0], shade[1], shade[2], 'window');
+      this._plotWindowPixel(x, y, x - wx, winY, bgPriority);
       drewAny = true;
     }
     if (drewAny) this.windowLineCounter++;
   }
 
+  // DMG window pixel: resolve color index via LCDC.6 tile map + BGP, plot.
+  _plotWindowPixel(x, y, winX, winY, bgPriority) {
+    const colorNum = this._getWindowColorIndex(winX, winY);
+    bgPriority[x] = colorNum;
+    const shade = this.applyPalette(colorNum, this.bgp);
+    this._plotTintedPixel(x, y, shade[0], shade[1], shade[2], 'window');
+  }
+
+  // Shared by PPU and CGBPPU: gather this scanline's sprite candidates, decode each one's
+  // row bits, and walk its 8 columns finding non-transparent pixels. Palette resolution and
+  // the BG-priority test differ (DMG: OBP0/OBP1 + simple behind-BG check; CGB: per-sprite
+  // OBJ palette + LCDC.0 master-priority toggle), so that part is delegated to
+  // _plotSpritePixel(), which CGBPPU overrides.
   _renderSpritesLine(y, bgPriority) {
     const SPR = EMU_CORE_CONFIG.SPRITES;
     const spriteHeight = (this.lcdc & 0x04) ? SPR.HEIGHT_TALL : SPR.HEIGHT_SMALL;
@@ -1156,19 +1184,24 @@ class PPU {
     for (const s of candidates) {
       if (s.spriteX <= -8 || s.spriteX >= EMU_CORE_CONFIG.SCREEN.WIDTH) continue;
       const behindBG = !!(s.attrs & 0x80);
-      const palette = (s.attrs & 0x10) ? this.obp1 : this.obp0;
       const { lo, hi, xFlip } = this.getSpriteRowBits(s, y, spriteHeight);
 
       for (let px = 0; px < 8; px++) {
         const sx = s.spriteX + px;
         if (sx < 0 || sx >= EMU_CORE_CONFIG.SCREEN.WIDTH) continue;
-        const colorNum = PPU.spriteRowColorIndex(lo, hi, xFlip, px);
+        const colorNum = this.constructor.spriteRowColorIndex(lo, hi, xFlip, px);
         if (colorNum === 0) continue; // color 0 is always transparent for sprites
-        if (behindBG && bgPriority[sx] !== 0) continue;
-        const shade = this.applyPalette(colorNum, palette);
-        this._plotTintedPixel(sx, y, shade[0], shade[1], shade[2], 'sprite');
+        this._plotSpritePixel(sx, y, s, behindBG, colorNum, bgPriority);
       }
     }
+  }
+
+  // DMG sprite pixel: simple behind-BG test, OBP0/OBP1 palette.
+  _plotSpritePixel(sx, y, sprite, behindBG, colorNum, bgPriority) {
+    if (behindBG && bgPriority[sx] !== 0) return;
+    const palette = (sprite.attrs & 0x10) ? this.obp1 : this.obp0;
+    const shade = this.applyPalette(colorNum, palette);
+    this._plotTintedPixel(sx, y, shade[0], shade[1], shade[2], 'sprite');
   }
 
   applyPalette(colorNum, palette) { return PPU.SHADES[(palette >> (colorNum * 2)) & 0x03]; }
@@ -1338,13 +1371,10 @@ class APU {
     this.ch1 = this._newCh1State();
     this.ch2 = this._newSquareState();
 
-    this.ch3 = { enabled: false, dacEnabled: false, frequency: 0, freqTimer: 0,
-                 lengthCounter: 0, lengthEnabled: false, volumeShift: 0, samplePos: 0 };
+    this.ch3 = this._newCh3State();
     this.waveRAM = new Uint8Array(16); // 0xFF30-0xFF3F, 32 packed 4-bit samples
 
-    this.ch4 = { enabled: false, dacEnabled: false, lengthCounter: 0, lengthEnabled: false,
-                 envVolume: 0, envDirection: 0, envPeriod: 0, envTimer: 0, volume: 0,
-                 clockShift: 0, widthMode: 0, divisorCode: 0, freqTimer: 8, lfsr: 0x7FFF };
+    this.ch4 = this._newCh4State();
 
     this.regs = new Uint8Array(0x30); // raw bytes for 0xFF10-0xFF3F, indexed by (addr - 0xFF10)
     this.leftVol = 7; this.rightVol = 7; this.panning = 0xF3;
@@ -1403,6 +1433,19 @@ class APU {
       sweepPeriodReg: 0, sweepDirection: 0, sweepShift: 0,
       sweepTimer: 0, sweepEnabled: false, shadowFreq: 0,
     });
+  }
+
+  // Ch3: wave channel (plays samples from waveRAM instead of a duty cycle).
+  _newCh3State() {
+    return { enabled: false, dacEnabled: false, frequency: 0, freqTimer: 0,
+             lengthCounter: 0, lengthEnabled: false, volumeShift: 0, samplePos: 0 };
+  }
+
+  // Ch4: noise channel (LFSR instead of a frequency).
+  _newCh4State() {
+    return { enabled: false, dacEnabled: false, lengthCounter: 0, lengthEnabled: false,
+             envVolume: 0, envDirection: 0, envPeriod: 0, envTimer: 0, volume: 0,
+             clockShift: 0, widthMode: 0, divisorCode: 0, freqTimer: 8, lfsr: 0x7FFF };
   }
 
   /* ---- save state ----
@@ -1565,10 +1608,8 @@ class APU {
     this.regs.fill(0); this.waveRAM.fill(0);
     this.ch1 = this._newCh1State();
     this.ch2 = this._newSquareState();
-    this.ch3 = { enabled: false, dacEnabled: false, frequency: 0, freqTimer: 0, lengthCounter: 0, lengthEnabled: false, volumeShift: 0, samplePos: 0 };
-    this.ch4 = { enabled: false, dacEnabled: false, lengthCounter: 0, lengthEnabled: false,
-                 envVolume: 0, envDirection: 0, envPeriod: 0, envTimer: 0, volume: 0,
-                 clockShift: 0, widthMode: 0, divisorCode: 0, freqTimer: 8, lfsr: 0x7FFF };
+    this.ch3 = this._newCh3State();
+    this.ch4 = this._newCh4State();
     this.fsStep = 0; this.frameSeqTimer = 0; this.sampleCounter = 0;
     this.enabled = false;
 

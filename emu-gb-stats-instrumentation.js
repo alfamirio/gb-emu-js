@@ -551,9 +551,7 @@ class Instrumentation {
   // Copies the live counters into the latched snapshot (instant latch write) — what a
   // real MBC3 does when the game writes 0x00 then 0x01 to 0x6000-0x7FFF.
   latchRTCNow() {
-    const rtc = this.emulator.mmu.rtc;
-    rtc.latched.s = rtc.s; rtc.latched.m = rtc.m; rtc.latched.h = rtc.h;
-    rtc.latched.dl = rtc.dl; rtc.latched.dh = rtc.dh;
+    this.emulator.mmu.rtc.latch();
   }
 
   // "Set clock" button: writes an explicit h/m/s/day-count/halt, preserving whatever the

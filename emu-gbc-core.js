@@ -50,12 +50,7 @@ class CGBMMU {
     const CGB = EMU_CGB_CORE_CONFIG;
     this.cartRAM = new Uint8Array(MEM.CART_RAM_SIZE);
 
-    this.rtc = {
-      s: 0, m: 0, h: 0, dl: 0, dh: 0,
-      latched: { s: 0, m: 0, h: 0, dl: 0, dh: 0 },
-      lastLatchWrite: 0xFF,
-      lastRealMs: Date.now(),
-    };
+    this.rtc = new RTCUnit();
     this.rtcSelect = -1;
     this.hasTimer = false; // cart types 0x0F/0x10 (MBC3+TIMER)
 
@@ -132,12 +127,7 @@ class CGBMMU {
     this.ramEnabled = false;
     this.bankingMode = 0;
 
-    this.rtc = {
-      s: 0, m: 0, h: 0, dl: 0, dh: 0,
-      latched: { s: 0, m: 0, h: 0, dl: 0, dh: 0 },
-      lastLatchWrite: 0xFF,
-      lastRealMs: Date.now(),
-    };
+    this.rtc.reset();
     this.rtcSelect = -1;
 
     this.vramBanks[0].fill(0); this.vramBanks[1].fill(0); this.vbk = 0;
@@ -180,10 +170,7 @@ class CGBMMU {
       bcps: this.bcps, ocps: this.ocps,
       hdmaSrc: this.hdmaSrc, hdmaDst: this.hdmaDst, hdmaActive: this.hdmaActive, hdmaBlocksLeft: this.hdmaBlocksLeft,
       doubleSpeed: this.doubleSpeed, speedSwitchArmed: this.speedSwitchArmed,
-      rtc: this.mbcType === 3 ? {
-        s: this.rtc.s, m: this.rtc.m, h: this.rtc.h, dl: this.rtc.dl, dh: this.rtc.dh,
-        latched: { ...this.rtc.latched }, lastLatchWrite: this.rtc.lastLatchWrite, lastRealMs: this.rtc.lastRealMs,
-      } : undefined,
+      rtc: this.mbcType === 3 ? this.rtc.serialize() : undefined,
       rtcSelect: this.rtcSelect,
     };
   }
@@ -199,12 +186,7 @@ class CGBMMU {
     this.bcps = s.bcps; this.ocps = s.ocps;
     this.hdmaSrc = s.hdmaSrc; this.hdmaDst = s.hdmaDst; this.hdmaActive = s.hdmaActive; this.hdmaBlocksLeft = s.hdmaBlocksLeft;
     this.doubleSpeed = s.doubleSpeed; this.speedSwitchArmed = s.speedSwitchArmed;
-    if (s.rtc) {
-      this.rtc.s = s.rtc.s; this.rtc.m = s.rtc.m; this.rtc.h = s.rtc.h; this.rtc.dl = s.rtc.dl; this.rtc.dh = s.rtc.dh;
-      this.rtc.latched = { ...s.rtc.latched };
-      this.rtc.lastLatchWrite = s.rtc.lastLatchWrite;
-      this.rtc.lastRealMs = Date.now();
-    }
+    if (s.rtc) this.rtc.deserialize(s.rtc);
     this.rtcSelect = (s.rtcSelect === undefined) ? -1 : s.rtcSelect;
   }
 
@@ -299,11 +281,7 @@ class CGBMMU {
         if (val <= 0x03) { this.currentRAMBank = val; this.rtcSelect = -1; }
         else if (val >= 0x08 && val <= 0x0C) { this.rtcSelect = val; }
       } else {
-        if (this.rtc.lastLatchWrite === 0x00 && val === 0x01) {
-          this.tickRTC();
-          this.rtc.latched.s = this.rtc.s; this.rtc.latched.m = this.rtc.m; this.rtc.latched.h = this.rtc.h;
-          this.rtc.latched.dl = this.rtc.dl; this.rtc.latched.dh = this.rtc.dh;
-        }
+        if (this.rtc.lastLatchWrite === 0x00 && val === 0x01) this.rtc.latch();
         this.rtc.lastLatchWrite = val;
       }
     } else if (this.mbcType === 5) {
@@ -327,39 +305,13 @@ class CGBMMU {
   }
 
   tickRTC() {
-    const rtc = this.rtc;
-    const halted = (rtc.dh & 0x40) !== 0;
-    const now = Date.now();
-    if (halted) { rtc.lastRealMs = now; return; }
-    let elapsedSec = Math.floor((now - rtc.lastRealMs) / 1000);
-    if (elapsedSec <= 0) return;
-    rtc.lastRealMs += elapsedSec * 1000;
-    rtc.s += elapsedSec;
-    if (rtc.s >= 60) { rtc.m += Math.floor(rtc.s / 60); rtc.s %= 60; }
-    if (rtc.m >= 60) { rtc.h += Math.floor(rtc.m / 60); rtc.m %= 60; }
-    if (rtc.h >= 24) {
-      let days = ((rtc.dh & 0x01) << 8) | rtc.dl;
-      days += Math.floor(rtc.h / 24);
-      rtc.h %= 24;
-      if (days > 0x1FF) { rtc.dh |= 0x80; days &= 0x1FF; }
-      rtc.dl = days & 0xFF;
-      rtc.dh = (rtc.dh & 0xFE) | ((days >> 8) & 0x01);
-    }
+    this.rtc.tick();
   }
   _readRTCRegister() {
-    const l = this.rtc.latched;
-    switch (this.rtcSelect) {
-      case 0x08: return l.s; case 0x09: return l.m; case 0x0A: return l.h;
-      case 0x0B: return l.dl; case 0x0C: return l.dh; default: return 0xFF;
-    }
+    return this.rtc.readRegister(this.rtcSelect);
   }
   _writeRTCRegister(val) {
-    this.tickRTC();
-    switch (this.rtcSelect) {
-      case 0x08: this.rtc.s = val % 60; break; case 0x09: this.rtc.m = val % 60; break;
-      case 0x0A: this.rtc.h = val % 24; break; case 0x0B: this.rtc.dl = val & 0xFF; break;
-      case 0x0C: this.rtc.dh = val & 0xC1; break;
-    }
+    this.rtc.writeRegister(this.rtcSelect, val);
   }
 
   /* ---- I/O ---- */

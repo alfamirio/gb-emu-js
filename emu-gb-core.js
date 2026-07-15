@@ -103,6 +103,95 @@ const REGION_ROM0 = 0, REGION_ROMX = 1, REGION_VRAM = 2, REGION_ERAM = 3, REGION
 const REGION_COUNT = 10;
 const REGION_NAMES = ['ROM0', 'ROMX', 'VRAM', 'ERAM', 'WRAM', 'OAM', 'UNUSED', 'IO', 'HRAM', 'IE'];
 
+// MBC3 real-time clock. Shared by the DMG MMU and CGB MMU (identical chip/behavior on both
+// consoles) so the wall-clock tick, latch, and register read/write logic lives in one place.
+// `s/m/h/dl/dh` is the live counter, advanced from wall-clock time; `latched` is the frozen
+// snapshot 0xA000-0xBFFF reads actually return, updated only on a 0x00-then-0x01 latch write.
+class RTCUnit {
+  constructor() {
+    this.reset();
+  }
+
+  reset() {
+    this.s = 0; this.m = 0; this.h = 0; this.dl = 0; this.dh = 0;
+    this.latched = { s: 0, m: 0, h: 0, dl: 0, dh: 0 };
+    this.lastLatchWrite = 0xFF;
+    this.lastRealMs = Date.now();
+  }
+
+  // Advances the live counters by however much wall-clock time has passed. Skipped while
+  // halted (dh bit 6), which is how games freeze the clock to set it precisely.
+  tick() {
+    const halted = (this.dh & 0x40) !== 0;
+    const now = Date.now();
+    if (halted) { this.lastRealMs = now; return; }
+
+    let elapsedSec = Math.floor((now - this.lastRealMs) / 1000);
+    if (elapsedSec <= 0) return;
+    this.lastRealMs += elapsedSec * 1000;
+
+    this.s += elapsedSec;
+    if (this.s >= 60) { this.m += Math.floor(this.s / 60); this.s %= 60; }
+    if (this.m >= 60) { this.h += Math.floor(this.m / 60); this.m %= 60; }
+    if (this.h >= 24) {
+      let days = ((this.dh & 0x01) << 8) | this.dl;
+      days += Math.floor(this.h / 24);
+      this.h %= 24;
+      if (days > 0x1FF) { this.dh |= 0x80; days &= 0x1FF; } // day counter overflow: set carry bit
+      this.dl = days & 0xFF;
+      this.dh = (this.dh & 0xFE) | ((days >> 8) & 0x01);
+    }
+  }
+
+  // Copies the live counters into the latched snapshot (what a 0x00-then-0x01 write to
+  // 0x6000-0x7FFF does on real hardware).
+  latch() {
+    this.tick();
+    this.latched.s = this.s; this.latched.m = this.m; this.latched.h = this.h;
+    this.latched.dl = this.dl; this.latched.dh = this.dh;
+  }
+
+  // Returns the latched (not live) snapshot of whichever RTC register index (0x08-0x0C) is
+  // selected.
+  readRegister(rtcSelect) {
+    const l = this.latched;
+    switch (rtcSelect) {
+      case 0x08: return l.s;
+      case 0x09: return l.m;
+      case 0x0A: return l.h;
+      case 0x0B: return l.dl;
+      case 0x0C: return l.dh;
+      default:   return 0xFF;
+    }
+  }
+
+  // Writing 0xA000-0xBFFF with an RTC register selected sets that register on the live clock.
+  writeRegister(rtcSelect, val) {
+    this.tick();
+    switch (rtcSelect) {
+      case 0x08: this.s = val % 60; break;
+      case 0x09: this.m = val % 60; break;
+      case 0x0A: this.h = val % 24; break;
+      case 0x0B: this.dl = val & 0xFF; break;
+      case 0x0C: this.dh = val & 0xC1; break; // bit0: day MSB, bit6: halt, bit7: day carry
+    }
+  }
+
+  serialize() {
+    return {
+      s: this.s, m: this.m, h: this.h, dl: this.dl, dh: this.dh,
+      latched: { ...this.latched }, lastLatchWrite: this.lastLatchWrite, lastRealMs: this.lastRealMs,
+    };
+  }
+
+  deserialize(s) {
+    this.s = s.s; this.m = s.m; this.h = s.h; this.dl = s.dl; this.dh = s.dh;
+    this.latched = { ...s.latched };
+    this.lastLatchWrite = s.lastLatchWrite;
+    this.lastRealMs = Date.now(); // resume live clock from now, not the saved timestamp
+  }
+}
+
 class MMU {
   constructor(emulator) {
     this.emulator = emulator;
@@ -117,15 +206,8 @@ class MMU {
 
     this.cartRAM = new Uint8Array(EMU_CORE_CONFIG.MEMORY.CART_RAM_SIZE);
 
-    // MBC3 real-time clock. `rtc` is the live counter, advanced from wall-clock time;
-    // `rtc.latched` is the frozen snapshot 0xA000-0xBFFF reads actually return, updated
-    // only on the 0x00-then-0x01 latch write sequence.
-    this.rtc = {
-      s: 0, m: 0, h: 0, dl: 0, dh: 0,
-      latched: { s: 0, m: 0, h: 0, dl: 0, dh: 0 },
-      lastLatchWrite: 0xFF,
-      lastRealMs: Date.now(),
-    };
+    // MBC3 real-time clock (see RTCUnit above).
+    this.rtc = new RTCUnit();
     this.rtcSelect = -1;   // -1 = 0xA000-0xBFFF maps to cart RAM; 0x08-0x0C = that RTC register
     this.hasTimer = false; // true only for cart types with an actual RTC chip (0x0F/0x10)
 
@@ -172,15 +254,8 @@ class MMU {
     this.ramEnabled = false;
     this.bankingMode = 0;
 
-    this.rtc = {
-      s: 0, m: 0, h: 0, dl: 0, dh: 0,
-      latched: { s: 0, m: 0, h: 0, dl: 0, dh: 0 },
-      lastLatchWrite: 0xFF,
-      lastRealMs: Date.now(),
-    };
+    this.rtc.reset();
     this.rtcSelect = -1;
-
-    // I/O state as left by the boot ROM.
     const bootIO = EMU_CORE_CONFIG.BOOT.IO;
     this.io.fill(0);
     this.io[0x00] = bootIO.P1;
@@ -198,10 +273,7 @@ class MMU {
       ramEnabled: this.ramEnabled, bankingMode: this.bankingMode,
       cartRAM: u8ToBase64(this.cartRAM), vram: u8ToBase64(this.vram), wram: u8ToBase64(this.wram),
       oam: u8ToBase64(this.oam), hram: u8ToBase64(this.hram), io: u8ToBase64(this.io), ie: this.ie,
-      rtc: this.mbcType === 3 ? {
-        s: this.rtc.s, m: this.rtc.m, h: this.rtc.h, dl: this.rtc.dl, dh: this.rtc.dh,
-        latched: { ...this.rtc.latched }, lastLatchWrite: this.rtc.lastLatchWrite, lastRealMs: this.rtc.lastRealMs,
-      } : undefined,
+      rtc: this.mbcType === 3 ? this.rtc.serialize() : undefined,
       rtcSelect: this.rtcSelect,
     };
   }
@@ -215,12 +287,7 @@ class MMU {
     this.hram.set(base64ToU8(s.hram));
     this.io.set(base64ToU8(s.io));
     this.ie = s.ie;
-    if (s.rtc) {
-      this.rtc.s = s.rtc.s; this.rtc.m = s.rtc.m; this.rtc.h = s.rtc.h; this.rtc.dl = s.rtc.dl; this.rtc.dh = s.rtc.dh;
-      this.rtc.latched = { ...s.rtc.latched };
-      this.rtc.lastLatchWrite = s.rtc.lastLatchWrite;
-      this.rtc.lastRealMs = Date.now(); // resume live clock from now, not the saved timestamp
-    }
+    if (s.rtc) this.rtc.deserialize(s.rtc);
     this.rtcSelect = (s.rtcSelect === undefined) ? -1 : s.rtcSelect;
   }
 
@@ -328,14 +395,7 @@ class MMU {
         }
       } else {
         // 0x00 then 0x01 latches the live RTC counters into the readable snapshot.
-        if (this.rtc.lastLatchWrite === 0x00 && val === 0x01) {
-          this.tickRTC();
-          this.rtc.latched.s = this.rtc.s;
-          this.rtc.latched.m = this.rtc.m;
-          this.rtc.latched.h = this.rtc.h;
-          this.rtc.latched.dl = this.rtc.dl;
-          this.rtc.latched.dh = this.rtc.dh;
-        }
+        if (this.rtc.lastLatchWrite === 0x00 && val === 0x01) this.rtc.latch();
         this.rtc.lastLatchWrite = val;
       }
     } else if (this.mbcType === 5) {
@@ -367,54 +427,19 @@ class MMU {
     }
   }
 
-  // Advances the live RTC counters by however much wall-clock time has passed. Skipped
-  // while halted (dh bit 6), which is how games freeze the clock to set it precisely.
+  // Advances the live RTC counters by however much wall-clock time has passed (see RTCUnit).
   tickRTC() {
-    const rtc = this.rtc;
-    const halted = (rtc.dh & 0x40) !== 0;
-    const now = Date.now();
-    if (halted) { rtc.lastRealMs = now; return; }
-
-    let elapsedSec = Math.floor((now - rtc.lastRealMs) / 1000);
-    if (elapsedSec <= 0) return;
-    rtc.lastRealMs += elapsedSec * 1000;
-
-    rtc.s += elapsedSec;
-    if (rtc.s >= 60) { rtc.m += Math.floor(rtc.s / 60); rtc.s %= 60; }
-    if (rtc.m >= 60) { rtc.h += Math.floor(rtc.m / 60); rtc.m %= 60; }
-    if (rtc.h >= 24) {
-      let days = ((rtc.dh & 0x01) << 8) | rtc.dl;
-      days += Math.floor(rtc.h / 24);
-      rtc.h %= 24;
-      if (days > 0x1FF) { rtc.dh |= 0x80; days &= 0x1FF; } // day counter overflow: set carry bit
-      rtc.dl = days & 0xFF;
-      rtc.dh = (rtc.dh & 0xFE) | ((days >> 8) & 0x01);
-    }
+    this.rtc.tick();
   }
 
   // Returns the latched (not live) snapshot of whichever RTC register is selected.
   _readRTCRegister() {
-    const l = this.rtc.latched;
-    switch (this.rtcSelect) {
-      case 0x08: return l.s;
-      case 0x09: return l.m;
-      case 0x0A: return l.h;
-      case 0x0B: return l.dl;
-      case 0x0C: return l.dh;
-      default:   return 0xFF;
-    }
+    return this.rtc.readRegister(this.rtcSelect);
   }
 
   // Writing 0xA000-0xBFFF with an RTC register selected sets that register on the live clock.
   _writeRTCRegister(val) {
-    this.tickRTC();
-    switch (this.rtcSelect) {
-      case 0x08: this.rtc.s = val % 60; break;
-      case 0x09: this.rtc.m = val % 60; break;
-      case 0x0A: this.rtc.h = val % 24; break;
-      case 0x0B: this.rtc.dl = val & 0xFF; break;
-      case 0x0C: this.rtc.dh = val & 0xC1; break; // bit0: day MSB, bit6: halt, bit7: day carry
-    }
+    this.rtc.writeRegister(this.rtcSelect, val);
   }
 
   _readIO(addr) {

@@ -455,66 +455,21 @@ function getGBCInfoNote(bytes) {
 // (the values a ROM database or verification tool would use). Distinct from the cartridge
 // header's own internal checksum bytes.
 
-// CRC32 (ISO-HDLC / zlib polynomial 0xEDB88320), table-based.
-const CRC32_TABLE = (() => {
-  const table = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    table[n] = c >>> 0;
-  }
-  return table;
-})();
+// CRC32 (ISO-HDLC / zlib polynomial 0xEDB88320), via the crc-32 library (global CRC32,
+// loaded from cdnjs in index.html). CRC32.buf() returns a signed 32-bit int; mask to
+// unsigned so it hex-formats the same way the old table-based implementation did.
 function crc32(bytes) {
-  let crc = 0xFFFFFFFF;
-  for (let i = 0; i < bytes.length; i++) crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
-  return (crc ^ 0xFFFFFFFF) >>> 0;
+  return CRC32.buf(bytes) >>> 0;
 }
 
-// MD5 - compact standalone implementation (Web Crypto doesn't expose MD5).
+// MD5 via the spark-md5 library (global SparkMD5, loaded from cdnjs in index.html).
+// SparkMD5.ArrayBuffer.hash() wants a real ArrayBuffer, so if `bytes` is a view over a
+// larger buffer (e.g. a subarray), slice out just the bytes we care about first.
 function md5(bytes) {
-  const s = [7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,
-             5, 9,14,20,5, 9,14,20,5, 9,14,20,5, 9,14,20,
-             4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,
-             6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21];
-  const K = new Int32Array(64);
-  for (let i = 0; i < 64; i++) K[i] = (Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296)) | 0;
-
-  let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
-  const msgLen = bytes.length;
-  const bitLen = msgLen * 8;
-  const padLen = ((msgLen % 64) < 56) ? (56 - (msgLen % 64)) : (120 - (msgLen % 64));
-  const total = msgLen + padLen + 8;
-  const buf = new Uint8Array(total);
-  buf.set(bytes, 0);
-  buf[msgLen] = 0x80;
-  const dv = new DataView(buf.buffer);
-  dv.setUint32(total - 8, bitLen >>> 0, true);
-  dv.setUint32(total - 4, Math.floor(bitLen / 0x100000000), true);
-
-  for (let chunkStart = 0; chunkStart < total; chunkStart += 64) {
-    const M = new Uint32Array(16);
-    for (let i = 0; i < 16; i++) M[i] = dv.getUint32(chunkStart + i * 4, true);
-    let A = a0, B = b0, C = c0, D = d0;
-    for (let i = 0; i < 64; i++) {
-      let F, g;
-      if (i < 16) { F = (B & C) | (~B & D); g = i; }
-      else if (i < 32) { F = (D & B) | (~D & C); g = (5 * i + 1) % 16; }
-      else if (i < 48) { F = B ^ C ^ D; g = (3 * i + 5) % 16; }
-      else { F = C ^ (B | ~D); g = (7 * i) % 16; }
-      F = (F + A + K[i] + M[g]) | 0;
-      A = D; D = C; C = B;
-      B = (B + ((F << s[i]) | (F >>> (32 - s[i])))) | 0;
-    }
-    a0 = (a0 + A) | 0; b0 = (b0 + B) | 0; c0 = (c0 + C) | 0; d0 = (d0 + D) | 0;
-  }
-  const toHexLE = (n) => {
-    n = n >>> 0;
-    let hex = '';
-    for (let i = 0; i < 4; i++) hex += ((n >>> (i * 8)) & 0xFF).toString(16).padStart(2, '0');
-    return hex;
-  };
-  return toHexLE(a0) + toHexLE(b0) + toHexLE(c0) + toHexLE(d0);
+  const arrayBuffer = (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength)
+    ? bytes.buffer
+    : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  return SparkMD5.ArrayBuffer.hash(arrayBuffer);
 }
 
 function bufToHex(buf) {

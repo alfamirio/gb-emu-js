@@ -144,6 +144,16 @@ const traceList = document.getElementById('traceList');
 const btnExportTrace = document.getElementById('btnExportTrace');
 const btnTraceFollow = document.getElementById('btnTraceFollow');
 const traceFrozenNote = document.getElementById('traceFrozenNote');
+const traceAutoscrollToggle = document.getElementById('traceAutoscrollToggle');
+
+/* ---- 8b. Event log panel refs ---- */
+const eventLogList = document.getElementById('eventLogList');
+const eventLogLevelSelect = document.getElementById('eventLogLevelSelect');
+const eventLogFilterBoxes = [...document.querySelectorAll('.event-log-filter')];
+const btnExportEventLog = document.getElementById('btnExportEventLog');
+const btnEventLogFollow = document.getElementById('btnEventLogFollow');
+const eventLogFrozenNote = document.getElementById('eventLogFrozenNote');
+const eventLogAutoscrollToggle = document.getElementById('eventLogAutoscrollToggle');
 
 /* ---- 9. Memory map panel refs ---- */
 const memmapStrip = document.getElementById('memmapStrip');
@@ -735,6 +745,7 @@ function syncAccessTracking(activeDebugTool) {
   const debugging = !document.body.classList.contains('playing-mode');
   emulator.stats.trackMemMap = debugging && (activeDebugTool === 'memmap' || activeDebugTool === 'banking');
   emulator.instrumentation.trackTrace = debugging && (activeDebugTool === 'trace');
+  emulator.stats.trackEventLog = debugging && (activeDebugTool === 'eventlog');
 }
 
 function setupTabGroup(container) {
@@ -2393,6 +2404,20 @@ function isTraceAtBottom() {
   return traceList.scrollHeight - traceList.scrollTop - traceList.clientHeight < 24;
 }
 
+// Autoscroll toggle: off by default, so the list never jumps on its own until the person
+// opts in. Even when on, scrolling up still freezes it (see drawTrace below) — the toggle
+// only controls whether being at the bottom is enough to keep following new instructions.
+let traceAutoscrollEnabled = typeof savedUIConfig.traceAutoscroll === 'boolean' ? savedUIConfig.traceAutoscroll : false;
+traceAutoscrollToggle.checked = traceAutoscrollEnabled;
+
+// Shows/hides the "frozen" UI (note + jump button) to match current state, without
+// touching the trace list content itself. The note text only applies to the scrolled-up
+// case; when autoscroll is simply off (but we're at the bottom), the button alone is enough.
+function setTraceFrozenUI(frozen) {
+  btnTraceFollow.style.display = frozen ? '' : 'none';
+  traceFrozenNote.style.display = (frozen && !isTraceAtBottom()) ? '' : 'none';
+}
+
 // Cache of decoded mnemonic + explanation per trace ring-buffer slot, keyed by (addr,b0,b1,b2)
 // so a slot is only recomputed when its content actually changed.
 const traceDecodeCache = new Array(emulator.instrumentation.TRACE_SIZE).fill(null);
@@ -2409,22 +2434,14 @@ function getTraceDecoded(idx, addr, b0, b1, b2) {
   return entry;
 }
 
-function drawTrace() {
-  syncTraceListHeight();
-
-  // Only live-update while pinned to the bottom; otherwise freeze the DOM so scrolled-up
-  // content doesn't get swapped out under the user.
-  if (!isTraceAtBottom() && traceList.childElementCount > 0 && !traceList.querySelector('.trace-empty')) {
-    btnTraceFollow.style.display = '';
-    traceFrozenNote.style.display = '';
-    return;
-  }
-  btnTraceFollow.style.display = 'none';
-  traceFrozenNote.style.display = 'none';
-
+// Rebuilds the trace list content from the ring buffer and pins the scroll to the bottom.
+// Split out from drawTrace() so "Jump to latest" can force a refresh even while autoscroll
+// is off (it's a one-off catch-up, not a way to silently turn autoscroll on).
+const TRACE_VISIBLE_ROWS = 50; // on-screen cap; export still covers the full ring buffer
+function renderTraceEntries() {
   const entries = emulator.instrumentation.getTraceEntries();
   if (entries.length === 0) { traceList.innerHTML = '<div class="trace-empty">No instructions executed yet.</div>'; return; }
-  const recent = entries.slice(-200); // cap rendered rows; ring buffer holds more
+  const recent = entries.slice(-TRACE_VISIBLE_ROWS);
 
   // Collapse consecutive entries sharing (addr, opcode) into a single "x N" row.
   const groups = [];
@@ -2450,15 +2467,36 @@ function drawTrace() {
   traceList.scrollTop = traceList.scrollHeight;
 }
 
+function drawTrace() {
+  syncTraceListHeight();
+
+  // Only live-update while autoscroll is on AND pinned to the bottom; otherwise freeze the
+  // DOM so scrolled-up (or deliberately paused) content doesn't get swapped out under the user.
+  const hasContent = traceList.childElementCount > 0 && !traceList.querySelector('.trace-empty');
+  if (hasContent && (!traceAutoscrollEnabled || !isTraceAtBottom())) {
+    setTraceFrozenUI(true);
+    return;
+  }
+  setTraceFrozenUI(false);
+  renderTraceEntries();
+}
+
 // Manual scroll should immediately reflect frozen/live state.
 traceList.addEventListener('scroll', () => {
-  const atBottom = isTraceAtBottom();
-  btnTraceFollow.style.display = atBottom ? 'none' : '';
-  traceFrozenNote.style.display = atBottom ? 'none' : '';
+  setTraceFrozenUI(!traceAutoscrollEnabled || !isTraceAtBottom());
 });
 
+// Jump to latest always renders the current entries and scrolls down, regardless of the
+// autoscroll setting — a one-off catch-up, not a way to silently turn autoscroll on. If
+// autoscroll is still off, the next new instruction will freeze it again, which is correct.
 btnTraceFollow.addEventListener('click', () => {
-  traceList.scrollTop = traceList.scrollHeight;
+  renderTraceEntries();
+  setTraceFrozenUI(false);
+});
+
+traceAutoscrollToggle.addEventListener('change', () => {
+  traceAutoscrollEnabled = traceAutoscrollToggle.checked;
+  saveUIConfig({ traceAutoscroll: traceAutoscrollEnabled });
   drawTrace();
 });
 
@@ -2503,6 +2541,147 @@ btnExportTrace.addEventListener('click', () => {
   }
 });
 
+/* ---- 6b. Event log: unified scrollback of hardware + system events, see CoreStats.logEvent() ---- */
+
+// Same freeze-while-scrolled-up behavior as the Trace panel, so a burst of events (e.g. an
+// interrupt storm) doesn't yank the view out from under someone reading older entries.
+function isEventLogAtBottom() {
+  return eventLogList.scrollHeight - eventLogList.scrollTop - eventLogList.clientHeight < 24;
+}
+
+// Autoscroll toggle: off by default, same rationale as the Trace panel's. Even when on,
+// scrolling up still freezes it — the toggle only controls whether being at the bottom is
+// enough to keep following new events.
+let eventLogAutoscrollEnabled = typeof savedUIConfig.eventLogAutoscroll === 'boolean' ? savedUIConfig.eventLogAutoscroll : false;
+eventLogAutoscrollToggle.checked = eventLogAutoscrollEnabled;
+
+// Shows/hides the "frozen" UI (note + jump button). The note text only applies to the
+// scrolled-up case; when autoscroll is simply off (but we're at the bottom), the button
+// alone is enough.
+function setEventLogFrozenUI(frozen) {
+  btnEventLogFollow.style.display = frozen ? '' : 'none';
+  eventLogFrozenNote.style.display = (frozen && !isEventLogAtBottom()) ? '' : 'none';
+}
+
+function activeEventLogComponents() {
+  return new Set(eventLogFilterBoxes.filter(b => b.checked).map(b => b.value));
+}
+
+// Formats a millisecond duration compactly: sub-second as "12.34ms", otherwise "1:23.4".
+// Used for both the emulated (hardware) clock and the real (wall) clock on each event.
+function formatEventTime(ms) {
+  if (ms < 1000) return ms.toFixed(2) + 'ms';
+  const totalSec = ms / 1000;
+  if (totalSec < 60) return totalSec.toFixed(2) + 's';
+  const m = Math.floor(totalSec / 60);
+  const s = (totalSec - m * 60).toFixed(1).padStart(4, '0');
+  return `${m}:${s}`;
+}
+
+// Rebuilds the event log content from the buffer and pins the scroll to the bottom. Split
+// out from drawEventLog() so "Jump to latest" can force a refresh even while autoscroll is
+// off (it's a one-off catch-up, not a way to silently turn autoscroll on).
+const EVENT_LOG_VISIBLE_ROWS = 50; // on-screen cap; export still covers the full buffer
+function renderEventLogEntries() {
+  const shown = activeEventLogComponents();
+  const entries = emulator.stats.eventLog.filter(e => shown.has(e.component));
+  if (entries.length === 0) {
+    eventLogList.innerHTML = '<div class="event-empty">No events logged yet.</div>';
+    return;
+  }
+  const recent = entries.slice(-EVENT_LOG_VISIBLE_ROWS);
+
+  eventLogList.innerHTML = recent.map(e =>
+    `<div class="event-line level-${e.level}">` +
+      `<span class="event-time" title="Emulated Game Boy hardware time since ROM load (4.194304MHz clock)">${formatEventTime(e.emuMs)}</span>` +
+      `<span class="event-time-wall" title="Real time on this machine since ROM load — diverges from hardware time at non-1x speed">(real ${formatEventTime(e.wallMs)})</span>` +
+      `<span class="event-frame">f${e.frame}${e.ly !== null ? ' LY:' + e.ly : ''}</span>` +
+      `<span class="event-comp event-comp-${e.component}">[${e.component}]</span>` +
+      `<span class="event-detail">${e.detail}</span>` +
+    `</div>`
+  ).join('');
+  eventLogList.scrollTop = eventLogList.scrollHeight;
+}
+
+function drawEventLog() {
+  // Only live-update while autoscroll is on AND pinned to the bottom; otherwise freeze the
+  // DOM so scrolled-up (or deliberately paused) content doesn't get swapped out under the user.
+  const hasContent = eventLogList.childElementCount > 0 && !eventLogList.querySelector('.event-empty');
+  if (hasContent && (!eventLogAutoscrollEnabled || !isEventLogAtBottom())) {
+    setEventLogFrozenUI(true);
+    return;
+  }
+  setEventLogFrozenUI(false);
+  renderEventLogEntries();
+}
+
+eventLogList.addEventListener('scroll', () => {
+  setEventLogFrozenUI(!eventLogAutoscrollEnabled || !isEventLogAtBottom());
+});
+
+// Jump to latest always renders the current entries and scrolls down, regardless of the
+// autoscroll setting. If autoscroll is still off, the next new event will freeze it again,
+// which is correct.
+btnEventLogFollow.addEventListener('click', () => {
+  renderEventLogEntries();
+  setEventLogFrozenUI(false);
+});
+
+eventLogAutoscrollToggle.addEventListener('change', () => {
+  eventLogAutoscrollEnabled = eventLogAutoscrollToggle.checked;
+  saveUIConfig({ eventLogAutoscroll: eventLogAutoscrollEnabled });
+  drawEventLog();
+});
+
+// Changing the level threshold only affects what gets recorded going forward (see
+// CoreStats.logEvent) — it doesn't retroactively filter what's already in the ring buffer.
+eventLogLevelSelect.addEventListener('change', () => {
+  emulator.stats.eventLogLevel = eventLogLevelSelect.value;
+});
+emulator.stats.eventLogLevel = eventLogLevelSelect.value;
+
+// Component filters are display-only: they don't change what's recorded, just what's shown.
+eventLogFilterBoxes.forEach(box => box.addEventListener('change', drawEventLog));
+
+function buildEventLogExportText() {
+  const level = emulator.stats.eventLogLevel;
+  const shown = activeEventLogComponents();
+  const lines = [];
+  lines.push(`; JS GB Emulator — event log export`);
+  lines.push(`; ROM: ${emulator.romTitle || 'Unknown'}`);
+  lines.push(`; Exported: ${new Date().toISOString()}`);
+  lines.push(`; Level threshold: ${level} (matches current panel selection)`);
+  lines.push(`; Components: ${[...shown].join(', ') || '(none selected)'}`);
+  lines.push(`; emuMs = emulated Game Boy hardware time since ROM load (fixed 4.194304MHz clock)`);
+  lines.push(`; wallMs = real time on this machine since ROM load (diverges from emuMs at non-1x speed)`);
+  lines.push(`; Format: emuMs  wallMs  frame  LY  [component]  detail`);
+  lines.push('');
+
+  // Same filters as the on-screen view: component checkboxes, plus the level threshold (in
+  // case entries recorded under a more verbose setting are still sitting in the buffer).
+  const entries = emulator.stats.eventLog.filter(e =>
+    shown.has(e.component) && EVENT_LEVELS[e.level] >= EVENT_LEVELS[level]);
+  if (entries.length === 0) { lines.push('(no events match the current filters)'); return lines.join('\n'); }
+
+  for (const e of entries) {
+    const ly = e.ly !== null ? String(e.ly).padStart(3) : '  —';
+    const emuMs = e.emuMs.toFixed(2).padStart(10);
+    const wallMs = e.wallMs.toFixed(2).padStart(10);
+    lines.push(`${emuMs}ms  ${wallMs}ms  ${String(e.frame).padStart(7)}  LY:${ly}  [${e.component.padEnd(6)}]  ${e.detail}`);
+  }
+  return lines.join('\n');
+}
+
+btnExportEventLog.addEventListener('click', () => {
+  try {
+    const text = buildEventLogExportText();
+    const blob = new Blob([text], { type: 'text/plain' });
+    downloadBlob(blob, `${safeRomName()}.eventlog.txt`);
+  } catch (e) {
+    alert('Could not export event log: ' + e.message);
+  }
+});
+
 /* ---- orchestration: redraw whichever tab is currently active in each sidebar ---- */
 function refreshDebugTools() {
   if (document.body.classList.contains('playing-mode')) return;
@@ -2511,6 +2690,7 @@ function refreshDebugTools() {
   if (activeDebug === 'registers') drawRegisters();
   else if (activeDebug === 'disasm') drawDisassembly();
   else if (activeDebug === 'trace') drawTrace();
+  else if (activeDebug === 'eventlog') drawEventLog();
   else if (activeDebug === 'stack') drawStack();
   else if (activeDebug === 'memmap') drawMemMap();
   else if (activeDebug === 'banking') drawBanking();

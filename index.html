@@ -835,6 +835,25 @@
     font-style: italic;
     margin-right: auto;
   }
+  .autoscroll-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    color: #aaa;
+    cursor: pointer;
+    user-select: none;
+  }
+  .autoscroll-toggle .switch { width: 28px; height: 15px; }
+  .autoscroll-toggle .toggle-thumb { width: 9px; height: 9px; }
+  .autoscroll-toggle input:checked + .toggle-track .toggle-thumb { transform: translateX(13px); }
+  .event-log-level-row {
+    display: flex;
+    align-items: center;
+    font-size: 0.8rem;
+    color: #ccc;
+    margin-bottom: 8px;
+  }
   .disasm-line { padding: 1px 5px; border-radius: 3px; white-space: nowrap; color: #9fd6ff; }
   .disasm-line.current { background: var(--accent); color: #fff; font-weight: bold; }
   .stack-sp-readout {
@@ -880,6 +899,81 @@
     white-space: normal;
   }
   .trace-empty, .disasm-empty { color: #777; padding: 2px 5px; }
+
+  /* ---- Event Log panel ---- */
+  select.ui-select {
+    background: #1b1b22;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 0.75rem;
+  }
+  select.ui-select:hover { border-color: #888; }
+  .event-log-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin-bottom: 8px;
+    font-size: 0.72rem;
+    color: #aaa;
+  }
+  .event-log-filters label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .event-log-filters input { accent-color: var(--accent); }
+  .event-log-list {
+    background: #111;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.75rem;
+    line-height: 1.65;
+    max-height: 340px;
+    overflow-y: auto;
+  }
+  .event-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 10px;
+    padding: 2px 6px;
+    border-left: 3px solid #555;
+    border-radius: 2px;
+  }
+  .event-line.level-info  { border-left-color: var(--accent); }
+  .event-line.level-debug { border-left-color: #777; }
+  .event-line.level-trace { border-left-color: #3a3a3a; }
+  .event-frame { color: #666; white-space: nowrap; flex: 0 0 auto; font-size: 0.7rem; }
+  .event-time {
+    color: #8fd6ff;
+    white-space: nowrap;
+    flex: 0 0 auto;
+    font-size: 0.72rem;
+    font-weight: bold;
+    min-width: 62px;
+    display: inline-block;
+  }
+  .event-time-wall {
+    color: #666;
+    white-space: nowrap;
+    flex: 0 0 auto;
+    font-size: 0.68rem;
+  }
+  .event-comp {
+    white-space: nowrap;
+    flex: 0 0 auto;
+    font-weight: bold;
+    font-size: 0.7rem;
+    border-radius: 3px;
+    padding: 0 5px;
+  }
+  .event-comp-CPU    { color: #9fd6ff; }
+  .event-comp-PPU    { color: #c9a0f5; }
+  .event-comp-APU    { color: #f5a0c9; }
+  .event-comp-Timer  { color: #e8c46b; }
+  .event-comp-MBC    { color: #7fd67f; }
+  .event-comp-System { color: #bbbbbb; }
+  .event-detail { color: #ccc; white-space: normal; }
+  .event-empty { color: #777; padding: 2px 5px; }
 
   /* ---- CPU Registers editor panel ---- */
   .reg-editor { display: flex; flex-direction: column; gap: 14px; }
@@ -1454,6 +1548,7 @@
       <button class="tool-tab" data-tool="ramedit">RAM Editor</button>
       <button class="tool-tab" data-tool="interrupts">Interrupts</button>
       <button class="tool-tab" data-tool="trace">Trace</button>
+      <button class="tool-tab" data-tool="eventlog">Event Log</button>
       <button class="tool-tab" data-tool="stack">Stack</button>
       <button class="tool-tab" data-tool="disasm">Disasm</button>
       <button class="tool-tab" data-tool="memmap">Mem Map</button>
@@ -1574,14 +1669,61 @@
       <p class="tool-desc">
         Scrollback of the last instructions the CPU actually executed, oldest first, most recent
         highlighted at the bottom — with a brief plain-English note on what each one does, useful
-        for seeing how a loop, call, or jump was reached.
+        for seeing how a loop, call, or jump was reached. Shows the last 50; export for the full
+        buffer (up to 2000).
       </p>
       <div class="trace-toolbar">
+        <label class="autoscroll-toggle" title="When on, the list follows new instructions as they arrive (still pauses if you scroll up). Off by default so the view doesn't move on its own.">
+          Autoscroll
+          <span class="switch">
+            <input type="checkbox" id="traceAutoscrollToggle">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </span>
+        </label>
         <span class="trace-frozen-note" id="traceFrozenNote" style="display:none;">Paused while scrolled up — new instructions aren't replacing what you're viewing.</span>
         <button class="ui-btn small ghost" id="btnTraceFollow" style="display:none;">↓ Jump to latest</button>
         <button class="ui-btn small ghost" id="btnExportTrace">⭳ Export trace</button>
       </div>
       <div class="trace-list" id="traceList"><div class="trace-empty">No instructions executed yet.</div></div>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-eventlog">
+      <p class="tool-desc">
+        Unified log of hardware and system events — CPU, PPU, APU, timer, MBC, and app-level
+        milestones. Shows the last 50; export for the full buffer (up to 2000). Each entry
+        pairs emulated hardware time with real wall-clock time, which diverge under turbo.
+      </p>
+      <div class="event-log-level-row">
+        <label style="display:flex; align-items:center; gap:6px;">
+          Level:
+          <select id="eventLogLevelSelect" class="ui-select small">
+            <option value="trace">Trace (everything, incl. PPU mode)</option>
+            <option value="debug" selected>Debug (hardware events)</option>
+            <option value="info">Info (milestones only)</option>
+          </select>
+        </label>
+      </div>
+      <div class="trace-toolbar">
+        <label class="autoscroll-toggle" title="When on, the list follows new events as they arrive (still pauses if you scroll up). Off by default so the view doesn't move on its own.">
+          Autoscroll
+          <span class="switch">
+            <input type="checkbox" id="eventLogAutoscrollToggle">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </span>
+        </label>
+        <span class="trace-frozen-note" id="eventLogFrozenNote" style="display:none;">Paused while scrolled up — new events aren't replacing what you're viewing.</span>
+        <button class="ui-btn small ghost" id="btnEventLogFollow" style="display:none;">↓ Jump to latest</button>
+        <button class="ui-btn small ghost" id="btnExportEventLog">⭳ Export log</button>
+      </div>
+      <div class="event-log-filters" id="eventLogFilters">
+        <label><input type="checkbox" class="event-log-filter" value="CPU" checked> CPU</label>
+        <label><input type="checkbox" class="event-log-filter" value="PPU" checked> PPU</label>
+        <label><input type="checkbox" class="event-log-filter" value="APU" checked> APU</label>
+        <label><input type="checkbox" class="event-log-filter" value="Timer" checked> Timer</label>
+        <label><input type="checkbox" class="event-log-filter" value="MBC" checked> MBC</label>
+        <label><input type="checkbox" class="event-log-filter" value="System" checked> System</label>
+      </div>
+      <div class="event-log-list" id="eventLogList"><div class="event-empty">No events logged yet.</div></div>
     </div>
 
     <div class="tool-panel hidden" id="panel-disasm">

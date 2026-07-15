@@ -381,6 +381,9 @@ function applyCoreToggle() {
   saveUIConfig({ gbcCore: wantGBC });
   if (lastROMBytes) loadROMBytes(lastROMBytes); // re-run the currently loaded ROM through the newly forced core
   else ensureEmulatorMatchesCoreToggle();
+  // Logged after the reload above: loadROM() resets the event log, so logging before it
+  // would just get wiped immediately.
+  emulator.stats?.logEvent('System', 'info', 'core-switch', wantGBC ? 'Switched to GBC core' : 'Switched to GB (DMG) core');
 }
 
 // Restore the saved core choice before the first render so the UI doesn't flash the default.
@@ -550,6 +553,7 @@ async function loadROMBytes(bytes) {
   lastROMBytes = bytes;
   ensureEmulatorMatchesCoreToggle();
   emulator.loadROM(bytes);
+  emulator.stats?.logEvent('System', 'info', 'rom-loaded', `ROM loaded: ${getROMTitle(bytes)}`);
   const checksums = await computeChecksums(bytes);
   const mbcWarning = getMBCCompatibilityWarning(bytes);
   const mbcInfo = getMBCInfoNote(bytes);
@@ -808,6 +812,7 @@ const speedBadges = [...document.querySelectorAll('.speed-badge')];
 function setSpeed(value) {
   emulator.speed = value;
   speedBadges.forEach(b => b.classList.toggle('active', Number(b.dataset.speed) === value));
+  emulator.stats?.logEvent('System', 'info', 'speed-change', `Speed set to ${value}×`);
 }
 
 setSpeed(1);
@@ -970,6 +975,7 @@ function quickSaveState() {
     const saved = writeSlots(slots);
     updateStateButtons();
     stateInfo.textContent = `State saved ✓ (${saved.length}/${MAX_SLOTS})`;
+    emulator.stats?.logEvent('System', 'info', 'state-saved', `Save state written (${saved.length}/${MAX_SLOTS} slots)`);
   } catch (e) {
     alert('Could not save state (storage full): ' + e.message);
   }
@@ -988,6 +994,7 @@ function loadSlot(id) {
   try {
     applyLoadedState(slot.state);
     stateInfo.textContent = 'Loaded save from ' + new Date(slot.savedAt).toLocaleTimeString();
+    emulator.stats?.logEvent('System', 'info', 'state-loaded', 'Save state loaded from slot saved ' + new Date(slot.savedAt).toLocaleTimeString());
   } catch (e) {
     alert('Could not load state: ' + e.message);
   }

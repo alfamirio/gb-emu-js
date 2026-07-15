@@ -193,7 +193,7 @@ class RTCUnit {
 function performOAMDMA(mmu, val) {
   const src = val << 8;
   for (let i = 0; i < EMU_CORE_CONFIG.OAM_DMA_BYTES; i++) mmu.oam[i] = mmu.read8(src + i);
-  mmu.emulator.stats?.recordDMA(mmu.emulator.ppu.ly);
+  mmu.emulator.stats?.recordDMA(mmu.emulator.ppu.ly, val);
 }
 
 class MMU {
@@ -496,6 +496,12 @@ class MMU {
       case 0x05: this.emulator.timer.tima = val; return;
       case 0x06: this.emulator.timer.tma = val; return;
       case 0x07: this.emulator.timer.tac = val & 0x07; return;
+      case 0x40: { // LCDC: track bit 7 (LCD enable) transitions for the Event Log
+        const wasOn = this.io[reg] & 0x80, isOn = val & 0x80;
+        this.io[reg] = val;
+        if (wasOn !== isOn) this.emulator.stats?.recordLCDToggle(!!isOn, this.emulator.ppu.ly);
+        return;
+      }
       case 0x41: this.io[reg] = (this.io[reg] & 0x07) | (val & 0xF8); return; // STAT: low 3 bits are hw-controlled
       case 0x44: this.io[reg] = 0; return; // writing LY resets it
       case 0x46: this._doDMA(val); return; // OAM DMA
@@ -650,7 +656,7 @@ class CPU {
 
   // STOP (0x10) halts CPU+LCD until a button press on real hardware; low-power mode isn't
   // modeled here. Its own method so subclasses (CGB speed switch) can override it.
-  handleStop() { this.PC = (this.PC + 1) & 0xFFFF; this.tick(4); }
+  handleStop() { this.PC = (this.PC + 1) & 0xFFFF; this.tick(4); this.mmu.emulator.stats?.recordStop(this.mmu.emulator.ppu.ly); }
 
   /* ---- fetch/execute step; returns T-cycles used ---- */
   step() {
@@ -675,7 +681,7 @@ class CPU {
   _wakeFromHaltIfPending() {
     const IF = this.mmu.io[0x0F] & 0x1F;
     const IE = this.mmu.ie & 0x1F;
-    if ((IF & IE) && this.halted) this.halted = false;
+    if ((IF & IE) && this.halted) { this.halted = false; this.mmu.emulator.stats?.recordHalt(false, this.mmu.emulator.ppu.ly); }
   }
 
   // Dispatches one pending, enabled interrupt if any. Returns true if it did — dispatch
@@ -684,7 +690,7 @@ class CPU {
     const IF = this.mmu.io[0x0F] & 0x1F;
     const IE = this.mmu.ie & 0x1F;
     const pending = IF & IE;
-    if (pending && this.halted) this.halted = false;
+    if (pending && this.halted) { this.halted = false; this.mmu.emulator.stats?.recordHalt(false, this.mmu.emulator.ppu.ly); }
     if (!this.IME || !pending) return false;
     const vectors = [0x40, 0x48, 0x50, 0x58, 0x60]; // VBlank, LCD STAT, Timer, Serial, Joypad
     for (let i = 0; i < 5; i++) {
@@ -706,7 +712,7 @@ class CPU {
   execute(opcode) {
     // 0x40-0x7F: LD r,r' (0x76 is the odd one out: HALT)
     if (opcode >= 0x40 && opcode <= 0x7F) {
-      if (opcode === 0x76) { this.halted = true; this.tick(4); return; }
+      if (opcode === 0x76) { this.halted = true; this.mmu.emulator.stats?.recordHalt(true, this.mmu.emulator.ppu.ly); this.tick(4); return; }
       const dst = (opcode >> 3) & 7, src = opcode & 7;
       this._setReg8(dst, this._getReg8(src));
       this.tick((dst === 6 || src === 6) ? 8 : 4);
@@ -1007,7 +1013,7 @@ class PPU {
     }
   }
 
-  _setStatMode(mode) { this.stat = (this.stat & 0xFC) | mode; }
+  _setStatMode(mode) { this.stat = (this.stat & 0xFC) | mode; this.emulator.stats?.recordPPUMode(mode, this.ly); }
 
   _checkLYC() {
     if (this.ly === this.lyc) { this.stat |= 0x04; if (this.stat & 0x40) this.emulator.requestInterrupt(1); }
@@ -1245,6 +1251,7 @@ class Timer {
         if (this.tima === 0) {
           this.tima = this.tma;
           this.emulator.requestInterrupt(2); // Timer interrupt
+          this.emulator.stats?.recordTimerOverflow(this.emulator.ppu.ly);
         }
       }
     }
@@ -1603,11 +1610,11 @@ class APU {
   }
 
   /* ---- channel triggers (NRx4 bit 7 write) ---- */
-  _noteTrigger() {
-    this.emulator.stats?.recordAPUTrigger(this.emulator.ppu.ly);
+  _noteTrigger(channel) {
+    this.emulator.stats?.recordAPUTrigger(this.emulator.ppu.ly, channel);
   }
   _triggerCh1() {
-    this._noteTrigger();
+    this._noteTrigger(1);
     this.ch1.enabled = this.ch1.dacEnabled;
     if (this.ch1.lengthCounter === 0) this.ch1.lengthCounter = 64;
     this.ch1.freqTimer = (2048 - this.ch1.frequency) * 4;
@@ -1619,7 +1626,7 @@ class APU {
     if (this.ch1.sweepShift > 0) this._calcSweep(); // immediate overflow check
   }
   _triggerCh2() {
-    this._noteTrigger();
+    this._noteTrigger(2);
     this.ch2.enabled = this.ch2.dacEnabled;
     if (this.ch2.lengthCounter === 0) this.ch2.lengthCounter = 64;
     this.ch2.freqTimer = (2048 - this.ch2.frequency) * 4;
@@ -1627,14 +1634,14 @@ class APU {
     this.ch2.volume = this.ch2.envVolume;
   }
   _triggerCh3() {
-    this._noteTrigger();
+    this._noteTrigger(3);
     this.ch3.enabled = this.ch3.dacEnabled;
     if (this.ch3.lengthCounter === 0) this.ch3.lengthCounter = 256;
     this.ch3.freqTimer = (2048 - this.ch3.frequency) * 2;
     this.ch3.samplePos = 0;
   }
   _triggerCh4() {
-    this._noteTrigger();
+    this._noteTrigger(4);
     this.ch4.enabled = this.ch4.dacEnabled;
     if (this.ch4.lengthCounter === 0) this.ch4.lengthCounter = 64;
     this.ch4.envTimer = this.ch4.envPeriod || 8;

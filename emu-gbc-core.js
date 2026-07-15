@@ -234,9 +234,13 @@ class CGBMMU extends MMU {
     if (val & 0x80) {
       this.hdmaActive = true; // transferred one block per H-Blank via serviceHDMABlock()
       this.hdmaBlocksLeft = blocks;
+      this.emulator.stats?.logEvent('PPU', 'debug', 'hdma-start',
+        `H-Blank HDMA armed: ${blocks} block(s), ${hex16(this.hdmaSrc)} → ${hex16(this.hdmaDst)}`, this.emulator.ppu.ly);
     } else {
       if (this.hdmaActive) { this.hdmaActive = false; return; } // GP-mode write cancels an active HBlank transfer
       for (let b = 0; b < blocks; b++) this._transferHDMABlock();
+      this.emulator.stats?.logEvent('PPU', 'debug', 'hdma-gp',
+        `General-purpose HDMA: ${blocks} block(s), ${hex16(this.hdmaSrc)} → ${hex16(this.hdmaDst)}`, this.emulator.ppu.ly);
     }
   }
 
@@ -275,6 +279,10 @@ class CGBCPU extends CPU {
     if (this.mmu.speedSwitchArmed) {
       this.mmu.doubleSpeed = !this.mmu.doubleSpeed;
       this.mmu.speedSwitchArmed = false;
+      this.mmu.emulator.stats?.logEvent('CPU', 'info', 'speed-switch',
+        `Switched to ${this.mmu.doubleSpeed ? 'double' : 'normal'} speed`, this.mmu.emulator.ppu.ly);
+    } else {
+      this.mmu.emulator.stats?.recordStop(this.mmu.emulator.ppu.ly);
     }
     this.tick(4);
   }

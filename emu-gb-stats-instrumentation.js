@@ -18,6 +18,13 @@ function hex16(v) { return '0x' + v.toString(16).padStart(4, '0').toUpperCase();
 // Interrupt bit -> name, used by CoreStats.recordInterrupt() below.
 const INTERRUPT_KIND_NAMES = ['vblank', 'stat', 'timer', 'serial', 'joypad'];
 
+// Event Log severities, low to high. 'trace' is reserved for things that fire many times
+// per frame (PPU mode transitions) and is filtered out at the default level; 'debug' covers
+// per-frame hardware events (bank switches, DMA, APU triggers, timer overflow, interrupts);
+// 'info' covers rare, human-scale milestones (ROM loaded, save state, speed/core changes).
+const EVENT_LEVELS = { trace: 0, debug: 1, info: 2 };
+const PPU_MODE_NAMES = ['HBlank', 'VBlank', 'OAM search', 'Pixel transfer'];
+
 /* CoreStats — frame/interrupt/memory-access counters for the debug UI. */
 
 class CoreStats {
@@ -25,9 +32,12 @@ class CoreStats {
     // Gate the hot read8/write8 path: skip bookkeeping unless a panel needs it.
     this.trackAccess = true;
     this.trackMemMap = false;
+    this.trackEventLog = false; // gated like trackTrace: only on while the Event Log tab is open
 
     this.FRAME_STATS_HISTORY = 60; // ~1 second at 59.73fps, for the Frame Activity panel
     this.INTERRUPT_LOG_SIZE = 60;  // last N dispatched (not just requested) interrupts
+    this.EVENT_LOG_SIZE = 2000;
+    this.eventLogLevel = 'debug'; // minimum severity retained; see EVENT_LEVELS above
 
     // Containers reset() mutates/fills in place rather than recreating, so they need to
     // exist before the first reset() call.
@@ -62,6 +72,10 @@ class CoreStats {
 
     this.interruptLog = [];
     this.interruptSeq = 0;
+
+    this.eventLog = [];
+    this.eventSeq = 0;
+    this.eventLogStartT = performance.now(); // wall-clock reference; events store elapsed ms from this
 
     this.accessSeq = 0;
     this.lastAccess.addr = 0; this.lastAccess.region = 'ROM0'; this.lastAccess.type = 'read'; this.lastAccess.seq = 0;
@@ -100,11 +114,13 @@ class CoreStats {
   recordInterruptServiced(bit, pcBefore, frame) {
     this.interruptLog.push({ seq: this.interruptSeq++, frame, bit, pcBefore });
     if (this.interruptLog.length > this.INTERRUPT_LOG_SIZE) this.interruptLog.shift();
+    this.logEvent('CPU', 'debug', 'interrupt', `${INTERRUPT_KIND_NAMES[bit] || '?'} interrupt serviced → PC ${hex16(pcBefore)}`);
   }
 
-  recordDMA(ly) {
+  recordDMA(ly, srcHigh) {
     this.frameStats.dma++;
     if (this.trackAccess) this.frameStats.events.push({ line: ly, kind: 'dma' });
+    this.logEvent('PPU', 'debug', 'dma', `OAM DMA from ${hex16((srcHigh ?? 0) << 8)}`, ly);
   }
 
   // ROM/RAM bank, RAM enable, banking mode, or RTC register select, for the MBC Banking panel.
@@ -112,11 +128,57 @@ class CoreStats {
     this.lastBankSwitch = { kind, addr, val, romBank, ramBank, t: performance.now() };
     this.frameStats.bankSwitches++;
     if (this.trackAccess) this.frameStats.events.push({ line: ly, kind: 'bank' });
+    this.logEvent('MBC', 'debug', 'bank-switch',
+      `${kind} write ${hex8(val)} → ROM bank ${romBank}, RAM bank ${ramBank}`, ly);
   }
 
-  recordAPUTrigger(ly) {
+  recordAPUTrigger(ly, channel) {
     this.frameStats.apuTriggers++;
     if (this.trackAccess) this.frameStats.events.push({ line: ly, kind: 'apu' });
+    this.logEvent('APU', 'debug', 'trigger', `Channel ${channel ?? '?'} triggered`, ly);
+  }
+
+  recordTimerOverflow(ly) {
+    this.logEvent('Timer', 'debug', 'tima-overflow', 'TIMA overflowed → reloaded from TMA, timer interrupt requested', ly);
+  }
+
+  recordLCDToggle(on, ly) {
+    this.logEvent('PPU', 'info', 'lcd-toggle', on ? 'LCD turned on' : 'LCD turned off', ly);
+  }
+
+  recordHalt(entering, ly) {
+    this.logEvent('CPU', 'debug', 'halt', entering ? 'CPU entered HALT' : 'CPU woke from HALT', ly);
+  }
+
+  recordStop(ly) {
+    this.logEvent('CPU', 'info', 'stop', 'CPU executed STOP', ly);
+  }
+
+  recordPPUMode(mode, ly) {
+    this.logEvent('PPU', 'trace', 'ppu-mode', `→ ${PPU_MODE_NAMES[mode] || mode}`, ly);
+  }
+
+  // Unified Event Log, backing the Event Log debug panel. Gated behind trackEventLog (only
+  // on while that tab is open) and eventLogLevel (only entries at/above this severity are
+  // kept — see EVENT_LEVELS). ly is optional: null for app-level lifecycle events (ROM
+  // loaded, save state, speed change) that aren't tied to a scanline.
+  //
+  // Each entry carries two clocks, which is the point of the panel educationally:
+  //   - emuMs: emulated Game Boy time elapsed since ROM load, derived from the real DMG
+  //     hardware clock (4.194304 MHz, 70224 T-cycles/frame — see EMU_CORE_CONFIG). This is
+  //     what the actual hardware experiences: fixed, deterministic, independent of the host.
+  //   - wallMs: real time elapsed on THIS machine since ROM load. At 1x speed the two track
+  //     each other closely; at 2x/4x turbo (or when the host stutters) they diverge — a
+  //     concrete way to see the difference between "hardware time" and "real time".
+  logEvent(component, level, kind, detail, ly = null) {
+    if (!this.trackEventLog) return;
+    if (EVENT_LEVELS[level] < EVENT_LEVELS[this.eventLogLevel]) return;
+    const F = EMU_CORE_CONFIG.FRAME;
+    const emuCycles = this.frameCounter * F.CYCLES_PER_FRAME + (ly !== null ? ly * F.CYCLES_PER_LINE : 0);
+    const emuMs = (emuCycles / EMU_CORE_CONFIG.CLOCK_HZ) * 1000;
+    const wallMs = performance.now() - this.eventLogStartT;
+    this.eventLog.push({ seq: this.eventSeq++, frame: this.frameCounter, ly, component, level, kind, detail, emuMs, wallMs });
+    if (this.eventLog.length > this.EVENT_LOG_SIZE) this.eventLog.shift();
   }
 
   recordSprites(y, count) {
@@ -377,7 +439,7 @@ class Instrumentation {
     this.trackTrace = false;
 
     // Execution trace: ring buffer of the last TRACE_SIZE fetched instructions.
-    this.TRACE_SIZE = 500;
+    this.TRACE_SIZE = 2000;
     this.traceAddr = new Uint16Array(this.TRACE_SIZE);
     this.traceB0 = new Uint8Array(this.TRACE_SIZE);
     this.traceB1 = new Uint8Array(this.TRACE_SIZE);

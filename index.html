@@ -1710,12 +1710,7 @@
       <div class="scanline-block">
         <h3>Current scanline, zoomed in (456 T-cycles)</h3>
         <canvas id="lineTimelineCanvas" width="760" height="46"></canvas>
-        <div class="scanline-legend">
-          <span><i style="background:#e0b45a"></i>Mode 2: OAM Search (80T)</span>
-          <span><i style="background:#5ac2e0"></i>Mode 3: Pixel Transfer (172T)</span>
-          <span><i style="background:#4a4a55"></i>Mode 0: H-Blank (204T)</span>
-          <span><i style="background:#8a5ac2"></i>Mode 1: V-Blank (whole line)</span>
-        </div>
+        <div class="scanline-legend" id="lineTimelineLegend"></div>
       </div>
 
       <div class="scanline-stats" id="scanlineStats"></div>
@@ -2009,12 +2004,7 @@
         and any interrupt/DMA/bank/APU events — for the currently selected frame.
       </p>
       <canvas id="lineAnatomyCanvas" width="900" height="46"></canvas>
-      <div class="scanline-legend">
-        <span><i style="background:#e0b45a"></i>Mode 2: OAM Search (80T)</span>
-        <span><i style="background:#5ac2e0"></i>Mode 3: Pixel Transfer (172T)</span>
-        <span><i style="background:#4a4a55"></i>Mode 0: H-Blank (204T)</span>
-        <span><i style="background:#8a5ac2"></i>Mode 1: V-Blank (whole line, 456T)</span>
-      </div>
+      <div class="scanline-legend" id="lineAnatomyLegend"></div>
       <div class="frame-anatomy-stats" id="lineAnatomyStats">Click a scanline in the "Anatomy of frame" chart above to see its details.</div>
     </div>
 

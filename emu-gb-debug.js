@@ -997,10 +997,16 @@ tileViewerCanvas.addEventListener('mouseleave', () => {
 });
 
 /* ---- 2. Tile map viewer: full 32x32 map rendered with BG palette + viewport box ---- */
+
+// Writes an opaque [r,g,b,255] pixel into an ImageData buffer at pixel index idx. Shared by
+// every debug-view renderer that plots decoded BG/window pixels one at a time.
+function plotRGB(data, idx, r, g, b) {
+  data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
+}
+
 function setMapPixel(data, x, y, r, g, b) {
   x = ((x % 256) + 256) % 256; y = ((y % 256) + 256) % 256; // wrap into the 256x256 map
-  const idx = (y * 256 + x) * 4;
-  data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
+  plotRGB(data, (y * 256 + x) * 4, r, g, b);
 }
 
 function drawTileMap() {
@@ -1014,8 +1020,7 @@ function drawTileMap() {
       for (let py = 0; py < 8; py++) {
         for (let px = 0; px < 8; px++) {
           const [r, g, b] = emulator.instrumentation.bgWindowPixelRGB(ppu, mapBase, tx * 8 + px, ty * 8 + py);
-          const idx = ((ty * 8 + py) * 256 + (tx * 8 + px)) * 4;
-          data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
+          plotRGB(data, ((ty * 8 + py) * 256 + (tx * 8 + px)) * 4, r, g, b);
         }
       }
     }
@@ -1144,8 +1149,7 @@ function renderSpriteLayerPixels(data, W, H) {
         const colorNum = emulator.instrumentation.spriteRowColorIndex(lo, hi, xFlip, px);
         if (colorNum === 0) continue; // color 0 is always transparent for sprites
         const [r, g, b] = emulator.instrumentation.spritePixelRGB(ppu, s.attrs, colorNum);
-        const idx = (y * W + sx) * 4;
-        data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
+        plotRGB(data, (y * W + sx) * 4, r, g, b);
       }
     }
   }
@@ -1169,8 +1173,7 @@ function drawLayers() {
       for (let x = 0; x < W; x++) {
         const bgX = (x + scx) & 0xFF, bgY = (y + scy) & 0xFF;
         const [r, g, b] = emulator.instrumentation.bgWindowPixelRGB(ppu, bgTileMapBase, bgX, bgY);
-        const idx = (y * W + x) * 4;
-        data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
+        plotRGB(data, (y * W + x) * 4, r, g, b);
       }
     }
   }
@@ -1190,8 +1193,7 @@ function drawLayers() {
         const winY = y - wy;
         for (let x = Math.max(wx, 0); x < W; x++) {
           const [r, g, b] = emulator.instrumentation.bgWindowPixelRGB(ppu, winTileMapBase, x - wx, winY);
-          const idx = (y * W + x) * 4;
-          data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
+          plotRGB(data, (y * W + x) * 4, r, g, b);
         }
       }
     }
@@ -1464,6 +1466,18 @@ const GB_CLOCK_HZ = EMU_CORE_CONFIG.CLOCK_HZ;
 const frameTimelineCanvas = document.getElementById('frameTimelineCanvas');
 const lineTimelineCanvas = document.getElementById('lineTimelineCanvas');
 const scanlineStatsEl = document.getElementById('scanlineStats');
+
+// Color-coded PPU-mode legend (Mode 2/3/0/1), shared by the Scanline Timeline tool's
+// "current scanline" chart and the Frame Anatomy tool's "line anatomy" chart — identical
+// except for how precisely V-Blank's duration is spelled out.
+function ppuModeLegendHTML(vblankLabel) {
+  return `<span><i style="background:#e0b45a"></i>Mode 2: OAM Search (80T)</span>
+    <span><i style="background:#5ac2e0"></i>Mode 3: Pixel Transfer (172T)</span>
+    <span><i style="background:#4a4a55"></i>Mode 0: H-Blank (204T)</span>
+    <span><i style="background:#8a5ac2"></i>Mode 1: V-Blank (${vblankLabel})</span>`;
+}
+document.getElementById('lineTimelineLegend').innerHTML = ppuModeLegendHTML('whole line');
+document.getElementById('lineAnatomyLegend').innerHTML = ppuModeLegendHTML('whole line, 456T');
 
 function drawFrameTimeline(ppuState) {
   const ctx = frameTimelineCanvas.getContext('2d');

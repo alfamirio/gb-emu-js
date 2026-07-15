@@ -15,7 +15,7 @@
 
 // App-level UI/feature configuration (not emulator-core values, which stay next to their CPU/PPU/APU/MMU usage).
 const APP_CONFIG = {
-  EDU_GUARDRAIL: false,               // flag to enable time limit and rom commercial filter
+  EDU_GUARDRAIL: true,                // flag to enable time limit and rom commercial filter
   MAX_SAVE_SLOTS: 5,                  // save-state slots kept per ROM (oldest dropped first)
   VOLUME_MIN: 0,
   VOLUME_MAX: 100,

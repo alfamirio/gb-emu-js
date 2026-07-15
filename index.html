@@ -473,6 +473,7 @@
     image-rendering: pixelated;
     image-rendering: -moz-crisp-edges;
     image-rendering: crisp-edges;
+    cursor: pointer;
     /* Rendered at its native 401x601 size (see TV_W/TV_H in emu-gb-debug.js) - deliberately
        NOT scaled by CSS. Scaling it here would stretch the 1px gutter along with everything
        else (fractional scale factors make that stretch inconsistent column-to-column, and
@@ -515,6 +516,13 @@
     color: #eee;
     white-space: nowrap;
     box-shadow: 0 2px 8px rgba(0,0,0,.5);
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  .canvas-hover-tooltip.copied {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
   }
   .tilemap-scroll {
     max-width: 100%;
@@ -590,6 +598,9 @@
   }
   table.oam-table td { padding: 4px 8px; border-bottom: 1px solid #333; color: #ddd; vertical-align: middle; }
   table.oam-table tr.offscreen td { color: #666; }
+  table.oam-table tbody tr { cursor: pointer; transition: background .15s; }
+  table.oam-table tbody tr:hover td { background: #2c2c36; }
+  table.oam-table tbody tr.row-copied td { background: var(--accent); color: #fff; }
   table.oam-table canvas {
     image-rendering: pixelated;
     image-rendering: -moz-crisp-edges;

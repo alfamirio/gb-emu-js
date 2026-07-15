@@ -12,6 +12,26 @@
    DOM refs) -> emu-gb-debug.js (loads last; runs init code that depends on both).
    ========================================================================================= */
 
+/* ---- shared: copy an address to the clipboard and briefly flash it in a tooltip/element.
+   Used by the Sprite Sheet and Sprites (OAM) tabs when a cell is clicked. ---- */
+function flashCopiedTooltip(tooltipEl, addrText) {
+  navigator.clipboard.writeText(addrText).then(() => {
+    clearTimeout(tooltipEl._copiedTimeout);
+    tooltipEl.textContent = `Copied ${addrText}!`;
+    tooltipEl.classList.add('copied');
+    tooltipEl.style.display = 'block';
+    tooltipEl._copiedTimeout = setTimeout(() => tooltipEl.classList.remove('copied'), 700);
+  }).catch(() => { /* clipboard unavailable - silently ignore */ });
+}
+
+function flashCopiedRow(rowEl, addrText) {
+  navigator.clipboard.writeText(addrText).then(() => {
+    clearTimeout(rowEl._copiedTimeout);
+    rowEl.classList.add('row-copied');
+    rowEl._copiedTimeout = setTimeout(() => rowEl.classList.remove('row-copied'), 700);
+  }).catch(() => { /* clipboard unavailable - silently ignore */ });
+}
+
 /* ---- 0. CPU registers editor refs ---- */
 const regPausedNote = document.getElementById('regPausedNote');
 const regIoReadout = document.getElementById('regIoReadout');
@@ -988,6 +1008,14 @@ tileViewerCanvas.addEventListener('mouseleave', () => {
   tileViewerTooltip.style.display = 'none';
 });
 
+// Click a cell to copy that tile's VRAM address to the clipboard.
+tileViewerCanvas.addEventListener('click', (e) => {
+  const cell = tileViewerCellAt(e.clientX, e.clientY);
+  if (!cell) return;
+  const addr = 0x8000 + cell.tile * 16;
+  flashCopiedTooltip(tileViewerTooltip, hex16(addr));
+});
+
 /* ---- 2. Tile map viewer: full 32x32 map rendered with BG palette + viewport box ---- */
 
 // Writes an opaque [r,g,b,255] pixel into an ImageData buffer at pixel index idx. Shared by
@@ -1275,6 +1303,20 @@ oamCompCanvas.addEventListener('mouseleave', () => {
   oamCompTooltip.style.display = 'none';
 });
 
+// Click a sprite to copy the VRAM address of the tile it's drawn from.
+oamCompCanvas.addEventListener('click', (e) => {
+  const W = EMU_CORE_CONFIG.SCREEN.WIDTH, H = EMU_CORE_CONFIG.SCREEN.HEIGHT;
+  const rect = oamCompCanvas.getBoundingClientRect();
+  const relX = e.clientX - rect.left, relY = e.clientY - rect.top;
+  if (relX < 0 || relY < 0 || relX >= rect.width || relY >= rect.height) return;
+  const px = Math.floor((relX / rect.width) * W), py = Math.floor((relY / rect.height) * H);
+  const hit = oamSpriteAt(px, py);
+  if (!hit) return;
+  const { idxTile } = oamSpriteGeometry(hit.index, hit.spriteHeight);
+  const addr = 0x8000 + idxTile * 16;
+  flashCopiedTooltip(oamCompTooltip, hex16(addr));
+});
+
 function drawOAMTable() {
   const ppu = emulator.ppu; // still passed through to spritePixelRGB(), which needs the ppu handle itself
   const { lcdc } = emulator.instrumentation.readPPUState();
@@ -1317,6 +1359,7 @@ function drawOAMTable() {
 
     const tr = document.createElement('tr');
     if (offscreen) tr.classList.add('offscreen');
+    tr.dataset.tileAddr = hex16(0x8000 + idxTile * 16);
     const tdThumb = document.createElement('td');
     tdThumb.appendChild(c);
     tr.appendChild(tdThumb);
@@ -1329,6 +1372,14 @@ function drawOAMTable() {
     oamTableBody.appendChild(tr);
   }
 }
+
+// Click a row (event-delegated since the table body is rebuilt every redraw) to copy that
+// sprite's tile VRAM address to the clipboard.
+oamTableBody.addEventListener('click', (e) => {
+  const tr = e.target.closest('tr');
+  if (!tr || !tr.dataset.tileAddr) return;
+  flashCopiedRow(tr, tr.dataset.tileAddr);
+});
 
 /* ---- 4. Palette viewer: BGP/OBP0/OBP1 swatches on DMG; all 8 BG + 8 OBJ palettes on CGB. ---- */
 function drawPalettes() {

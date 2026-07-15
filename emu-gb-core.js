@@ -2034,7 +2034,7 @@ class GBEmulator {
     // A PC breakpoint fires the moment execution is about to fetch the opcode at that address.
     if (instr && instr.breakpointPC !== null && this.cpu.PC === instr.breakpointPC) {
       if (instr._bpSkipFirstMatch) { instr._bpSkipFirstMatch = false; }
-      else { instr.triggerBreakpoint(`PC reached ${hex16(instr.breakpointPC)}`); return 0; }
+      else { instr.triggerBreakpoint('pc', instr.breakpointPC); return 0; }
     }
 
     const pcBefore = this.cpu.PC;
@@ -2061,7 +2061,7 @@ class GBEmulator {
     }
 
     if (instr && !wasHalted && instr.breakpointOpcode !== null && opcode === instr.breakpointOpcode) {
-      instr.triggerBreakpoint(`opcode ${hex8(instr.breakpointOpcode)} executed at ${hex16(pcBefore)}`);
+      instr.triggerBreakpoint('opcode', instr.breakpointOpcode, pcBefore);
     }
     return budgetCycles;
   }
@@ -2233,9 +2233,6 @@ class GBEmulator {
   }
 }
 
-function hex8(v) { return '0x' + v.toString(16).padStart(2, '0').toUpperCase(); }
-function hex16(v) { return '0x' + v.toString(16).padStart(4, '0').toUpperCase(); }
-
 // Cartridge title, header bytes 0x134-0x143: uppercase ASCII, NUL-padded (NUL also acts as
 // an early terminator). Shared by GBEmulator.loadROM() and app.js's pre-load ROM-info display.
 function parseROMTitle(bytes) {
@@ -2247,9 +2244,6 @@ function parseROMTitle(bytes) {
   }
   return title.trim() || 'Unknown';
 }
-
-// Interrupt bit -> name, shared by GBEmulator.requestInterrupt().
-const INTERRUPT_KIND_NAMES = ['vblank', 'stat', 'timer', 'serial', 'joypad'];
 
 // Typed arrays (VRAM, WRAM, etc.) go into save-state JSON as base64 rather than number
 // arrays — much smaller, and fast to encode/decode via the browser's atob/btoa.

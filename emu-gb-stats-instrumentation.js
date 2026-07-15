@@ -11,6 +11,16 @@
      - RafScheduler: real implementation of GBEmulator's scheduler contract
        (requestFrame/cancelFrame), using requestAnimationFrame. */
 
+// Hex formatting for disassembly text, register readouts, and log lines throughout this
+// file (and emu-gb-debug.js). Moved from emu-gb-core.js: the core has no use for
+// human-readable hex beyond building breakpoint-hit messages, which now happens here too
+// (see Instrumentation.triggerBreakpoint() below).
+function hex8(v) { return '0x' + v.toString(16).padStart(2, '0').toUpperCase(); }
+function hex16(v) { return '0x' + v.toString(16).padStart(4, '0').toUpperCase(); }
+
+// Interrupt bit -> name, used by CoreStats.recordInterrupt() below.
+const INTERRUPT_KIND_NAMES = ['vblank', 'stat', 'timer', 'serial', 'joypad'];
+
 /* CoreStats — frame/interrupt/memory-access counters for the debug UI. */
 
 class CoreStats {
@@ -448,12 +458,17 @@ class Instrumentation {
 
   // Pauses emulation and records why, so a breakpoint hit looks like pressing Pause.
   // Reaches into the emulator to stop the run loop — the one bit of control-flow a
-  // breakpoint requires.
-  triggerBreakpoint(reason) {
+  // breakpoint requires. `kind` is 'pc' (value = the PC that was reached) or 'opcode'
+  // (value = the opcode byte, extra = the PC it was fetched from); formatting the reason
+  // string here (rather than in emu-gb-core.js) keeps hex8/hex16 out of the core.
+  triggerBreakpoint(kind, value, extra) {
     const e = this.emulator;
     e._setRunning(false);
     if (e._rafId) cancelAnimationFrame(e._rafId);
     e.onAudioSuspend?.();
+    const reason = kind === 'pc'
+      ? `PC reached ${hex16(value)}`
+      : `opcode ${hex8(value)} executed at ${hex16(extra)}`;
     this.breakHitReason = reason;
     this._bpSkipFirstMatch = false;
     if (this.onBreakpointHit) this.onBreakpointHit(reason);

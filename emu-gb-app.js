@@ -2,27 +2,23 @@
    emu-gb-app.js — Application Wiring
    -----------------------------------------------------------------------------------------
    Manages the emulator UI and system integration (everything except the core and debugger).
-   
-   Key Features:
+
    - Screen canvas, input handling, and audio/speed controls.
    - ROM loading (drag-and-drop, ZIP extraction).
    - Playback mechanics (rewind, step/breakpoint controls, save states).
    - File/media export (.sav battery RAM, screenshots, audio/video clips).
 
-   Dependencies & Load Order:
-   1. emu-gb-core.js  (Required first; provides core logic and configuration)
-   2. emu-gb-app.js   (Defines UI constants read by the debugger)
-   3. emu-gb-debug.js (Safe to load last; app calls to it are deferred inside callbacks)
+   Load order: emu-gb-core.js (core logic/config) -> emu-gb-app.js (UI constants the
+   debugger reads) -> emu-gb-debug.js (safe to load last; app calls into it are deferred
+   inside callbacks).
    ========================================================================================= */
 
 // `emulator` is `let` since coreToggle below swaps it between GBEmulator (DMG) and CGBEmulator (GBC).
 const canvas = document.getElementById('screen');
 const coreToggle = document.getElementById('coreToggle'); // unchecked = GB core, checked = GBC core
 
-// Composition root: GBEmulator never constructs stats/instrumentation/scheduler itself (see
-// emu-gb-core.js) — app.js decides these should be live and injects real ones (CoreStats/
-// Instrumentation/RafScheduler, from emu-gb-stats-instrumentation.js). Audio isn't injected
-// at all — it's wired up separately below, in the audio engine section.
+// Composition root: injects live stats/instrumentation/scheduler so the core itself
+// (emu-gb-core.js) stays UI-agnostic. Audio is wired up separately below.
 function createEmulator(EmulatorClass) {
   return new EmulatorClass({
     stats: new CoreStats(),
@@ -32,9 +28,8 @@ function createEmulator(EmulatorClass) {
 }
 let emulator = createEmulator(GBEmulator);
 
-/* ---- canvas rendering: the core GBEmulator has no idea a <canvas> exists; it only produces a
-   framebuffer, exposed via emulator.getFramebuffer(). app.js owns turning that into pixels on
-   screen. ---- */
+/* ---- canvas rendering: the core only produces a framebuffer (emulator.getFramebuffer());
+   app.js turns that into pixels on screen. ---- */
 const ctx = canvas.getContext('2d');
 const imageData = ctx.createImageData(EMU_CORE_CONFIG.SCREEN.WIDTH, EMU_CORE_CONFIG.SCREEN.HEIGHT);
 let markCurrentLine = false; // debug-only "scanline mark" navbar toggle; app-side, not a core concept
@@ -59,18 +54,14 @@ function drawCurrentLineMarker() {
   ctx.restore();
 }
 
-/* ---- audio engine: mirrors the canvas rendering section above. The core APU has no idea
-   an AudioContext exists — it only produces mixed stereo samples, drained via
-   emulator.drainAudioSamples(). app.js owns turning that into actual sound, the same way it
-   owns turning the PPU framebuffer into canvas pixels via draw(). No injected backend, no
-   pull-callback contract — app.js just reads the buffer on its own schedule. ---- */
+/* ---- audio engine: mirrors the canvas rendering above. The core APU only produces mixed
+   stereo samples (emulator.drainAudioSamples()); app.js turns that into actual sound. ---- */
 let audioCtx = null;
 let masterGain = null;
 let audioNode = null; // ScriptProcessorNode feeding masterGain, pulling from the ring buffer
 
 // Lazily creates the AudioContext/GainNode/ScriptProcessorNode on first use. Must happen
-// inside a user gesture (click/drop) per browser autoplay policy, so this is only ever
-// reached from places that are (see onAudioResume below, wired from GBEmulator.start()).
+// inside a user gesture (click/drop) per browser autoplay policy.
 function ensureAudioEngine() {
   if (audioCtx) return;
   const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -91,14 +82,10 @@ function ensureAudioEngine() {
   applyGain();
 }
 
-// Pushes current master volume/mute (isMuted / soundControls.volumeSlider, wired up further
-// down) onto the GainNode. Plain UI state feeding a plain audio node — the APU never sees
-// or cares about volume/mute, exactly like it never sees canvas drawing settings.
-//
-// The slider itself stays a plain 0-100% (that's what the label shows), but it's mapped to
-// gain through a squared "audio taper" curve rather than straight-line gain = pct. Ears
-// perceive loudness roughly logarithmically, so a linear mapping crams all the useful
-// range into the bottom of the slider and makes the top end feel disproportionately loud;
+// Pushes current master volume/mute onto the GainNode. The slider is a plain 0-100%, but
+// mapped to gain through a squared curve rather than linearly: ears perceive loudness
+// roughly logarithmically, so a linear mapping crams all the useful range into the bottom
+// of the slider and makes the top end feel disproportionately loud.
 function applyGain() {
   if (!masterGain) return;
   const pct = soundControls.volumeSlider.value / APP_CONFIG.VOLUME_MAX; // 0..1, straight off the slider
@@ -106,13 +93,9 @@ function applyGain() {
   masterGain.gain.value = isMuted ? 0 : taperedGain;
 }
 
-// Wires the cross-cutting hooks the core GBEmulator (and its Instrumentation) exposes
-// (onFrame/onFpsUpdate/onBreakpointHit) onto whichever GBEmulator instance is current. Called
-// once at startup and again every time ensureEmulatorMatchesCoreToggle() swaps in a new
-// instance, so a GB<->GBC toggle mid-session doesn't silently drop debug-panel wiring. This
-// is the one place app.js decides "a frame/step/rewind/breakpoint happened, now go repaint
-// the canvas and the debug panels" — the core itself no longer knows either of those things
-// exist.
+// Wires the core's cross-cutting hooks (onFrame/onFpsUpdate/onBreakpointHit) onto whichever
+// GBEmulator instance is current. Re-run on every GB<->GBC swap so a mid-session toggle
+// doesn't drop this wiring.
 function wireEmulatorCallbacks() {
   emulator.onFrame = () => { draw(); refreshDebugTools(); };
   emulator.onFpsUpdate = (fps) => { document.getElementById('fps').textContent = fps + ' fps'; };
@@ -150,10 +133,9 @@ const btnReset = document.getElementById('btnReset');
 const btnRewind = document.getElementById('btnRewind');
 const rewindInfo = document.getElementById('rewindInfo');
 
-/* Hidden dev/debug override: lets a developer/instructor bypass the classroom guardrails
-   (play-time cap, commercial-ROM filter) below without exposing this in the UI.
-   Enable: run enableEmuDevUnlock() in the console, then reload. Disable: disableEmuDevUnlock()
-   (also reload), or clear site data. Change DEV_UNLOCK_VALUE before deploying. */
+/* Hidden dev/debug override: lets a developer bypass the guardrails below (play-time cap,
+   commercial-ROM filter) without exposing this in the UI. Enable: enableEmuDevUnlock() in
+   the console, then reload. Disable: disableEmuDevUnlock() (also reload), or clear site data. */
 const DEV_UNLOCK_KEY = 'emuDevUnlock';
 const DEV_UNLOCK_VALUE = 'you shall not pass!';
 function isDevUnlocked() {
@@ -181,9 +163,8 @@ function disableEmuDevUnlock() {
   }
 }
 
-/* Play-time guardrail: caps continuous emulator runtime so this stays a debugging/classroom
-   tool rather than a way to play through games. PLAY_TIME_GUARDRAIL is the master switch
-   (forced off when isDevUnlocked()). Thresholds are fractions of PLAY_TIME_TOTAL_LIMIT. */
+// Play-time guardrail: caps continuous emulator runtime so this stays a debugging tool
+// rather than a way to play through games. Thresholds are fractions of TOTAL_LIMIT.
 const PLAY_TIME_GUARDRAIL = isDevUnlocked() ? false : true; // master switch
 const PLAY_TIME_BASE_UNIT = 60; // seconds per unit; set to 1 for fast manual testing
 const PLAY_TIME_TOTAL_LIMIT = 20 * PLAY_TIME_BASE_UNIT; // hard cap
@@ -194,15 +175,14 @@ const PLAY_TIME_LIMIT_CONFIG = {
   WARNING_ALERT: 0.8 * PLAY_TIME_TOTAL_LIMIT,  // one-time alert() threshold
 };
 
-/* Play-time timer (badge next to the "Load ROM" title): tracks wall-clock time the current
-   ROM has spent actually running. Resets on new ROM load / Reset. Polled rather than hooked
-   into every play/pause/step call site, so it stays correct regardless of how playback
-   was started/stopped and survives the GB/GBC core swap. */
+// Play-time timer (badge next to "Load ROM"): wall-clock time the current ROM has been
+// running. Resets on new ROM load / Reset. Polled so it stays correct regardless of how
+// playback was started/stopped.
 const playTimeLabel = document.getElementById('playTime');
 let playTimeSeconds = 0;
-let playTimeLastTick = null; // performance.now() at the last tick emulator was running, or null if not running
-let playTimeWarningShown = false; // guards the WARNING_ALERT_MINUTES alert() to fire only once per run
-let playTimeLimitReached = false; // guards location.reload() so it's only requested once
+let playTimeLastTick = null; // performance.now() at last tick while running, else null
+let playTimeWarningShown = false; // fires the WARNING_ALERT alert() only once per run
+let playTimeLimitReached = false; // guards location.reload() to fire only once
 
 function formatPlayTime(totalSeconds) {
   const s = Math.floor(totalSeconds);
@@ -276,11 +256,10 @@ const APP_CONFIG = {
   SCREENSHOT_WEBP_QUALITY: 0.80,      // canvas.toBlob() quality for the screenshot feature
   RECORDING_TIMER_LABEL_INTERVAL_MS: 500, // how often the video/audio recording timer label updates
   VIDEO_CAPTURE_FPS: 30,              // frame rate requested from canvas.captureStream() for clips
-  // Codec preference order for gameplay clips: tried in order, first one the browser's
-  // MediaRecorder actually supports wins. vp9 preferred over vp8 for better quality/size.
+  // Codec preference for gameplay clips, tried in order (vp9 preferred over vp8).
   VIDEO_MIME_CANDIDATES: ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'],
-  // Codec preference order for standalone audio export: Ogg/Opus preferred (a "real"
-  // standalone .opus file) over WebM/Opus (still Opus audio, just a different container).
+  // Codec preference for standalone audio export: Ogg/Opus (a "real" .opus file)
+  // preferred over WebM/Opus (same audio codec, different container).
   AUDIO_MIME_CANDIDATES: ['audio/ogg;codecs=opus', 'audio/webm;codecs=opus'],
   VIDEO_BITRATE_KBPS: 200,           // target bitrate for gameplay clip recording (video track)
   CLIP_AUDIO_BITRATE_KBPS: 32,       // target bitrate for the audio track inside a gameplay clip
@@ -335,10 +314,10 @@ coreToggle.addEventListener('change', applyCoreToggle);
 // Bloom filter used to exclude commercial games.
 class BloomFilter {
     constructor(arrayBuffer) {
-        // Read the 5-byte header, then the bit array.
+        // Header: 4-byte bit-array size (m) + 1-byte hash count (k), then the bit array.
         const dataView = new DataView(arrayBuffer, 0, 5);
-        this.m = dataView.getUint32(0, true); // M_BITS
-        this.k = dataView.getUint8(4);        // K_FUNCTIONS
+        this.m = dataView.getUint32(0, true);
+        this.k = dataView.getUint8(4);
 
         this.bitArray = new Uint8Array(arrayBuffer, 5);
 
@@ -352,11 +331,11 @@ class BloomFilter {
             hash ^= salted.charCodeAt(j);
             hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
         }
-        return Math.abs(hash) % this.m; // Dynamically uses loaded 'm'
+        return Math.abs(hash) % this.m;
     }
 
     isCommercial(crc32) {
-        for (let i = 0; i < this.k; i++) { // Dynamically uses loaded 'k'
+        for (let i = 0; i < this.k; i++) {
             const bitPosition = this._hash(crc32, i);
             const byteIndex = Math.floor(bitPosition / 8);
             const bitIndex = bitPosition % 8;
@@ -370,11 +349,8 @@ class BloomFilter {
 }
 
 /* No-Intro commercial-ROM bloom filter: blocks ROMs matching a prebuilt No-Intro bloom filter
-   (from bloom_filter_builder.html), keeping this limited to homebrew/non-commercial ROMs.
-   Separate GB and GBC filters are checked regardless of core (coreToggle forces a core
-   independently of the ROM's own header), so a match on either blocks the ROM.
-
-   GAME_FILTER_ENABLED is the master switch (forced off when isDevUnlocked()).
+   (from bloom_filter_builder.html), keeping this limited to homebrew/non-commercial ROMs. Both
+   GB and GBC filters are checked regardless of core, so a match on either blocks the ROM.
    GAME_FILTER_URLS points at the .js file downloaded from bloom_filter_builder.html, fetched
    once at startup. If missing/unparsable, the check is silently skipped for that core. */
 
@@ -449,9 +425,8 @@ function getCartRAMByteSize(bytes) {
   return RAM_SIZES[bytes[0x149]] || 0;
 }
 
-// The header's CGB flag (0x143) says whether a ROM requires GBC hardware (0xC0) or merely
-// takes advantage of it (0x80). The GB/GBC toggle overrides this, so these warn on conflicts
-// and otherwise note which core is actually running the ROM.
+// Header's CGB flag (0x143): 0xC0 requires GBC hardware, 0x80 merely takes advantage of it.
+// The GB/GBC toggle overrides this, so these warn on conflicts and note which core is running.
 function getGBCCompatibilityWarning(bytes) {
   const flag = bytes[0x143];
   if (flag === 0xC0 && !coreToggle.checked) {
@@ -631,7 +606,7 @@ async function loadROMBytes(bytes) {
   resetPlayTime();
 }
 
-/* Zipped ROM support: minimal dependency-free ZIP reader. Walks the central directory to find
+/* Zipped ROM support: minimal dependency-free ZIP reader. Walks the central directory for
    .gb/.gbc/.bin entries, then extracts via the local file header. Stored entries used as-is;
    deflated entries go through DecompressionStream. Encrypted/zip64 archives aren't supported. */
 const ROM_IN_ZIP_RE = /\.(gb|gbc|bin)$/i;
@@ -735,8 +710,8 @@ btnPause.addEventListener('click', () => {
   refreshDebugTools();
 });
 // Shared by Reset and .sav import: reboots the emulator on the loaded ROM. loadROM()
-// reinitializes CPU/PPU/banking/RTC state but doesn't touch cartRAM, so writing new bytes
-// into cartRAM first and then calling this is safe and mirrors power-cycling real hardware.
+// reinitializes CPU/PPU/banking/RTC state but leaves cartRAM untouched, mirroring a
+// power-cycle on real hardware.
 function resetEmulator(statusMsg) {
   if (!lastROMBytes) return;
   emulator.loadROM(lastROMBytes);
@@ -775,10 +750,8 @@ btnRewind.addEventListener('click', () => {
   updateRewindButton();
 });
 
-/* ---- step / breakpoint debugger ----
-   Each of these calls a stepping method that now fires the emulator's onFrame hook itself
-   (wired in wireEmulatorCallbacks() to draw()+refreshDebugTools()), so no explicit
-   refreshDebugTools() call is needed here anymore — just the click-specific status text. */
+/* ---- step / breakpoint debugger: each stepping method fires the emulator's onFrame hook
+   itself (wired in wireEmulatorCallbacks()), so only click-specific status text is needed here. ---- */
 btnStep.addEventListener('click', () => {
   emulator.stepOne();
   btnPause.textContent = '▶ Start';
@@ -889,7 +862,7 @@ window.addEventListener('keyup', (e) => { const m = KEY_MAP[e.key]; if (m) { emu
      - ] / "Load" button  -> quick-loads the most recent slot
      - clicking a sidebar card -> loads that specific slot
      - Export/Import .json -> moves a single snapshot in or out as a file
-   ================================================================================================= */
+   =============================================================================================== */
 
 const MAX_SLOTS = APP_CONFIG.MAX_SAVE_SLOTS;
 
@@ -1186,10 +1159,10 @@ btnScreenshot.addEventListener('click', () => {
   }, 'image/webp', APP_CONFIG.SCREENSHOT_WEBP_QUALITY);
 });
 
-// Generic MediaRecorder-based capture session: shared by gameplay-clip and audio-only
-// export below, which only differ in which mime candidates/tracks/bitrates/status text they
-// use. `buildStream` does the recording-specific track setup and returns null (after its own
-// alert) if it can't proceed; `cleanup` undoes whatever `buildStream` connected/opened.
+// Generic MediaRecorder-based capture session, shared by gameplay-clip and audio-only export
+// below (they only differ in mime candidates/tracks/bitrates/status text). `buildStream` does
+// the recording-specific track setup and returns null (after its own alert) if it can't
+// proceed; `cleanup` undoes whatever `buildStream` connected/opened.
 function createCaptureRecorder({
   mimeCandidates, unsupportedMsg, noCodecMsg, buildStream, recorderOptions, filename, savedMsg,
   timerLabel, button, idleLabel, recordingLabel,
@@ -1287,9 +1260,8 @@ const clipRecorderCtl = createCaptureRecorder({
   recordingLabel: '⏹ Video',
 });
 
-/* ---- audio-only export (Opus) ----
-   Taps the same masterGain node feeding the speakers, so mixed/muted channels
-   are reflected automatically. Prefers Ogg/Opus, falls back to WebM/Opus. */
+/* ---- audio-only export (Opus): taps the same masterGain node feeding the speakers, so
+   mixed/muted channels are reflected automatically. Prefers Ogg/Opus, falls back to WebM/Opus. ---- */
 function audioFileExtension(mimeType) {
   return mimeType.startsWith('audio/ogg') ? 'opus' : 'weba'; // WebM-container Opus audio; .weba avoids implying a video file
 }

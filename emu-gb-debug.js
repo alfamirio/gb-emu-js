@@ -3,16 +3,13 @@
    -----------------------------------------------------------------------------------------
    Manages all inspector and visualization panels.
 
-   Key Features:
    - Editable CPU registers/flags panel (writes directly to CPU state while paused).
    - Graphics viewers (VRAM tiles, tile maps, layers, sprites, palettes).
    - Audio/System metrics (oscilloscope, scanline timeline, execution trace, stack/interrupts).
    - UI controls (disassembler, tab switching, display toggles, refresh orchestration).
 
-   Dependencies & Load Order:
-   1. emu-gb-core.js  (Provides core logic and types)
-   2. emu-gb-app.js   (Provides UI configuration, app state, and core DOM references)
-   3. emu-gb-debug.js (Must load last; immediately executes initialization code using app constants)
+   Load order: emu-gb-core.js (core logic/types) -> emu-gb-app.js (UI config, app state, core
+   DOM refs) -> emu-gb-debug.js (loads last; runs init code that depends on both).
    ========================================================================================= */
 
 /* ---- 0. CPU registers editor refs ---- */
@@ -848,9 +845,9 @@ if (typeof savedUIConfig.dotMatrix === 'boolean') dotMatrixToggle.checked = save
 
 dotMatrixToggle.addEventListener('change', applyDotMatrix);
 
-/* ---- hidden click-combo for enableEmuDevUnlock(): click the navbar badge 23 times while
-   layerTint + dotMatrix are on and model is set to GB. Sets the same localStorage flag as
-   the console path; requires a page reload to take effect. ---- */
+/* ---- hidden click-combo for enableEmuDevUnlock(): click the navbar badge 13 times while
+   dotMatrix is on and model is set to GB. Sets the same localStorage flag as the console
+   path; requires a page reload to take effect. ---- */
 const navTitle = document.getElementById('navTitle');
 const DEV_UNLOCK_CLICKS_NEEDED = 13;
 let devUnlockClickCount = 0;
@@ -904,11 +901,6 @@ const applyFrameActivityVisibility = makePanelVisToggle(
   'frameActivityVisToggle', 'frameActivityVisLabel', 'hide-frame-activity', 'showFrameActivity',
   () => { drawFrameActivity(); drawFrameAnatomy(); drawLineAnatomy(); }
 );
-
-/* ---- CGB-aware color helpers now live on emulator.instrumentation (isCGBRun/
-   bgWindowPixelRGB/spritePixelRGB/spriteRowColorIndex) — see emu-gb-stats-instrumentation.js. */
-
-// (raw VRAM bank access now goes through emulator.instrumentation.readVRAM())
 
 /* ---- 1. VRAM tile viewer: every tile in a VRAM bank, raw, greyscale (no palette applied).
    CGB has two 384-tile banks; a bank selector below (CGB ROMs only) picks which is shown. ---- */
@@ -1586,10 +1578,8 @@ function rtcClamp(v, lo, hi) {
   return Math.min(hi, Math.max(lo, n));
 }
 
-// (relatching the live counters into the latched snapshot now goes through
-// emulator.instrumentation.latchRTCNow())
-
-// Clock correction: offsets some games apply on top of raw RTC (e.g. Pokémon G/S/C). Added when the clock is set; persisted per save file.
+// Clock correction: offsets some games apply on top of raw RTC (e.g. Pokémon G/S/C).
+// Added when the clock is set; persisted per save file.
 const rtcCorrectionStore = makePersistedConfig('jsgb-config:rtc-correction', { h: 0, m: 0 });
 function loadRtcCorrection() { return rtcCorrectionStore.load(); }
 function saveRtcCorrection(partial) { rtcCorrectionStore.save(partial); }

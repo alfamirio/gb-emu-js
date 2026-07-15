@@ -367,18 +367,12 @@ class CGBPPU extends PPU {
 
   _renderBackgroundLine(y, bgPriority) {
     const tileMapBase = (this.lcdc & 0x08) ? 0x9C00 : 0x9800;
-    const tint = this.emulator.layerTint;
     for (let x = 0; x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
       const bgX = (x + this.scx) & 0xFF, bgY = (y + this.scy) & 0xFF;
       const { colorIndex, paletteNum, priority } = this.getBGWindowPixel(tileMapBase, bgX, bgY);
       bgPriority[x] = (colorIndex !== 0 ? 1 : 0) | (priority ? 2 : 0);
       const [r, g, b] = this.mmu.getPaletteRGB(false, paletteNum, colorIndex);
-      if (tint) {
-        const [tr, tg, tb] = this._tintForLayer(r, g, b, 'bg');
-        this._setPixel(x, y, tr, tg, tb);
-      } else {
-        this._setPixel(x, y, r, g, b);
-      }
+      this._plotTintedPixel(x, y, r, g, b, 'bg');
     }
   }
 
@@ -389,18 +383,12 @@ class CGBPPU extends PPU {
     const tileMapBase = (this.lcdc & 0x40) ? 0x9C00 : 0x9800;
     const winY = this.windowLineCounter;
     let drewAny = false;
-    const tint = this.emulator.layerTint;
 
     for (let x = Math.max(wx, 0); x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
       const { colorIndex, paletteNum, priority } = this.getBGWindowPixel(tileMapBase, x - wx, winY);
       bgPriority[x] = (colorIndex !== 0 ? 1 : 0) | (priority ? 2 : 0);
       const [r, g, b] = this.mmu.getPaletteRGB(false, paletteNum, colorIndex);
-      if (tint) {
-        const [tr, tg, tb] = this._tintForLayer(r, g, b, 'window');
-        this._setPixel(x, y, tr, tg, tb);
-      } else {
-        this._setPixel(x, y, r, g, b);
-      }
+      this._plotTintedPixel(x, y, r, g, b, 'window');
       drewAny = true;
     }
     if (drewAny) this.windowLineCounter++;
@@ -438,7 +426,6 @@ class CGBPPU extends PPU {
 
     // LCDC.0 master priority: when clear, sprites always draw on top.
     const masterPriority = !!(this.lcdc & 0x01);
-    const tint = this.emulator.layerTint;
 
     for (const s of candidates) {
       if (s.spriteX <= -8 || s.spriteX >= EMU_CORE_CONFIG.SCREEN.WIDTH) continue;
@@ -459,12 +446,7 @@ class CGBPPU extends PPU {
           if ((behindBG || bgHasPriority) && bgHasColor) continue;
         }
         const [r, g, b] = this.mmu.getPaletteRGB(true, paletteNum, colorNum);
-        if (tint) {
-          const [tr, tg, tb] = this._tintForLayer(r, g, b, 'sprite');
-          this._setPixel(sx, y, tr, tg, tb);
-        } else {
-          this._setPixel(sx, y, r, g, b);
-        }
+        this._plotTintedPixel(sx, y, r, g, b, 'sprite');
       }
     }
   }

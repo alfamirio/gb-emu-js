@@ -1121,17 +1121,11 @@ class PPU {
   }
 
   _renderBackgroundLine(y, bgPriority) {
-    const tint = this.emulator.layerTint;
     for (let x = 0; x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
       const colorNum = this._getBackgroundColorIndex(x, y);
       bgPriority[x] = colorNum;
       const shade = this.applyPalette(colorNum, this.bgp);
-      if (tint) {
-        const [r, g, b] = this._tintForLayer(shade[0], shade[1], shade[2], 'bg');
-        this._setPixel(x, y, r, g, b);
-      } else {
-        this._setPixel(x, y, shade[0], shade[1], shade[2]);
-      }
+      this._plotTintedPixel(x, y, shade[0], shade[1], shade[2], 'bg');
     }
   }
 
@@ -1141,18 +1135,12 @@ class PPU {
     if (wx > EMU_CORE_CONFIG.SCREEN.WIDTH - 1) return;
     const winY = this.windowLineCounter;
     let drewAny = false;
-    const tint = this.emulator.layerTint;
 
     for (let x = Math.max(wx, 0); x < EMU_CORE_CONFIG.SCREEN.WIDTH; x++) {
       const colorNum = this._getWindowColorIndex(x - wx, winY);
       bgPriority[x] = colorNum;
       const shade = this.applyPalette(colorNum, this.bgp);
-      if (tint) {
-        const [r, g, b] = this._tintForLayer(shade[0], shade[1], shade[2], 'window');
-        this._setPixel(x, y, r, g, b);
-      } else {
-        this._setPixel(x, y, shade[0], shade[1], shade[2]);
-      }
+      this._plotTintedPixel(x, y, shade[0], shade[1], shade[2], 'window');
       drewAny = true;
     }
     if (drewAny) this.windowLineCounter++;
@@ -1164,8 +1152,6 @@ class PPU {
     const candidates = this.getSpriteCandidatesForLine(y, spriteHeight);
 
     this.emulator.stats?.recordSprites(y, candidates.length);
-
-    const tint = this.emulator.layerTint;
 
     for (const s of candidates) {
       if (s.spriteX <= -8 || s.spriteX >= EMU_CORE_CONFIG.SCREEN.WIDTH) continue;
@@ -1180,12 +1166,7 @@ class PPU {
         if (colorNum === 0) continue; // color 0 is always transparent for sprites
         if (behindBG && bgPriority[sx] !== 0) continue;
         const shade = this.applyPalette(colorNum, palette);
-        if (tint) {
-          const [r, g, b] = this._tintForLayer(shade[0], shade[1], shade[2], 'sprite');
-          this._setPixel(sx, y, r, g, b);
-        } else {
-          this._setPixel(sx, y, shade[0], shade[1], shade[2]);
-        }
+        this._plotTintedPixel(sx, y, shade[0], shade[1], shade[2], 'sprite');
       }
     }
   }
@@ -1196,6 +1177,17 @@ class PPU {
   _tintForLayer(r, g, b, layer) {
     return tintForLayer(this.emulator, r, g, b, layer);
   }
+
+  // Shared by background/window/sprite line renderers: applies the debug layer-tint (if
+  // active) before plotting, otherwise plots [r,g,b] as-is. Also used by CGBPPU, which
+  // inherits this unchanged.
+  _plotTintedPixel(x, y, r, g, b, layer) {
+    if (this.emulator.layerTint) {
+      [r, g, b] = this._tintForLayer(r, g, b, layer);
+    }
+    this._setPixel(x, y, r, g, b);
+  }
+
   toSigned8(v) { return toSigned8(v); }
   _setPixel(x, y, r, g, b) { setFramebufferPixel(this.framebuffer, x, y, r, g, b); }
 }
@@ -1922,13 +1914,7 @@ class GBEmulator {
     this.rewindBuffer = [];
     this.rewindFrameAcc = 0;
 
-    let title = '';
-    for (let i = 0x134; i < 0x144; i++) {
-      const c = bytes[i];
-      if (c === 0) break;
-      if (c >= 32 && c < 127) title += String.fromCharCode(c);
-    }
-    this.romTitle = title.trim() || 'Unknown';
+    this.romTitle = parseROMTitle(bytes);
   }
 
   /* ---- save state ----
@@ -2171,6 +2157,18 @@ class GBEmulator {
 
 function hex8(v) { return '0x' + v.toString(16).padStart(2, '0').toUpperCase(); }
 function hex16(v) { return '0x' + v.toString(16).padStart(4, '0').toUpperCase(); }
+
+// Cartridge title, header bytes 0x134-0x143: uppercase ASCII, NUL-padded (NUL also acts as
+// an early terminator). Shared by GBEmulator.loadROM() and app.js's pre-load ROM-info display.
+function parseROMTitle(bytes) {
+  let title = '';
+  for (let i = 0x134; i < 0x144; i++) {
+    const c = bytes[i];
+    if (c === 0) break;
+    if (c >= 32 && c < 127) title += String.fromCharCode(c);
+  }
+  return title.trim() || 'Unknown';
+}
 
 // Interrupt bit -> name, shared by GBEmulator.requestInterrupt().
 const INTERRUPT_KIND_NAMES = ['vblank', 'stat', 'timer', 'serial', 'joypad'];

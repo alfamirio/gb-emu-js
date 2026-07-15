@@ -399,15 +399,7 @@ if (GAME_FILTER_ENABLED) {
 }
 
 
-function getROMTitle(bytes) {
-  let title = '';
-  for (let i = 0x134; i < 0x144; i++) {
-    const c = bytes[i];
-    if (c === 0) break;
-    if (c >= 32 && c < 127) title += String.fromCharCode(c);
-  }
-  return title.trim() || 'Unknown';
-}
+function getROMTitle(bytes) { return parseROMTitle(bytes); } // parseROMTitle: emu-gb-core.js
 // All officially-assigned cartridge type bytes (header offset 0x147).
 const CART_TYPE_NAMES = {
   0x00: 'ROM ONLY', 0x01: 'MBC1', 0x02: 'MBC1+RAM', 0x03: 'MBC1+RAM+BATTERY',
@@ -1073,15 +1065,7 @@ btnExportState.addEventListener('click', () => {
   try {
     const state = emulator.getSaveState();
     const blob = new Blob([JSON.stringify(state)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const safeName = (emulator.romTitle || 'rom').replace(/[^a-z0-9_-]+/gi, '_');
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${safeName}.savestate.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    downloadBlob(blob, `${safeRomName()}.savestate.json`);
   } catch (e) {
     alert('Could not export state: ' + e.message);
   }

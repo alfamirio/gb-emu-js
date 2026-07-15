@@ -913,6 +913,15 @@ const applyFrameActivityVisibility = makePanelVisToggle(
 /* ---- 1. VRAM tile viewer: every tile in a VRAM bank, raw, greyscale (no palette applied).
    CGB has two 384-tile banks; a bank selector below (CGB ROMs only) picks which is shown. ---- */
 let tileViewerBank = 0;
+// Decodes one pixel of a GB tile row into a palette-agnostic grayscale shade (0->white,
+// 3->black). Shared by the Sprite Sheet viewer and the Tile Inspector, which both render
+// raw 2bpp tile data without a real BG/OBJ palette applied.
+function tileRowGrayShade(lo, hi, px) {
+  const bit = 7 - px;
+  const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
+  return 255 - colorNum * 85;
+}
+
 function drawTileViewer() {
   const cgb = emulator.instrumentation.isCGBRun();
   tvBankRow.style.display = cgb ? 'inline' : 'none';
@@ -931,9 +940,7 @@ function drawTileViewer() {
     for (let py = 0; py < 8; py++) {
       const lo = vram[base + py * 2], hi = vram[base + py * 2 + 1];
       for (let px = 0; px < 8; px++) {
-        const bit = 7 - px;
-        const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
-        const shade = 255 - colorNum * 85; // 0->white .. 3->black, palette-agnostic
+        const shade = tileRowGrayShade(lo, hi, px);
         // Supersample: each source pixel becomes a TV_SCALE x TV_SCALE block.
         for (let sy = 0; sy < TV_SCALE; sy++) {
           for (let sx = 0; sx < TV_SCALE; sx++) {
@@ -1038,9 +1045,7 @@ function drawTileInspector() {
     const lo = instr.peekByte((tileInspectAddr + py * 2) & 0xFFFF);
     const hi = instr.peekByte((tileInspectAddr + py * 2 + 1) & 0xFFFF);
     for (let px = 0; px < 8; px++) {
-      const bit = 7 - px;
-      const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
-      const shade = 255 - colorNum * 85; // greyscale, same as the Sprite Sheet tab
+      const shade = tileRowGrayShade(lo, hi, px);
       const idx = (py * 8 + px) * 4;
       data[idx] = shade; data[idx + 1] = shade; data[idx + 2] = shade; data[idx + 3] = 255;
     }
@@ -2237,15 +2242,7 @@ btnExportTrace.addEventListener('click', () => {
   try {
     const text = buildTraceExportText();
     const blob = new Blob([text], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const safeName = (emulator.romTitle || 'rom').replace(/[^a-z0-9_-]+/gi, '_');
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${safeName}.trace.txt`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    downloadBlob(blob, `${safeRomName()}.trace.txt`); // downloadBlob/safeRomName defined in emu-gb-app.js, loaded first
   } catch (e) {
     alert('Could not export trace: ' + e.message);
   }

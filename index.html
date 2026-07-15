@@ -578,7 +578,21 @@
     border: 1px solid #333;
     border-radius: 4px;
     display: block;
+    cursor: crosshair;
+    touch-action: none;
   }
+  .tileinspect-palette-row { margin-bottom: 10px; }
+  .tileinspect-palette-label { font-size: 0.72rem; color: #999; }
+  .tileinspect-swatch {
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    border: 2px solid #444;
+    padding: 0;
+    cursor: pointer;
+  }
+  .tileinspect-swatch:hover { border-color: #777; }
+  .tileinspect-swatch.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .tileinspect-bytes {
     margin-top: 10px;
     font-family: 'Consolas', monospace;
@@ -586,6 +600,33 @@
     color: #999;
     word-break: break-all;
   }
+  .tileinspect-range, .tileinspect-bytes-val {
+    cursor: pointer;
+    border-radius: 3px;
+    padding: 2px 4px;
+    margin: -2px -4px;
+    transition: background .15s, color .15s;
+  }
+  .tileinspect-range:hover, .tileinspect-bytes-val:hover { background: #2c2c36; color: #eee; }
+  .tileinspect-range.copied, .tileinspect-bytes-val.copied {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .tileinspect-write-row { margin-top: 10px; margin-bottom: 0; }
+  .tileinspect-bytes-input {
+    flex: 1;
+    min-width: 0;
+    font-family: 'Consolas', monospace;
+    font-size: 0.78rem;
+  }
+  .tileinspect-paste-status {
+    margin-top: 6px;
+    font-size: 0.72rem;
+    min-height: 1.1em;
+  }
+  .tileinspect-paste-status.ok { color: #6fcf7c; }
+  .tileinspect-paste-status.err { color: #e8794b; }
   table.oam-table { border-collapse: collapse; width: 100%; font-family: 'Consolas', monospace; font-size: 0.72rem; }
   table.oam-table th {
     text-align: left;
@@ -1781,20 +1822,35 @@
 
     <div class="tool-panel hidden" id="panel-tileinspect">
       <p class="tool-desc">
-        Type any 16-bit address and decode the 16 bytes there as a single 8&times;8 2bpp tile -
-        raw/grayscale, palette-agnostic on both GB and GBC, same decoding as the Sprite Sheet
-        tab. Not limited to VRAM: point it at ROM or WRAM to preview graphics data before it's
-        ever copied to VRAM. On GBC, a VRAM address reads whichever of the two banks is
-        currently switched in via VBK.
+        Decode 16 bytes at any address as an 8&times;8 tile, on VRAM, ROM, or WRAM. Paste an
+        address from the clipboard, paint or type bytes to edit it, then click to copy the
+        address or bytes.
       </p>
       <div class="tileinspect-row">
         <button type="button" class="ui-btn small ghost" id="tileInspectPrev" title="Previous tile (address - 16)">◀ Prev</button>
         <input type="text" id="tileInspectAddr" class="ramedit-jump tileinspect-addr" placeholder="0x8000" spellcheck="false">
         <button type="button" class="ui-btn small" id="tileInspectGo">Go</button>
         <button type="button" class="ui-btn small ghost" id="tileInspectNext" title="Next tile (address + 16)">Next ▶</button>
+        <button type="button" class="ui-btn small ghost" id="tileInspectPasteAddr" title="Paste an address from the clipboard and jump to it">📋 Paste addr</button>
       </div>
-      <canvas id="tileInspectCanvas" width="128" height="128"></canvas>
-      <div class="tileinspect-bytes" id="tileInspectBytes"></div>
+      <div class="tileinspect-row tileinspect-palette-row">
+        <span class="tileinspect-palette-label">Draw:</span>
+        <button type="button" class="tileinspect-swatch" data-color="0" style="background:#fff" title="White (00)"></button>
+        <button type="button" class="tileinspect-swatch" data-color="1" style="background:#aaa" title="Light gray (01)"></button>
+        <button type="button" class="tileinspect-swatch" data-color="2" style="background:#555" title="Dark gray (10)"></button>
+        <button type="button" class="tileinspect-swatch active" data-color="3" style="background:#000" title="Black (11)"></button>
+        <button type="button" class="ui-btn small ghost" id="tileInspectClear" title="Fill this tile with white (00) - ready to draw a new one">Clear Tile</button>
+      </div>
+      <canvas id="tileInspectCanvas" width="128" height="128" title="Click or drag to paint pixels with the selected color"></canvas>
+      <div class="tileinspect-bytes" id="tileInspectBytes">
+        <span class="tileinspect-range" id="tileInspectRangeEl" title="Click to copy the start address"></span>:
+        <span class="tileinspect-bytes-val" id="tileInspectBytesValEl" title="Click to copy these 16 bytes"></span>
+      </div>
+      <div class="tileinspect-row tileinspect-write-row">
+        <input type="text" id="tileInspectBytesInput" class="ramedit-jump tileinspect-bytes-input" placeholder="3C 7E 42 42 7E 5E 7E 0A 7C 56 38 7C 7E 56 38 00" spellcheck="false">
+        <button type="button" class="ui-btn small" id="tileInspectWrite">Write Tile</button>
+      </div>
+      <div class="tileinspect-paste-status" id="tileInspectPasteStatus"></div>
     </div>
 
     <div class="tool-panel hidden" id="panel-oam">

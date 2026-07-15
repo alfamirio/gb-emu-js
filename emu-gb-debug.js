@@ -32,6 +32,23 @@ function flashCopiedRow(rowEl, addrText) {
   }).catch(() => { /* clipboard unavailable - silently ignore */ });
 }
 
+// Copies `text` and swaps el's own displayed text to "Copied!" briefly. Sets dataset.copied
+// while flashing so a caller that periodically repaints el's textContent (e.g. a live-refreshing
+// panel) can skip that repaint and avoid stomping on the flash. Used by the Inspector tab's
+// clickable address-range and byte-values readouts.
+function flashCopiedInline(el, text) {
+  navigator.clipboard.writeText(text).then(() => {
+    clearTimeout(el._copiedTimeout);
+    el.dataset.copied = '1';
+    el.textContent = 'Copied!';
+    el.classList.add('copied');
+    el._copiedTimeout = setTimeout(() => {
+      delete el.dataset.copied;
+      el.classList.remove('copied');
+    }, 700);
+  }).catch(() => { /* clipboard unavailable - silently ignore */ });
+}
+
 /* ---- 0. CPU registers editor refs ---- */
 const regPausedNote = document.getElementById('regPausedNote');
 const regIoReadout = document.getElementById('regIoReadout');
@@ -85,10 +102,18 @@ tileInspectSrcCanvas.width = 8; tileInspectSrcCanvas.height = 8;
 const tileInspectSrcCtx = tileInspectSrcCanvas.getContext('2d');
 const tileInspectImageData = tileInspectSrcCtx.createImageData(8, 8);
 const tileInspectAddrInput = document.getElementById('tileInspectAddr');
-const tileInspectBytesEl = document.getElementById('tileInspectBytes');
+const tileInspectRangeEl = document.getElementById('tileInspectRangeEl');
+const tileInspectBytesValEl = document.getElementById('tileInspectBytesValEl');
 const tileInspectPrevBtn = document.getElementById('tileInspectPrev');
 const tileInspectNextBtn = document.getElementById('tileInspectNext');
 const tileInspectGoBtn = document.getElementById('tileInspectGo');
+const tileInspectPasteAddrBtn = document.getElementById('tileInspectPasteAddr');
+const tileInspectBytesInput = document.getElementById('tileInspectBytesInput');
+const tileInspectWriteBtn = document.getElementById('tileInspectWrite');
+const tileInspectPasteStatus = document.getElementById('tileInspectPasteStatus');
+const tileInspectSwatches = Array.from(document.querySelectorAll('.tileinspect-swatch'));
+const tileInspectClearBtn = document.getElementById('tileInspectClear');
+let tileInspectDrawColor = 3; // 2bpp color index 0-3; matches the swatch marked "active" in HTML
 let tileInspectAddr = 0x8000; // default: start of tile data table 0
 
 /* ---- 3. OAM / sprite inspector refs ---- */
@@ -726,6 +751,7 @@ function setupTabGroup(container) {
         syncAccessTracking(btn.dataset.tool);
       }
       if (btn.dataset.tool === 'rtc') syncRtcInputsFromLive(); // fresh "Set clock" defaults each time the tab is opened
+      if (btn.dataset.tool === 'tileinspect') autoPasteTileInspectAddrFromClipboard();
       refreshDebugTools();
     });
   });
@@ -833,7 +859,8 @@ function setScanlineMarkToggleLocked(running) {
 setScanlineMarkToggleLocked(emulator.running);
 emulator.onRunStateChange = setScanlineMarkToggleLocked;
 
-/* ---- navbar toggle: tint each PPU layer (BG/window/sprites) so overlaps are easy to tell apart ---- */
+/* ---- navbar toggle: tint each PPU layer (BG/window/sprites) so overlaps are easy to tell apart.
+   Not persisted; always starts off on load. ---- */
 const layerTintToggle = document.getElementById('layerTintToggle');
 const layerTintLabelOn = document.getElementById('layerTintLabelOn');
 
@@ -841,12 +868,9 @@ function applyLayerTint() {
   const on = layerTintToggle.checked;
   emulator.layerTint = on;
   layerTintLabelOn.classList.toggle('active', on);
-  saveUIConfig({ layerTint: on });
   // Repaint immediately so toggling is visible even while paused/no frame is running.
   if (emulator.hasROM()) draw();
 }
-
-if (typeof savedUIConfig.layerTint === 'boolean') layerTintToggle.checked = savedUIConfig.layerTint;
 
 layerTintToggle.addEventListener('change', applyLayerTint);
 
@@ -1081,7 +1105,12 @@ function drawTileInspector() {
 
   const bytes = [];
   for (let i = 0; i < 16; i++) bytes.push(hex8(instr.peekByte((tileInspectAddr + i) & 0xFFFF)).slice(2));
-  tileInspectBytesEl.textContent = `${hex16(tileInspectAddr)}\u2013${hex16((tileInspectAddr + 15) & 0xFFFF)}:  ${bytes.join(' ')}`;
+  if (!tileInspectRangeEl.dataset.copied) {
+    tileInspectRangeEl.textContent = `${hex16(tileInspectAddr)}\u2013${hex16((tileInspectAddr + 15) & 0xFFFF)}`;
+  }
+  if (!tileInspectBytesValEl.dataset.copied) {
+    tileInspectBytesValEl.textContent = bytes.join(' ');
+  }
 }
 
 function setTileInspectAddr(addr) {
@@ -1102,6 +1131,173 @@ tileInspectGoBtn.addEventListener('click', commitTileInspectAddr);
 tileInspectAddrInput.addEventListener('keydown', e => { if (e.key === 'Enter') commitTileInspectAddr(); });
 tileInspectPrevBtn.addEventListener('click', () => setTileInspectAddr(tileInspectAddr - 16));
 tileInspectNextBtn.addEventListener('click', () => setTileInspectAddr(tileInspectAddr + 16));
+
+function showTileInspectStatus(msg, ok) {
+  clearTimeout(tileInspectPasteStatus._timeout);
+  tileInspectPasteStatus.textContent = msg;
+  tileInspectPasteStatus.classList.toggle('ok', ok);
+  tileInspectPasteStatus.classList.toggle('err', !ok);
+  tileInspectPasteStatus._timeout = setTimeout(() => { tileInspectPasteStatus.textContent = ''; }, 2500);
+}
+
+// Reads an address from the clipboard (e.g. copied via the Sprite Sheet or Sprites (OAM)
+// tabs' click-to-copy) and jumps the inspector there. Accepts a bare/"0x"-prefixed hex value,
+// pulling the first hex-looking token out of the clipboard text if there's extra content.
+// Pulls the first hex-looking address out of clipboard text (bare or "0x"-prefixed).
+function parseAddressFromClipboardText(text) {
+  const match = text.trim().match(/(?:0x)?([0-9a-fA-F]{1,4})/);
+  return match ? parseInt(match[1], 16) : null;
+}
+
+tileInspectPasteAddrBtn.addEventListener('click', async () => {
+  let text;
+  try {
+    text = await navigator.clipboard.readText();
+  } catch {
+    showTileInspectStatus('⚠ Clipboard access was blocked or denied.', false);
+    return;
+  }
+  const addr = parseAddressFromClipboardText(text);
+  if (addr === null) { showTileInspectStatus('⚠ Clipboard doesn\u2019t contain an address.', false); return; }
+  setTileInspectAddr(addr);
+  showTileInspectStatus(`✓ Jumped to ${hex16(tileInspectAddr)}.`, true);
+});
+
+// Runs automatically whenever the Inspector tab is opened: silently checks the clipboard for
+// an address (e.g. one copied via the Sprite Sheet or Sprites (OAM) tabs' click-to-copy) and,
+// if found, jumps there. Unlike the Paste addr button, failures stay silent - opening the tab
+// shouldn't surface clipboard-permission noise, only a genuine hit is worth mentioning.
+async function autoPasteTileInspectAddrFromClipboard() {
+  let text;
+  try {
+    text = await navigator.clipboard.readText();
+  } catch {
+    return;
+  }
+  const addr = parseAddressFromClipboardText(text);
+  if (addr === null) return;
+  setTileInspectAddr(addr);
+  showTileInspectStatus(`✓ Jumped to ${hex16(tileInspectAddr)} (from clipboard).`, true);
+}
+
+// Parses typed text into exactly 16 byte values (0-255). Accepts space/comma/newline
+// separated hex pairs with optional "0x" prefixes (e.g. "3C 7E 42 ..." or "0x3C,0x7E,...")
+// as well as one contiguous 32-hex-digit blob ("3C7E4242...") with no separators at all.
+function parseHexByteList(text) {
+  const cleaned = text.replace(/0x/gi, ' ');
+  const tokens = cleaned.split(/[^0-9a-fA-F]+/).filter(Boolean);
+  let bytes;
+  if (tokens.length === 16 && tokens.every(t => t.length <= 2)) {
+    bytes = tokens.map(t => parseInt(t, 16));
+  } else {
+    const blob = tokens.join('');
+    if (blob.length !== 32) return null;
+    bytes = [];
+    for (let i = 0; i < 32; i += 2) bytes.push(parseInt(blob.slice(i, i + 2), 16));
+  }
+  if (bytes.length !== 16 || bytes.some(b => Number.isNaN(b) || b < 0 || b > 255)) return null;
+  return bytes;
+}
+
+// Writes the 16 typed bytes at tileInspectAddr through the real MMU write path (same as the
+// RAM editor), replacing the tile currently shown.
+function commitTileInspectWrite() {
+  const bytes = parseHexByteList(tileInspectBytesInput.value);
+  if (!bytes) {
+    showTileInspectStatus('⚠ Enter exactly 16 hex bytes.', false);
+    return;
+  }
+  for (let i = 0; i < 16; i++) emulator.instrumentation.writeMemory((tileInspectAddr + i) & 0xFFFF, bytes[i]);
+  drawTileInspector();
+  showTileInspectStatus(`✓ Wrote 16 bytes at ${hex16(tileInspectAddr)}.`, true);
+}
+
+tileInspectWriteBtn.addEventListener('click', commitTileInspectWrite);
+tileInspectBytesInput.addEventListener('keydown', e => { if (e.key === 'Enter') commitTileInspectWrite(); });
+
+// Click the address range to copy just its start address; click the byte values to copy
+// all 16 bytes as a space-separated hex string.
+tileInspectRangeEl.addEventListener('click', () => flashCopiedInline(tileInspectRangeEl, hex16(tileInspectAddr)));
+tileInspectBytesValEl.addEventListener('click', () => {
+  if (tileInspectBytesValEl.dataset.copied) return; // already mid-flash; textContent is "Copied!" right now
+  flashCopiedInline(tileInspectBytesValEl, tileInspectBytesValEl.textContent);
+});
+
+/* ---- 2c. Tile editor: paint pixels directly onto the tile shown above, writing straight
+   through the real MMU write path (same as the RAM editor) so edits take effect immediately -
+   lets you touch up an existing tile or, combined with Clear Tile, draw a brand new one. ---- */
+tileInspectSwatches.forEach(sw => {
+  sw.addEventListener('click', () => {
+    tileInspectDrawColor = parseInt(sw.dataset.color, 10);
+    tileInspectSwatches.forEach(s => s.classList.toggle('active', s === sw));
+  });
+});
+
+tileInspectClearBtn.addEventListener('click', () => {
+  for (let i = 0; i < 16; i++) emulator.instrumentation.writeMemory((tileInspectAddr + i) & 0xFFFF, 0x00);
+  drawTileInspector();
+  showTileInspectStatus(`✓ Cleared tile at ${hex16(tileInspectAddr)}.`, true);
+});
+
+// Sets one pixel's 2bpp color by rewriting its row's lo/hi byte pair, preserving the other 7
+// pixels in that row.
+function paintTileInspectPixel(col, row, color) {
+  const rowLoAddr = (tileInspectAddr + row * 2) & 0xFFFF;
+  const rowHiAddr = (tileInspectAddr + row * 2 + 1) & 0xFFFF;
+  const instr = emulator.instrumentation;
+  const bit = 7 - col;
+  const mask = ~(1 << bit) & 0xFF;
+  const lo = (instr.peekByte(rowLoAddr) & mask) | ((color & 1) << bit);
+  const hi = (instr.peekByte(rowHiAddr) & mask) | (((color >> 1) & 1) << bit);
+  instr.writeMemory(rowLoAddr, lo);
+  instr.writeMemory(rowHiAddr, hi);
+}
+
+function tileInspectCellAt(clientX, clientY) {
+  const rect = tileInspectCanvas.getBoundingClientRect();
+  const relX = clientX - rect.left, relY = clientY - rect.top;
+  if (relX < 0 || relY < 0 || relX >= rect.width || relY >= rect.height) return null;
+  const col = Math.min(7, Math.max(0, Math.floor((relX / rect.width) * 8)));
+  const row = Math.min(7, Math.max(0, Math.floor((relY / rect.height) * 8)));
+  return { col, row };
+}
+
+let tileInspectPainting = false;
+let tileInspectLastPaintedCell = null;
+
+function tileInspectPaintAt(clientX, clientY) {
+  const cell = tileInspectCellAt(clientX, clientY);
+  if (!cell) return;
+  const key = cell.row * 8 + cell.col;
+  if (tileInspectLastPaintedCell === key) return; // skip redundant writes to the same pixel
+  tileInspectLastPaintedCell = key;
+  paintTileInspectPixel(cell.col, cell.row, tileInspectDrawColor);
+  drawTileInspector();
+}
+
+tileInspectCanvas.addEventListener('mousedown', (e) => {
+  tileInspectPainting = true;
+  tileInspectLastPaintedCell = null;
+  tileInspectPaintAt(e.clientX, e.clientY);
+});
+tileInspectCanvas.addEventListener('mousemove', (e) => {
+  if (tileInspectPainting) tileInspectPaintAt(e.clientX, e.clientY);
+});
+window.addEventListener('mouseup', () => { tileInspectPainting = false; tileInspectLastPaintedCell = null; });
+tileInspectCanvas.addEventListener('mouseleave', () => { tileInspectLastPaintedCell = null; });
+
+tileInspectCanvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  tileInspectLastPaintedCell = null;
+  const t = e.touches[0];
+  if (t) tileInspectPaintAt(t.clientX, t.clientY);
+}, { passive: false });
+tileInspectCanvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  const t = e.touches[0];
+  if (t) tileInspectPaintAt(t.clientX, t.clientY);
+}, { passive: false });
+tileInspectCanvas.addEventListener('touchend', () => { tileInspectLastPaintedCell = null; });
 
 
 /* ---- 2b. Layer viewer: background / window / sprites, each rendered independently at full

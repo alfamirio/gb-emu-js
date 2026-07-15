@@ -941,8 +941,8 @@ function updateStateButtons() {
   btnImportStateLabel.classList.toggle('disabled', !hasROM);
   btnScreenshot.disabled = !hasROM;
   // Don't yank the record button out from under an in-progress recording.
-  if (!(clipRecorder && clipRecorder.state !== 'inactive')) btnRecordClip.disabled = !hasROM;
-  if (!(audioRecorder && audioRecorder.state !== 'inactive')) btnRecordAudio.disabled = !hasROM;
+  if (!clipRecorderCtl.isActive()) btnRecordClip.disabled = !hasROM;
+  if (!audioRecorderCtl.isActive()) btnRecordAudio.disabled = !hasROM;
   document.querySelectorAll('.layer-download-btn').forEach(btn => { btn.disabled = !hasROM; });
 
   // .sav controls only apply to carts with battery-backed save RAM this emulator persists.
@@ -1202,153 +1202,133 @@ btnScreenshot.addEventListener('click', () => {
   }, 'image/webp', APP_CONFIG.SCREENSHOT_WEBP_QUALITY);
 });
 
-/* ---- gameplay clip recording ---- */
-let clipRecorder = null;
-let clipChunks = [];
-let clipAudioDest = null;
-let clipTimerId = null;
-let clipStartedAt = 0;
+// Generic MediaRecorder-based capture session: shared by gameplay-clip and audio-only
+// export below, which only differ in which mime candidates/tracks/bitrates/status text they
+// use. `buildStream` does the recording-specific track setup and returns null (after its own
+// alert) if it can't proceed; `cleanup` undoes whatever `buildStream` connected/opened.
+function createCaptureRecorder({
+  mimeCandidates, unsupportedMsg, noCodecMsg, buildStream, recorderOptions, filename, savedMsg,
+  timerLabel, button, idleLabel, recordingLabel,
+}) {
+  let recorder = null, chunks = [], timerId = null, startedAt = 0;
 
-function pickClipMimeType() {
-  return APP_CONFIG.VIDEO_MIME_CANDIDATES.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
-}
-
-function updateClipTimer() {
-  const secs = Math.floor((Date.now() - clipStartedAt) / 1000);
-  const mm = String(Math.floor(secs / 60)).padStart(2, '0');
-  const ss = String(secs % 60).padStart(2, '0');
-  captureInfo.textContent = `⏺ Recording... ${mm}:${ss}`;
-}
-
-function startClipRecording() {
-  if (!window.MediaRecorder) { alert('This browser does not support MediaRecorder, so gameplay clips cannot be recorded.'); return; }
-  const mimeType = pickClipMimeType();
-  if (!mimeType) { alert('No supported WEBM video codec found in this browser.'); return; }
-
-  ensureAudioEngine(); // no-op if already set up; safe here since a click is a user gesture
-
-  const videoStream = canvas.captureStream(APP_CONFIG.VIDEO_CAPTURE_FPS);
-  const tracks = [...videoStream.getVideoTracks()];
-  if (audioCtx && masterGain) {
-    clipAudioDest = audioCtx.createMediaStreamDestination();
-    masterGain.connect(clipAudioDest); // fans out alongside the existing speaker connection
-    tracks.push(...clipAudioDest.stream.getAudioTracks());
+  function updateTimer() {
+    const secs = Math.floor((Date.now() - startedAt) / 1000);
+    const mm = String(Math.floor(secs / 60)).padStart(2, '0');
+    const ss = String(secs % 60).padStart(2, '0');
+    captureInfo.textContent = timerLabel(mm, ss);
   }
 
-  clipChunks = [];
-  clipRecorder = new MediaRecorder(new MediaStream(tracks), {
+  function start() {
+    if (!window.MediaRecorder) { alert(unsupportedMsg); return; }
+    const mimeType = mimeCandidates.find(t => MediaRecorder.isTypeSupported(t)) || '';
+    if (!mimeType) { alert(noCodecMsg); return; }
+
+    ensureAudioEngine(); // no-op if already set up; safe here since a click is a user gesture
+
+    const built = buildStream(mimeType);
+    if (!built) return; // buildStream already alerted on failure
+
+    chunks = [];
+    recorder = new MediaRecorder(built.stream, recorderOptions(mimeType));
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+    recorder.onstop = () => {
+      built.cleanup();
+      clearInterval(timerId);
+      const blob = new Blob(chunks, { type: mimeType.split(';')[0] });
+      chunks = [];
+      if (blob.size > 0) {
+        downloadBlob(blob, filename(mimeType));
+        captureInfo.textContent = savedMsg;
+      } else {
+        captureInfo.textContent = 'Recording produced no data.';
+      }
+    };
+
+    recorder.start();
+    startedAt = Date.now();
+    updateTimer();
+    timerId = setInterval(updateTimer, APP_CONFIG.RECORDING_TIMER_LABEL_INTERVAL_MS);
+    button.textContent = recordingLabel;
+    button.classList.add('recording');
+  }
+
+  function stop() {
+    if (recorder && recorder.state !== 'inactive') recorder.stop();
+    recorder = null;
+    button.textContent = idleLabel;
+    button.classList.remove('recording');
+  }
+
+  button.addEventListener('click', () => {
+    if (recorder && recorder.state !== 'inactive') stop();
+    else start();
+  });
+
+  return { start, stop, isActive: () => !!(recorder && recorder.state !== 'inactive') };
+}
+
+/* ---- gameplay clip recording ---- */
+const clipRecorderCtl = createCaptureRecorder({
+  mimeCandidates: APP_CONFIG.VIDEO_MIME_CANDIDATES,
+  unsupportedMsg: 'This browser does not support MediaRecorder, so gameplay clips cannot be recorded.',
+  noCodecMsg: 'No supported WEBM video codec found in this browser.',
+  buildStream: () => {
+    const videoStream = canvas.captureStream(APP_CONFIG.VIDEO_CAPTURE_FPS);
+    const tracks = [...videoStream.getVideoTracks()];
+    let clipAudioDest = null;
+    if (audioCtx && masterGain) {
+      clipAudioDest = audioCtx.createMediaStreamDestination();
+      masterGain.connect(clipAudioDest); // fans out alongside the existing speaker connection
+      tracks.push(...clipAudioDest.stream.getAudioTracks());
+    }
+    return {
+      stream: new MediaStream(tracks),
+      cleanup: () => {
+        if (clipAudioDest) { masterGain.disconnect(clipAudioDest); clipAudioDest = null; }
+        videoStream.getTracks().forEach(t => t.stop());
+      },
+    };
+  },
+  recorderOptions: (mimeType) => ({
     mimeType,
     videoBitsPerSecond: APP_CONFIG.VIDEO_BITRATE_KBPS * 1000,
     audioBitsPerSecond: APP_CONFIG.CLIP_AUDIO_BITRATE_KBPS * 1000,
-  });
-  clipRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) clipChunks.push(e.data); };
-  clipRecorder.onstop = () => {
-    if (clipAudioDest) { masterGain.disconnect(clipAudioDest); clipAudioDest = null; }
-    videoStream.getTracks().forEach(t => t.stop());
-    clearInterval(clipTimerId);
-    const blob = new Blob(clipChunks, { type: mimeType.split(';')[0] });
-    clipChunks = [];
-    if (blob.size > 0) {
-      downloadBlob(blob, `${safeRomName()}_${Date.now()}.webm`);
-      captureInfo.textContent = 'Clip saved ✓';
-    } else {
-      captureInfo.textContent = 'Recording produced no data.';
-    }
-  };
-
-  clipRecorder.start();
-  clipStartedAt = Date.now();
-  updateClipTimer();
-  clipTimerId = setInterval(updateClipTimer, APP_CONFIG.RECORDING_TIMER_LABEL_INTERVAL_MS);
-  btnRecordClip.textContent = '⏹ Video';
-  btnRecordClip.classList.add('recording');
-}
-
-function stopClipRecording() {
-  if (clipRecorder && clipRecorder.state !== 'inactive') clipRecorder.stop();
-  clipRecorder = null;
-  btnRecordClip.textContent = '⏺ Video';
-  btnRecordClip.classList.remove('recording');
-}
-
-btnRecordClip.addEventListener('click', () => {
-  if (clipRecorder && clipRecorder.state !== 'inactive') stopClipRecording();
-  else startClipRecording();
+  }),
+  filename: () => `${safeRomName()}_${Date.now()}.webm`,
+  savedMsg: 'Clip saved ✓',
+  timerLabel: (mm, ss) => `⏺ Recording... ${mm}:${ss}`,
+  button: btnRecordClip,
+  idleLabel: '⏺ Video',
+  recordingLabel: '⏹ Video',
 });
 
 /* ---- audio-only export (Opus) ----
    Taps the same masterGain node feeding the speakers, so mixed/muted channels
    are reflected automatically. Prefers Ogg/Opus, falls back to WebM/Opus. */
-let audioRecorder = null;
-let audioChunks = [];
-let audioDest = null;
-let audioTimerId = null;
-let audioStartedAt = 0;
-
-function pickAudioMimeType() {
-  return APP_CONFIG.AUDIO_MIME_CANDIDATES.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
-}
-
 function audioFileExtension(mimeType) {
   return mimeType.startsWith('audio/ogg') ? 'opus' : 'weba'; // WebM-container Opus audio; .weba avoids implying a video file
 }
 
-function updateAudioTimer() {
-  const secs = Math.floor((Date.now() - audioStartedAt) / 1000);
-  const mm = String(Math.floor(secs / 60)).padStart(2, '0');
-  const ss = String(secs % 60).padStart(2, '0');
-  captureInfo.textContent = `⏺ Recording audio... ${mm}:${ss}`;
-}
-
-function startAudioRecording() {
-  if (!window.MediaRecorder) { alert('This browser does not support MediaRecorder, so audio cannot be exported.'); return; }
-  const mimeType = pickAudioMimeType();
-  if (!mimeType) { alert('No supported Opus audio codec found in this browser.'); return; }
-
-  ensureAudioEngine(); // no-op if already set up; safe here since a click is a user gesture
-  if (!audioCtx || !masterGain) { alert('Audio is not available in this browser.'); return; }
-
-  audioDest = audioCtx.createMediaStreamDestination();
-  masterGain.connect(audioDest); // fans out alongside the existing speaker connection
-
-  audioChunks = [];
-  audioRecorder = new MediaRecorder(audioDest.stream, {
-    mimeType,
-    audioBitsPerSecond: APP_CONFIG.AUDIO_EXPORT_BITRATE_KBPS * 1000,
-  });
-  audioRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
-  audioRecorder.onstop = () => {
-    masterGain.disconnect(audioDest);
-    audioDest = null;
-    clearInterval(audioTimerId);
-    const blob = new Blob(audioChunks, { type: mimeType.split(';')[0] });
-    audioChunks = [];
-    if (blob.size > 0) {
-      downloadBlob(blob, `${safeRomName()}_${Date.now()}.${audioFileExtension(mimeType)}`);
-      captureInfo.textContent = 'Audio saved ✓';
-    } else {
-      captureInfo.textContent = 'Recording produced no data.';
-    }
-  };
-
-  audioRecorder.start();
-  audioStartedAt = Date.now();
-  updateAudioTimer();
-  audioTimerId = setInterval(updateAudioTimer, APP_CONFIG.RECORDING_TIMER_LABEL_INTERVAL_MS);
-  btnRecordAudio.textContent = '⏹ Audio';
-  btnRecordAudio.classList.add('recording');
-}
-
-function stopAudioRecording() {
-  if (audioRecorder && audioRecorder.state !== 'inactive') audioRecorder.stop();
-  audioRecorder = null;
-  btnRecordAudio.textContent = '🎵 Audio';
-  btnRecordAudio.classList.remove('recording');
-}
-
-btnRecordAudio.addEventListener('click', () => {
-  if (audioRecorder && audioRecorder.state !== 'inactive') stopAudioRecording();
-  else startAudioRecording();
+const audioRecorderCtl = createCaptureRecorder({
+  unsupportedMsg: 'This browser does not support MediaRecorder, so audio cannot be exported.',
+  noCodecMsg: 'No supported Opus audio codec found in this browser.',
+  buildStream: () => {
+    if (!audioCtx || !masterGain) { alert('Audio is not available in this browser.'); return null; }
+    const audioDest = audioCtx.createMediaStreamDestination();
+    masterGain.connect(audioDest); // fans out alongside the existing speaker connection
+    return {
+      stream: audioDest.stream,
+      cleanup: () => { masterGain.disconnect(audioDest); },
+    };
+  },
+  recorderOptions: (mimeType) => ({ mimeType, audioBitsPerSecond: APP_CONFIG.AUDIO_EXPORT_BITRATE_KBPS * 1000 }),
+  filename: (mimeType) => `${safeRomName()}_${Date.now()}.${audioFileExtension(mimeType)}`,
+  savedMsg: 'Audio saved ✓',
+  timerLabel: (mm, ss) => `⏺ Recording audio... ${mm}:${ss}`,
+  button: btnRecordAudio,
+  idleLabel: '🎵 Audio',
+  recordingLabel: '⏹ Audio',
 });
 
 /* ---- clear saved config: wipes UI config, sound config, and all save-state

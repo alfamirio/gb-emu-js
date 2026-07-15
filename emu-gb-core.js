@@ -495,8 +495,9 @@ class CPU {
     this.reset();
   }
 
-  reset() {
-    const boot = EMU_CORE_CONFIG.BOOT;
+  // `boot` defaults to the DMG boot register state; CGBCPU overrides reset() to pass the
+  // CGB boot config instead, since the reset logic itself is identical on both consoles.
+  reset(boot = EMU_CORE_CONFIG.BOOT) {
     this.A = boot.A; this.B = boot.B; this.C = boot.C; this.D = boot.D; this.E = boot.E;
     this.H = boot.H; this.L = boot.L;
     this.SP = boot.SP;

@@ -445,17 +445,9 @@ class CGBMMU {
 /* ============================== 2. CGBCPU (subclass of CPU) ============================= */
 
 class CGBCPU extends CPU {
+  // Register reset logic is identical to the base CPU; only the boot register values differ.
   reset() {
-    const boot = EMU_CGB_CORE_CONFIG.BOOT;
-    this.A = boot.A; this.B = boot.B; this.C = boot.C; this.D = boot.D; this.E = boot.E;
-    this.H = boot.H; this.L = boot.L;
-    this.SP = boot.SP;
-    this.PC = boot.PC;
-    this.flagZ = boot.FLAG_Z; this.flagN = boot.FLAG_N; this.flagH = boot.FLAG_H; this.flagC = boot.FLAG_C;
-    this.IME = false;
-    this.eiDelay = 0;
-    this.halted = false;
-    this.cycles = 0;
+    super.reset(EMU_CGB_CORE_CONFIG.BOOT);
   }
 
   // Only STOP's double-speed switch differs from the base CPU; every other opcode is unchanged.

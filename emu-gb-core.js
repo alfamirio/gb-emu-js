@@ -1372,6 +1372,13 @@ class APU {
     // pass per output sample, so this box-filter averaging avoids aliasing into the wrong pitch.
     this.accL = 0; this.accR = 0; this.accCycles = 0;
 
+    // One-pole DC-blocking filter (mirrors the coupling capacitor real DMG hardware has on
+    // its audio output).
+    this.dcPrevInL = 0; this.dcPrevOutL = 0; this.dcPrevInR = 0; this.dcPrevOutR = 0;
+    // Priming flag: without it, the filter's first sample after a reset treats the initial
+    // silence-fade-into-real-audio boundary as a real edge and outputs a one-sample step
+    this._dcPrimed = false;
+
     // Per-channel raw DAC history for the oscilloscope UI, independent of the mixed
     // ringL/ringR buffer so each channel's waveform can be inspected on its own.
     this.SCOPE_SIZE = 512;
@@ -1565,6 +1572,17 @@ class APU {
     this.fsStep = 0; this.frameSeqTimer = 0; this.sampleCounter = 0;
     this.enabled = false;
 
+    // Clear the mix accumulators and the ring buffer. Without this, a reset mid-frame
+    // leaves accL/accR/accCycles holding pre-reset sums, so the first _emitSample() after
+    // reset averages new audio state over a stale cycle count - a wrong, often loud, first
+    // sample.
+    this.accL = 0; this.accR = 0; this.accCycles = 0;
+    this.ringL.fill(0); this.ringR.fill(0);
+    this.writePos = 0; this.readPos = 0; this.available = 0;
+    this.lastL = 0; this.lastR = 0;
+    this.dcPrevInL = 0; this.dcPrevOutL = 0; this.dcPrevInR = 0; this.dcPrevOutR = 0;
+    this._dcPrimed = false;
+
     this.write(0xFF26, 0x80); // power on first, or the writes below would be ignored
     this.write(0xFF10, 0x80); this.write(0xFF11, 0xBF); this.write(0xFF12, 0xF3); this.write(0xFF14, 0xBF);
     this.write(0xFF16, 0x3F); this.write(0xFF17, 0x00); this.write(0xFF19, 0xBF);
@@ -1736,8 +1754,13 @@ class APU {
     if (this.ch3.enabled && !this.chMuted[2] && this.ch3.volumeShift > 0) amp3 = this._getWaveSample() >> (this.ch3.volumeShift - 1);
     const amp4 = (this.ch4.enabled && !this.chMuted[3]) ? ((~this.ch4.lfsr) & 1) * this.ch4.volume : 0;
 
-    const dac = v => (v / 7.5) - 1; // each channel's 4-bit DAC maps 0-15 to roughly -1..1
-    const a1 = dac(amp1), a2 = dac(amp2), a3 = dac(amp3), a4 = dac(amp4);
+    // Each channel's 4-bit DAC maps 0-15 to roughly -1..1 - but only while that channel's
+    // DAC is actually powered (dacEnabled).
+    const dac = v => (v / 7.5) - 1;
+    const a1 = this.ch1.dacEnabled ? dac(amp1) : 0;
+    const a2 = this.ch2.dacEnabled ? dac(amp2) : 0;
+    const a3 = this.ch3.dacEnabled ? dac(amp3) : 0;
+    const a4 = this.ch4.dacEnabled ? dac(amp4) : 0;
     this._lastA1 = a1; this._lastA2 = a2; this._lastA3 = a3; this._lastA4 = a4;
 
     let left = 0, right = 0;
@@ -1764,7 +1787,21 @@ class APU {
   _emitSample() {
     const left = this.accCycles > 0 ? this.accL / this.accCycles : 0;
     const right = this.accCycles > 0 ? this.accR / this.accCycles : 0;
-    this._pushSample(left, right);
+
+    // DC-blocking one-pole highpass (y[n] = x[n] - x[n-1] + R*y[n-1]) - see the field
+    // comment in the constructor. R just under 1 sits far below audible frequencies, so it
+    // only removes slow DC drift/offset, not the actual waveform.
+    if (!this._dcPrimed) {
+      this.dcPrevInL = left; this.dcPrevInR = right;
+      this._dcPrimed = true;
+    }
+    const R = 0.995;
+    const outL = left - this.dcPrevInL + R * this.dcPrevOutL;
+    this.dcPrevInL = left; this.dcPrevOutL = outL;
+    const outR = right - this.dcPrevInR + R * this.dcPrevOutR;
+    this.dcPrevInR = right; this.dcPrevOutR = outR;
+
+    this._pushSample(outL, outR);
     this._pushScopeSample(this._lastA1 || 0, this._lastA2 || 0, this._lastA3 || 0, this._lastA4 || 0);
     this.accL = 0; this.accR = 0; this.accCycles = 0;
   }

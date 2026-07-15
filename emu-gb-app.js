@@ -13,6 +13,29 @@
    inside callbacks).
    ========================================================================================= */
 
+// App-level UI/feature configuration (not emulator-core values, which stay next to their CPU/PPU/APU/MMU usage).
+const APP_CONFIG = {
+  EDU_GUARDRAIL: false,               // flag to enable time limit and rom commercial filter
+  MAX_SAVE_SLOTS: 5,                  // save-state slots kept per ROM (oldest dropped first)
+  VOLUME_MIN: 0,
+  VOLUME_MAX: 100,
+  VOLUME_STEP: 5,                     // volume slider/percentage only moves in steps this size
+  VOLUME_DEFAULT: 50,
+  VOLUME_MAX_GAIN: 0.6,               // gain at slider=100%; keeps max volume well under full-scale
+  TURBO_SPEED: 2,                     // emulation speed multiplier the T hotkey toggles to
+  SCREENSHOT_WEBP_QUALITY: 0.80,      // canvas.toBlob() quality for the screenshot feature
+  RECORDING_TIMER_LABEL_INTERVAL_MS: 500, // how often the video/audio recording timer label updates
+  VIDEO_CAPTURE_FPS: 30,              // frame rate requested from canvas.captureStream() for clips
+  // Codec preference for gameplay clips, tried in order (vp9 preferred over vp8).
+  VIDEO_MIME_CANDIDATES: ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'],
+  // Codec preference for standalone audio export: Ogg/Opus (a "real" .opus file)
+  // preferred over WebM/Opus (same audio codec, different container).
+  AUDIO_MIME_CANDIDATES: ['audio/ogg;codecs=opus', 'audio/webm;codecs=opus'],
+  VIDEO_BITRATE_KBPS: 200,           // target bitrate for gameplay clip recording (video track)
+  CLIP_AUDIO_BITRATE_KBPS: 32,       // target bitrate for the audio track inside a gameplay clip
+  AUDIO_EXPORT_BITRATE_KBPS: 32,     // target bitrate for the standalone audio-only export
+};
+
 // `emulator` is `let` since coreToggle below swaps it between GBEmulator (DMG) and CGBEmulator (GBC).
 const canvas = document.getElementById('screen');
 const coreToggle = document.getElementById('coreToggle'); // unchecked = GB core, checked = GBC core
@@ -163,9 +186,13 @@ function disableEmuDevUnlock() {
   }
 }
 
-// Play-time guardrail: caps continuous emulator runtime so this stays a debugging tool
+function isEduGuardrailEnabled() {
+    return isDevUnlocked() ? false : APP_CONFIG.EDU_GUARDRAIL;
+}
+
+// Play-time limit: caps continuous emulator runtime so this stays a debugging tool
 // rather than a way to play through games. Thresholds are fractions of TOTAL_LIMIT.
-const PLAY_TIME_GUARDRAIL = isDevUnlocked() ? false : true; // master switch
+const PLAY_TIME_LIMIT = isEduGuardrailEnabled(); // master switch
 const PLAY_TIME_BASE_UNIT = 60; // seconds per unit; set to 1 for fast manual testing
 const PLAY_TIME_TOTAL_LIMIT = 20 * PLAY_TIME_BASE_UNIT; // hard cap
 const PLAY_TIME_LIMIT_CONFIG = {
@@ -203,7 +230,7 @@ function resetPlayTime() {
 }
 
 function tickPlayTime() {
-  // Timer always runs; PLAY_TIME_GUARDRAIL only gates enforcement (coloring/alert/reload).
+  // Timer always runs; PLAY_TIME_LIMIT only gates enforcement (coloring/alert/reload).
   const now = performance.now();
   if (emulator.running) {
     if (playTimeLastTick !== null) playTimeSeconds += (now - playTimeLastTick) / 1000;
@@ -213,7 +240,7 @@ function tickPlayTime() {
   }
   playTimeLabel.textContent = formatPlayTime(playTimeSeconds);
 
-  if (!PLAY_TIME_GUARDRAIL) return;
+  if (!PLAY_TIME_LIMIT) return;
 
   const { TOTAL_LIMIT, AMBER_AT, RED_AT, WARNING_ALERT } = PLAY_TIME_LIMIT_CONFIG;
 
@@ -243,28 +270,6 @@ const btnStep1s = document.getElementById('btnStep1s');
 const bpStatus = document.getElementById('bpStatus');
 
 let lastROMBytes = null;
-
-// App-level UI/feature configuration (not emulator-core values, which stay next to their CPU/PPU/APU/MMU usage).
-const APP_CONFIG = {
-  MAX_SAVE_SLOTS: 5,                  // save-state slots kept per ROM (oldest dropped first)
-  VOLUME_MIN: 0,
-  VOLUME_MAX: 100,
-  VOLUME_STEP: 5,                     // volume slider/percentage only moves in steps this size
-  VOLUME_DEFAULT: 50,
-  VOLUME_MAX_GAIN: 0.6,               // gain at slider=100%; keeps max volume well under full-scale
-  TURBO_SPEED: 2,                     // emulation speed multiplier the T hotkey toggles to
-  SCREENSHOT_WEBP_QUALITY: 0.80,      // canvas.toBlob() quality for the screenshot feature
-  RECORDING_TIMER_LABEL_INTERVAL_MS: 500, // how often the video/audio recording timer label updates
-  VIDEO_CAPTURE_FPS: 30,              // frame rate requested from canvas.captureStream() for clips
-  // Codec preference for gameplay clips, tried in order (vp9 preferred over vp8).
-  VIDEO_MIME_CANDIDATES: ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'],
-  // Codec preference for standalone audio export: Ogg/Opus (a "real" .opus file)
-  // preferred over WebM/Opus (same audio codec, different container).
-  AUDIO_MIME_CANDIDATES: ['audio/ogg;codecs=opus', 'audio/webm;codecs=opus'],
-  VIDEO_BITRATE_KBPS: 200,           // target bitrate for gameplay clip recording (video track)
-  CLIP_AUDIO_BITRATE_KBPS: 32,       // target bitrate for the audio track inside a gameplay clip
-  AUDIO_EXPORT_BITRATE_KBPS: 32,     // target bitrate for the standalone audio-only export
-};
 
 /* Small factory for the "load merged JSON from a key, save merged JSON back to it" pattern,
    shared by the UI config and sound config below. */
@@ -354,7 +359,7 @@ class BloomFilter {
    GAME_FILTER_URLS points at the .js file downloaded from bloom_filter_builder.html, fetched
    once at startup. If missing/unparsable, the check is silently skipped for that core. */
 
-const GAME_FILTER_ENABLED = isDevUnlocked() ? false : true; // master switch
+const GAME_FILTER_ENABLED = isEduGuardrailEnabled(); // master switch
 
 let commercialRomFilters = { gb: null, gbc: null }; // each becomes a BloomFilter instance once decoded; stays null if disabled, missing, or unparsable
 

@@ -332,6 +332,15 @@ const btnStepFrame = document.getElementById('btnStepFrame');
 const btnStep1s = document.getElementById('btnStep1s');
 const bpStatus = document.getElementById('bpStatus');
 
+// Navbar toggle: when checked, a (re)loaded ROM is left paused on its first instruction
+// instead of auto-starting, ready to be stepped via the buttons above. Not persisted —
+// always starts off on load, same as the scanline-mark toggle.
+const stepDebugToggle = document.getElementById('stepDebugToggle');
+const stepDebugLabelOn = document.getElementById('stepDebugLabelOn');
+stepDebugToggle.addEventListener('change', () => {
+  stepDebugLabelOn.classList.toggle('active', stepDebugToggle.checked);
+});
+
 let lastROMBytes = null;
 
 /* Small factory for the "load merged JSON from a key, save merged JSON back to it" pattern,
@@ -568,7 +577,12 @@ async function loadROMBytes(bytes) {
       ? 'Not applicable in GBC mode - colors come from the cartridge\'s own CGB palettes.'
       : '';
   }
-  emulator.start();
+  if (stepDebugToggle.checked) {
+    btnPause.textContent = '▶ Start';
+    bpStatus.textContent = 'Step Debug — paused at boot. Use the step buttons above.';
+  } else {
+    emulator.start();
+  }
   resetPlayTime();
 }
 
@@ -682,9 +696,14 @@ function resetEmulator(statusMsg) {
   if (!lastROMBytes) return;
   emulator.loadROM(lastROMBytes);
   refreshBankingAndRtcPanels();
-  emulator.start();
-  btnPause.textContent = '⏸ Pause';
-  bpStatus.textContent = statusMsg;
+  if (stepDebugToggle.checked) {
+    btnPause.textContent = '▶ Start';
+    bpStatus.textContent = 'Step Debug — paused at boot. Use the step buttons above.';
+  } else {
+    emulator.start();
+    btnPause.textContent = '⏸ Pause';
+    bpStatus.textContent = statusMsg;
+  }
   updateRewindButton(); // a fresh run means any rewind history from before is gone too
   resetPlayTime();
 }

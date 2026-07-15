@@ -87,7 +87,7 @@
   .model-toggle .model-label.active { color: #eee; font-weight: 600; }
 
   .mode-toggle { display: flex; align-items: center; gap: 10px; font-size: 0.82rem; color: #888; }
-  .scanline-mark-toggle { margin-left: auto; }
+  .step-debug-toggle { margin-left: auto; }
   .mode-toggle .mode-label { transition: color .15s; }
   .mode-toggle .mode-label.active { color: #eee; font-weight: 600; }
   .switch { position: relative; display: inline-block; width: 34px; height: 18px; flex-shrink: 0; }
@@ -1288,6 +1288,13 @@
       <button class="ui-btn small" id="btnStep1s" disabled>⏭⏭⏭⏭ Step 1s</button>
     </div>
     <div class="cdc-status" id="bpStatus"></div>
+  </div>
+  <div class="mode-toggle step-debug-toggle" title="When enabled, a loaded ROM stays paused on the first instruction instead of running, ready to step via the buttons above.">
+    <label class="switch">
+      <input type="checkbox" id="stepDebugToggle">
+      <span class="toggle-track"><span class="toggle-thumb"></span></span>
+    </label>
+    <span class="mode-label" id="stepDebugLabelOn">Step Debug</span>
   </div>
   <div class="mode-toggle scanline-mark-toggle">
     <label class="switch">

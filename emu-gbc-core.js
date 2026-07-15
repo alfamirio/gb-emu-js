@@ -407,9 +407,7 @@ class CGBMMU {
   }
 
   _doDMA(val) {
-    const src = val << 8;
-    for (let i = 0; i < EMU_CORE_CONFIG.OAM_DMA_BYTES; i++) this.oam[i] = this.read8(src + i);
-    this.emulator.stats?.recordDMA(this.emulator.ppu.ly);
+    performOAMDMA(this, val);
   }
 
   // HDMA5 write: bit7 picks general-purpose (instant) vs H-Blank-mode transfer; bits0-6 are
@@ -688,28 +686,12 @@ class CGBPPU {
     if (drewAny) this.windowLineCounter++;
   }
 
+  // CGB default priority: OAM index order, lowest index drawn on top (not DMG's X-coordinate rule).
+  static _compareSpritePriority(a, b) { return b.oamIndex - a.oamIndex; }
+
   getSpriteCandidatesForLine(y, spriteHeight) {
-    const SPR = EMU_CORE_CONFIG.SPRITES;
-    const candidates = this._spriteCandidates;
-    const pool = this._spriteSlotPool;
-    candidates.length = 0;
-    // CGB default priority: OAM index order, lowest index drawn on top (not DMG's X-coordinate rule).
-    for (let i = 0; i < SPR.MAX_TOTAL && candidates.length < SPR.MAX_PER_LINE; i++) {
-      const base = i * 4;
-      const spriteY = this.mmu.oam[base] - 16;
-      if (y >= spriteY && y < spriteY + spriteHeight) {
-        const slot = pool[candidates.length];
-        slot.spriteY = spriteY;
-        slot.spriteX = this.mmu.oam[base + 1] - 8;
-        slot.tileIndex = this.mmu.oam[base + 2];
-        slot.attrs = this.mmu.oam[base + 3];
-        slot.oamIndex = i;
-        candidates.push(slot);
-      }
-    }
-    // Draw lowest-priority (highest OAM index) first so higher-priority sprites win overlaps.
-    candidates.sort((a, b) => b.oamIndex - a.oamIndex);
-    return candidates;
+    return gatherSpriteCandidatesForLine(
+      this.mmu, y, spriteHeight, this._spriteCandidates, this._spriteSlotPool, CGBPPU._compareSpritePriority);
   }
 
   getSpriteRowBits(sprite, y, spriteHeight) {
@@ -777,14 +759,11 @@ class CGBPPU {
 
   // Blends a pixel toward its layer's debug tint color when layer-tint mode is on.
   _tintForLayer(r, g, b, layer) {
-    if (!this.emulator.layerTint) return [r, g, b];
-    const [tr, tg, tb] = EMU_CORE_CONFIG.LAYER_TINTS[layer];
-    const m = EMU_CORE_CONFIG.LAYER_TINT_MIX;
-    return [r * (1 - m) + tr * m, g * (1 - m) + tg * m, b * (1 - m) + tb * m];
+    return tintForLayer(this.emulator, r, g, b, layer);
   }
 
-  _toSigned8(v) { return (v & 0x80) ? v - 256 : v; }
-  _setPixel(x, y, r, g, b) { const i = (y * EMU_CORE_CONFIG.SCREEN.WIDTH + x) * 4; this.framebuffer[i] = r; this.framebuffer[i + 1] = g; this.framebuffer[i + 2] = b; this.framebuffer[i + 3] = 255; }
+  _toSigned8(v) { return toSigned8(v); }
+  _setPixel(x, y, r, g, b) { setFramebufferPixel(this.framebuffer, x, y, r, g, b); }
 }
 
 /* ================================== 4. CGBEmulator ======================================= */

@@ -192,6 +192,15 @@ class RTCUnit {
   }
 }
 
+// OAM DMA: copies 160 bytes from XX00-XX9F into OAM. Real hardware takes 160 cycles and
+// blocks memory access meanwhile; done instantly here. Shared by the DMG MMU and CGB MMU,
+// since OAM DMA behaves identically on both consoles.
+function performOAMDMA(mmu, val) {
+  const src = val << 8;
+  for (let i = 0; i < EMU_CORE_CONFIG.OAM_DMA_BYTES; i++) mmu.oam[i] = mmu.read8(src + i);
+  mmu.emulator.stats?.recordDMA(mmu.emulator.ppu.ly);
+}
+
 class MMU {
   constructor(emulator) {
     this.emulator = emulator;
@@ -474,9 +483,7 @@ class MMU {
   // OAM DMA: copies 160 bytes from XX00-XX9F into OAM. Real hardware takes 160 cycles
   // and blocks memory access meanwhile; done instantly here.
   _doDMA(val) {
-    const src = val << 8;
-    for (let i = 0; i < EMU_CORE_CONFIG.OAM_DMA_BYTES; i++) this.oam[i] = this.read8(src + i);
-    this.emulator.stats?.recordDMA(this.emulator.ppu.ly);
+    performOAMDMA(this, val);
   }
 }
 
@@ -829,6 +836,50 @@ class CPU {
 
 /* ==================================== 3. PPU (graphics) ================================= */
 
+// Sign-extends an 8-bit tile index (used when LCDC.4 selects the signed 0x9000-relative
+// tile data area). Shared by the DMG and CGB PPUs.
+function toSigned8(v) { return (v & 0x80) ? v - 256 : v; }
+
+// Writes one RGBA pixel into a PPU's framebuffer. Shared by the DMG and CGB PPUs, which
+// both use the same flat Uint8ClampedArray layout.
+function setFramebufferPixel(framebuffer, x, y, r, g, b) {
+  const i = (y * EMU_CORE_CONFIG.SCREEN.WIDTH + x) * 4;
+  framebuffer[i] = r; framebuffer[i + 1] = g; framebuffer[i + 2] = b; framebuffer[i + 3] = 255;
+}
+
+// Blends a pixel toward its layer's debug tint color when layer-tint mode is on. Shared by
+// the DMG and CGB PPUs.
+function tintForLayer(emulator, r, g, b, layer) {
+  if (!emulator.layerTint) return [r, g, b];
+  const [tr, tg, tb] = EMU_CORE_CONFIG.LAYER_TINTS[layer];
+  const m = EMU_CORE_CONFIG.LAYER_TINT_MIX;
+  return [r * (1 - m) + tr * m, g * (1 - m) + tg * m, b * (1 - m) + tb * m];
+}
+
+// Sprite candidates for scanline y: OAM entries covering this line, capped at the hardware's
+// 10-per-line limit, sorted by `comparator`. Shared by the DMG and CGB PPUs, which only
+// differ in priority order (DMG: X-then-OAM-index; CGB: OAM-index only) - see each PPU's
+// own comparator. `candidates`/`pool` are the caller's reused arrays (avoids allocating).
+function gatherSpriteCandidatesForLine(mmu, y, spriteHeight, candidates, pool, comparator) {
+  const SPR = EMU_CORE_CONFIG.SPRITES;
+  candidates.length = 0;
+  for (let i = 0; i < SPR.MAX_TOTAL && candidates.length < SPR.MAX_PER_LINE; i++) {
+    const base = i * 4;
+    const spriteY = mmu.oam[base] - 16;
+    if (y >= spriteY && y < spriteY + spriteHeight) {
+      const slot = pool[candidates.length];
+      slot.spriteY = spriteY;
+      slot.spriteX = mmu.oam[base + 1] - 8;
+      slot.tileIndex = mmu.oam[base + 2];
+      slot.attrs = mmu.oam[base + 3];
+      slot.oamIndex = i;
+      candidates.push(slot);
+    }
+  }
+  candidates.sort(comparator);
+  return candidates;
+}
+
 class PPU {
   // Classic DMG green tint, and the neutral grayscale of the GB Pocket. SHADES points at
   // whichever palette is active (see GBEmulator.setScreenModel()).
@@ -1003,25 +1054,8 @@ class PPU {
   // hardware's 10-per-line limit and sorted so drawing lowest-priority-first reproduces
   // the real X-then-OAM-index priority rule.
   getSpriteCandidatesForLine(y, spriteHeight) {
-    const SPR = EMU_CORE_CONFIG.SPRITES;
-    const candidates = this._spriteCandidates;
-    const pool = this._spriteSlotPool;
-    candidates.length = 0;
-    for (let i = 0; i < SPR.MAX_TOTAL && candidates.length < SPR.MAX_PER_LINE; i++) {
-      const base = i * 4;
-      const spriteY = this.mmu.oam[base] - 16;
-      if (y >= spriteY && y < spriteY + spriteHeight) {
-        const slot = pool[candidates.length];
-        slot.spriteY = spriteY;
-        slot.spriteX = this.mmu.oam[base + 1] - 8;
-        slot.tileIndex = this.mmu.oam[base + 2];
-        slot.attrs = this.mmu.oam[base + 3];
-        slot.oamIndex = i;
-        candidates.push(slot);
-      }
-    }
-    candidates.sort(PPU._compareSpritePriority);
-    return candidates;
+    return gatherSpriteCandidatesForLine(
+      this.mmu, y, spriteHeight, this._spriteCandidates, this._spriteSlotPool, PPU._compareSpritePriority);
   }
 
   // Decodes a sprite's bit-planes for its row on scanline y, honoring Y-flip and (for
@@ -1123,13 +1157,10 @@ class PPU {
 
   // Blends a pixel toward its layer's debug tint color when layer-tint mode is on.
   _tintForLayer(r, g, b, layer) {
-    if (!this.emulator.layerTint) return [r, g, b];
-    const [tr, tg, tb] = PPU.LAYER_TINTS[layer];
-    const m = PPU.LAYER_TINT_MIX;
-    return [r * (1 - m) + tr * m, g * (1 - m) + tg * m, b * (1 - m) + tb * m];
+    return tintForLayer(this.emulator, r, g, b, layer);
   }
-  toSigned8(v) { return (v & 0x80) ? v - 256 : v; }
-  _setPixel(x, y, r, g, b) { const i = (y * EMU_CORE_CONFIG.SCREEN.WIDTH + x) * 4; this.framebuffer[i] = r; this.framebuffer[i + 1] = g; this.framebuffer[i + 2] = b; this.framebuffer[i + 3] = 255; }
+  toSigned8(v) { return toSigned8(v); }
+  _setPixel(x, y, r, g, b) { setFramebufferPixel(this.framebuffer, x, y, r, g, b); }
 }
 
 /* ==================================== 4. Timer ========================================== */

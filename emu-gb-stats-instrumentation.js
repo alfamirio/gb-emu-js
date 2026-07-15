@@ -1,8 +1,7 @@
 /* emu-gb-stats-instrumentation.js — classes injected into GBEmulator
-   Everything GBEmulator/APU accept as an optional constructor dependency lives here.
-   None of it is required — GBEmulator never constructs any of these itself, and no-ops
-   (via `?.`) around whichever ones are left null/undefined (see emu-gb-core.js). It's
-   app.js's job, as composition root, to build real instances and inject them:
+   Everything GBEmulator/APU accept as an optional constructor dependency lives here. None
+   of it is required — GBEmulator no-ops (via `?.`) around whichever ones are left null.
+   app.js, as composition root, builds real instances and injects them:
      - CoreStats: frame/interrupt/memory-access counters (Frame Activity, Interrupts,
        Memory Map, MBC Banking panels). No constructor args.
      - Instrumentation (+ disassembler): execution trace, breakpoints (Trace/Disasm/
@@ -12,9 +11,7 @@
        (requestFrame/cancelFrame), using requestAnimationFrame. */
 
 // Hex formatting for disassembly text, register readouts, and log lines throughout this
-// file (and emu-gb-debug.js). Moved from emu-gb-core.js: the core has no use for
-// human-readable hex beyond building breakpoint-hit messages, which now happens here too
-// (see Instrumentation.triggerBreakpoint() below).
+// file (and emu-gb-debug.js).
 function hex8(v) { return '0x' + v.toString(16).padStart(2, '0').toUpperCase(); }
 function hex16(v) { return '0x' + v.toString(16).padStart(4, '0').toUpperCase(); }
 
@@ -457,10 +454,8 @@ class Instrumentation {
   }
 
   // Pauses emulation and records why, so a breakpoint hit looks like pressing Pause.
-  // Reaches into the emulator to stop the run loop — the one bit of control-flow a
-  // breakpoint requires. `kind` is 'pc' (value = the PC that was reached) or 'opcode'
-  // (value = the opcode byte, extra = the PC it was fetched from); formatting the reason
-  // string here (rather than in emu-gb-core.js) keeps hex8/hex16 out of the core.
+  // `kind` is 'pc' (value = the PC that was reached) or 'opcode' (value = the opcode byte,
+  // extra = the PC it was fetched from).
   triggerBreakpoint(kind, value, extra) {
     const e = this.emulator;
     e._setRunning(false);
@@ -547,8 +542,7 @@ class Instrumentation {
   /* ---- RTC (MBC3 real-time clock) — read + the handful of mutations the RTC panel's
      buttons need. All go through here so debug.js never touches mmu.rtc directly. ---- */
 
-  // Catches the live counters up to "now" first, same as every other RTC read used to do
-  // inline before touching mmu.rtc.
+  // Catches the live counters up to "now" first, before reading them.
   readRTCState() {
     const mmu = this.emulator.mmu;
     mmu.tickRTC();
@@ -619,9 +613,7 @@ class Instrumentation {
   }
 
   // Per-scanline sprite candidates plus their decoded row bits, for the sprite-layer
-  // renderer (Layers > Sprites and the OAM composited view). `ppu` still passed through
-  // to spritePixelRGB()/spriteRowColorIndex() by the caller — this just replaces the two
-  // separate ppu.getSpriteCandidatesForLine()/getSpriteRowBits() calls debug.js used to make.
+  // renderer (Layers > Sprites and the OAM composited view).
   readSpritesForLine(line, spriteHeight) {
     const ppu = this.emulator.ppu;
     return ppu.getSpriteCandidatesForLine(line, spriteHeight)
@@ -630,12 +622,9 @@ class Instrumentation {
 
   /* ---- CGB-aware color helpers, shared by every visualization panel in debug.js. DMG uses
      one flat BGP/OBP0/OBP1 register per layer; CGB resolves color per-tile/per-sprite from
-     palette RAM. Absorbed verbatim from debug.js (isCGBRun/bgWindowPixelRGB/spritePixelRGB
-     lived there, reaching into ppu internals and CGBPPU/PPU class references from outside
-     core) — this is the phase that lets PPU/CGBPPU disappear from debug.js entirely. ---- */
+     palette RAM. ---- */
 
-  // Same check app.js's model-toggle-disable logic already uses — one consistent way to
-  // detect CGB mode, so CGBPPU no longer needs to be referenced from outside emu-gbc-core.js.
+  // One consistent way to detect CGB mode, so callers don't need a CGBPPU reference.
   isCGBRun() { return this.emulator instanceof CGBEmulator; }
 
   // BG/window pixel color at tile-map pixel-space (mapX, mapY) under the given map base.
@@ -655,8 +644,7 @@ class Instrumentation {
     return ppu.applyPalette(colorNum, (attrs & 0x10) ? ppu.obp1 : ppu.obp0);
   }
 
-  // Thin forward to the static PPU decode helper, so debug.js's sprite-layer renderer
-  // never needs a bare `PPU` class reference either.
+  // Thin forward to the static PPU decode helper, so callers don't need a bare `PPU` class reference.
   spriteRowColorIndex(lo, hi, xFlip, px) { return PPU.spriteRowColorIndex(lo, hi, xFlip, px); }
 
   // DMG palette register values, for the Palette viewer's BGP/OBP0/OBP1 readout. Meaningless
@@ -678,8 +666,7 @@ class Instrumentation {
 
   // Disassembles the instruction at `addr`, reading live memory through the real read8 path
   // (mirrors what the CPU would actually fetch, banking included) — used by the Disassembly
-  // panel's resync search and forward-decode. Thin forward to the free disassembleAt() above,
-  // so debug.js never needs to hold onto an `emulator.mmu` reference for this.
+  // panel's resync search and forward-decode.
   disassembleAt(addr) { return disassembleAt(this.emulator.mmu, addr); }
 }
 

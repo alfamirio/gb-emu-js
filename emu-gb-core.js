@@ -221,13 +221,28 @@ class MMU {
     this.hasTimer = false; // true only for cart types with an actual RTC chip (0x0F/0x10)
 
     const MEM = EMU_CORE_CONFIG.MEMORY;
-    this.vram = new Uint8Array(MEM.VRAM_SIZE);
-    this.wram = new Uint8Array(MEM.WRAM_SIZE);
     this.oam  = new Uint8Array(MEM.OAM_SIZE);
     this.hram = new Uint8Array(MEM.HRAM_SIZE);
     this.io   = new Uint8Array(MEM.IO_SIZE);
     this.ie   = 0; // 0xFFFF interrupt enable register
+
+    // Broken out so CGBMMU can replace flat VRAM/WRAM with banked memory (plus its other
+    // CGB-only state: palette RAM, HDMA, double-speed) without duplicating everything above.
+    this._initVRAMAndWRAM();
   }
+
+  // DMG: one flat VRAM bank and one flat WRAM bank. Overridden by CGBMMU, which allocates
+  // vramBanks/wramBanks instead and exposes the active VRAM bank via the `vram` getter below.
+  _initVRAMAndWRAM() {
+    const MEM = EMU_CORE_CONFIG.MEMORY;
+    this.vram = new Uint8Array(MEM.VRAM_SIZE);
+    this.wram = new Uint8Array(MEM.WRAM_SIZE);
+  }
+
+  // Single-bank WRAM read/write, addressed relative to the start of the 0xC000-0xDFFF
+  // window. Overridden by CGBMMU to add SVBK bank switching.
+  _readWRAM(offset) { return this.wram[offset]; }
+  _writeWRAM(offset, val) { this.wram[offset] = val; }
 
   // Classifies an address into a REGION_* id.
   _regionForAddr(addr) {
@@ -245,8 +260,9 @@ class MMU {
     return REGION_IE;
   }
 
-  loadROM(bytes) {
-    this.rom = bytes;
+  // Cartridge-header MBC detection and the banking/RTC state reset that follows it - shared
+  // verbatim by CGBMMU, since GBC carts use the exact same mapper chips as DMG carts.
+  _detectCartType(bytes) {
     const cartType = bytes[0x147];
     this.cartTypeByte = cartType;
     if (cartType === 0x00) { this.mbcType = 0; this.cartTypeSupported = true; }
@@ -265,6 +281,12 @@ class MMU {
 
     this.rtc.reset();
     this.rtcSelect = -1;
+  }
+
+  loadROM(bytes) {
+    this.rom = bytes;
+    this._detectCartType(bytes);
+
     const bootIO = EMU_CORE_CONFIG.BOOT.IO;
     this.io.fill(0);
     this.io[0x00] = bootIO.P1;
@@ -275,29 +297,38 @@ class MMU {
     this.io[0x49] = bootIO.OBP1;
   }
 
-  /* ---- save state ---- */
-  serialize() {
+  /* ---- save state ----
+     Split into a common part (MBC/cart-RAM/OAM/HRAM/IO/RTC state, identical for DMG and CGB)
+     and the VRAM/WRAM fields, which CGBMMU overrides to serialize its banked memory instead. */
+  _serializeCommon() {
     return {
       mbcType: this.mbcType, currentROMBank: this.currentROMBank, currentRAMBank: this.currentRAMBank,
       ramEnabled: this.ramEnabled, bankingMode: this.bankingMode,
-      cartRAM: u8ToBase64(this.cartRAM), vram: u8ToBase64(this.vram), wram: u8ToBase64(this.wram),
+      cartRAM: u8ToBase64(this.cartRAM),
       oam: u8ToBase64(this.oam), hram: u8ToBase64(this.hram), io: u8ToBase64(this.io), ie: this.ie,
       rtc: this.mbcType === 3 ? this.rtc.serialize() : undefined,
       rtcSelect: this.rtcSelect,
     };
   }
-  deserialize(s) {
+  _deserializeCommon(s) {
     this.mbcType = s.mbcType; this.currentROMBank = s.currentROMBank; this.currentRAMBank = s.currentRAMBank;
     this.ramEnabled = s.ramEnabled; this.bankingMode = s.bankingMode;
     this.cartRAM.set(base64ToU8(s.cartRAM));
-    this.vram.set(base64ToU8(s.vram));
-    this.wram.set(base64ToU8(s.wram));
     this.oam.set(base64ToU8(s.oam));
     this.hram.set(base64ToU8(s.hram));
     this.io.set(base64ToU8(s.io));
     this.ie = s.ie;
     if (s.rtc) this.rtc.deserialize(s.rtc);
     this.rtcSelect = (s.rtcSelect === undefined) ? -1 : s.rtcSelect;
+  }
+
+  serialize() {
+    return { ...this._serializeCommon(), vram: u8ToBase64(this.vram), wram: u8ToBase64(this.wram) };
+  }
+  deserialize(s) {
+    this._deserializeCommon(s);
+    this.vram.set(base64ToU8(s.vram));
+    this.wram.set(base64ToU8(s.wram));
   }
 
   read8(addr) {
@@ -324,8 +355,8 @@ class MMU {
       }
       return this.ramEnabled ? this.cartRAM[this.currentRAMBank * MEM.RAM_BANK_SIZE + (addr - MEM.VRAM_END)] : 0xFF;
     }
-    if (addr < MEM.WRAM_END) return this.wram[addr - MEM.ERAM_END];
-    if (addr < MEM.ECHO_END) return this.wram[addr - MEM.WRAM_END];  // echo of WRAM
+    if (addr < MEM.WRAM_END) return this._readWRAM(addr - MEM.ERAM_END);
+    if (addr < MEM.ECHO_END) return this._readWRAM(addr - MEM.WRAM_END);  // echo of WRAM
     if (addr < MEM.OAM_END) return this.oam[addr - MEM.ECHO_END];
     if (addr < MEM.UNUSABLE_END) return 0xFF;
     if (addr < MEM.IO_END) return this._readIO(addr);
@@ -346,8 +377,8 @@ class MMU {
       this.cartRAM[this.currentRAMBank * MEM.RAM_BANK_SIZE + (addr - MEM.VRAM_END)] = val;
       return;
     }
-    if (addr < MEM.WRAM_END) { this.wram[addr - MEM.ERAM_END] = val; return; }
-    if (addr < MEM.ECHO_END) { this.wram[addr - MEM.WRAM_END] = val; return; }
+    if (addr < MEM.WRAM_END) { this._writeWRAM(addr - MEM.ERAM_END, val); return; }
+    if (addr < MEM.ECHO_END) { this._writeWRAM(addr - MEM.WRAM_END, val); return; }
     if (addr < MEM.OAM_END) { this.oam[addr - MEM.ECHO_END] = val; return; }
     if (addr < MEM.UNUSABLE_END) return;
     if (addr < MEM.IO_END) { this._writeIO(addr, val); return; }
@@ -951,6 +982,7 @@ class PPU {
           this.mode = 0; this._setStatMode(0);
           this._renderScanline();
           this._checkStatInterrupt(0x08);
+          this._afterPixelTransfer(); // hook: CGBPPU services one pending HDMA block here
         }
         break;
 
@@ -994,6 +1026,10 @@ class PPU {
   }
 
   _checkStatInterrupt(bit) { if (this.stat & bit) this.emulator.requestInterrupt(1); }
+
+  // Called once per H-Blank, right after a scanline is rendered. No-op on DMG; CGBPPU
+  // overrides this to service one pending H-Blank-mode HDMA block.
+  _afterPixelTransfer() {}
 
   _renderScanline() {
     const y = this.ly;
@@ -1056,7 +1092,7 @@ class PPU {
   // the real X-then-OAM-index priority rule.
   getSpriteCandidatesForLine(y, spriteHeight) {
     return gatherSpriteCandidatesForLine(
-      this.mmu, y, spriteHeight, this._spriteCandidates, this._spriteSlotPool, PPU._compareSpritePriority);
+      this.mmu, y, spriteHeight, this._spriteCandidates, this._spriteSlotPool, this.constructor._compareSpritePriority);
   }
 
   // Decodes a sprite's bit-planes for its row on scanline y, honoring Y-flip and (for

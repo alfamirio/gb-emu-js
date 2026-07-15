@@ -34,36 +34,20 @@ const EMU_CGB_CORE_CONFIG = {
 
 /* ============================== 1. CGBMMU ================================================ */
 
-class CGBMMU {
-  constructor(emulator) {
-    this.emulator = emulator;
+class CGBMMU extends MMU {
+  // MBC/cart-RAM/RTC/OAM/HRAM/IO/IE setup is identical to the DMG MMU and is inherited from
+  // the base constructor unchanged. CGB replaces flat VRAM/WRAM with banked memory (via the
+  // _initVRAMAndWRAM() override below) and adds palette RAM, HDMA, and double-speed state.
 
-    this.rom = new Uint8Array(0);
-    this.mbcType = 0;
-    this.hasRumble = false;
-    this.currentROMBank = 1;
-    this.currentRAMBank = 0;
-    this.ramEnabled = false;
-    this.bankingMode = 0;
-
-    const MEM = EMU_CORE_CONFIG.MEMORY;
+  // Called from the base MMU constructor in place of the flat vram/wram allocation.
+  _initVRAMAndWRAM() {
     const CGB = EMU_CGB_CORE_CONFIG;
-    this.cartRAM = new Uint8Array(MEM.CART_RAM_SIZE);
-
-    this.rtc = new RTCUnit();
-    this.rtcSelect = -1;
-    this.hasTimer = false; // cart types 0x0F/0x10 (MBC3+TIMER)
 
     // Two VRAM banks (0x8000-0x9FFF window), eight 4KB WRAM banks.
     this.vramBanks = [new Uint8Array(CGB.VRAM_BANK_SIZE), new Uint8Array(CGB.VRAM_BANK_SIZE)];
     this.vbk = 0; // 0xFF4F bit0: which VRAM bank is mapped
     this.wramBanks = Array.from({ length: CGB.WRAM_BANK_COUNT }, () => new Uint8Array(CGB.WRAM_BANK_SIZE));
     this.svbk = 1; // 0xFF70 bits0-2: which bank maps to 0xD000-0xDFFF (0 behaves as 1)
-
-    this.oam  = new Uint8Array(MEM.OAM_SIZE);
-    this.hram = new Uint8Array(MEM.HRAM_SIZE);
-    this.io   = new Uint8Array(MEM.IO_SIZE);
-    this.ie   = 0;
 
     // BG and OBJ palette RAM: 8 palettes x 4 colors x 2 bytes (RGB555) each.
     this.bgPaletteRAM  = new Uint8Array(CGB.PALETTE_RAM_SIZE);
@@ -84,51 +68,33 @@ class CGBMMU {
   }
 
   // Currently-mapped VRAM bank as a flat Uint8Array, mirroring reads to 0x8000-0x9FFF.
-  get _vram() { return this.vramBanks[this.vbk & 1]; }
+  // The base MMU's read8/peek8/write8 use `this.vram` directly, so overriding just this
+  // getter is enough to make all of that dispatch logic work unchanged for CGB.
+  get vram() { return this.vramBanks[this.vbk & 1]; }
 
-  _regionForAddr(addr) {
-    const MEM = EMU_CORE_CONFIG.MEMORY;
-    if (addr < MEM.ROM0_END) return REGION_ROM0;
-    if (addr < MEM.ROMX_END) return REGION_ROMX;
-    if (addr < MEM.VRAM_END) return REGION_VRAM;
-    if (addr < MEM.ERAM_END) return REGION_ERAM;
-    if (addr < MEM.WRAM_END) return REGION_WRAM;
-    if (addr < MEM.ECHO_END) return REGION_WRAM;
-    if (addr < MEM.OAM_END) return REGION_OAM;
-    if (addr < MEM.UNUSABLE_END) return REGION_UNUSED;
-    if (addr < MEM.IO_END) return REGION_IO;
-    if (addr < MEM.HRAM_END) return REGION_HRAM;
-    return REGION_IE;
+  // WRAM window is two 4KB halves: 0x0000-0x0FFF (of the window) is always bank 0;
+  // 0x1000-0x1FFF is whichever bank SVBK selects (0 behaves as 1, never selectable).
+  _readWRAM(offset) {
+    if (offset < 0x1000) return this.wramBanks[0][offset];
+    const bank = (this.svbk & 0x07) || 1;
+    return this.wramBanks[bank][offset - 0x1000];
+  }
+  _writeWRAM(offset, val) {
+    if (offset < 0x1000) { this.wramBanks[0][offset] = val; return; }
+    const bank = (this.svbk & 0x07) || 1;
+    this.wramBanks[bank][offset - 0x1000] = val;
   }
 
   /* ---- ROM load / cartridge detection (same MBC1/2/3/5 support as the DMG MMU) ---- */
   loadROM(bytes) {
     this.rom = bytes;
-    const cartType = bytes[0x147];
-    this.cartTypeByte = cartType;
+    this._detectCartType(bytes);
 
     // CGB flag (0x143): 0x80 = CGB-enhanced (also runs on DMG), 0xC0 = CGB-exclusive.
     // Anything else never touches BCPS/BCPD, so palette RAM needs DMG-compat translation.
     const cgbFlag = bytes[0x143];
     this.cgbFlag = cgbFlag;
     this.isCGBCart = (cgbFlag === 0x80 || cgbFlag === 0xC0);
-
-    if (cartType === 0x00) { this.mbcType = 0; this.cartTypeSupported = true; }
-    else if (cartType >= 0x01 && cartType <= 0x03) { this.mbcType = 1; this.cartTypeSupported = true; }
-    else if (cartType === 0x05 || cartType === 0x06) { this.mbcType = 2; this.cartTypeSupported = true; }
-    else if (cartType >= 0x0F && cartType <= 0x13) { this.mbcType = 3; this.cartTypeSupported = true; }
-    else if (cartType >= 0x19 && cartType <= 0x1E) { this.mbcType = 5; this.cartTypeSupported = true; }
-    else { this.mbcType = 1; this.cartTypeSupported = false; }
-    this.hasRumble = (cartType >= 0x1C && cartType <= 0x1E);
-    this.hasTimer = (cartType === 0x0F || cartType === 0x10);
-
-    this.currentROMBank = 1;
-    this.currentRAMBank = 0;
-    this.ramEnabled = false;
-    this.bankingMode = 0;
-
-    this.rtc.reset();
-    this.rtcSelect = -1;
 
     this.vramBanks[0].fill(0); this.vramBanks[1].fill(0); this.vbk = 0;
     for (const bank of this.wramBanks) bank.fill(0);
@@ -157,173 +123,37 @@ class CGBMMU {
     }
   }
 
-  /* ---- save state ---- */
+  /* ---- save state ----
+     The MBC/cart-RAM/OAM/HRAM/IO/RTC portion is identical to the DMG MMU and comes from
+     _serializeCommon()/_deserializeCommon(); only the memory layout below it differs. */
   serialize() {
     return {
-      mbcType: this.mbcType, currentROMBank: this.currentROMBank, currentRAMBank: this.currentRAMBank,
-      ramEnabled: this.ramEnabled, bankingMode: this.bankingMode,
-      cartRAM: u8ToBase64(this.cartRAM),
+      ...this._serializeCommon(),
       vram0: u8ToBase64(this.vramBanks[0]), vram1: u8ToBase64(this.vramBanks[1]), vbk: this.vbk,
       wram: this.wramBanks.map(u8ToBase64), svbk: this.svbk,
-      oam: u8ToBase64(this.oam), hram: u8ToBase64(this.hram), io: u8ToBase64(this.io), ie: this.ie,
       bgPaletteRAM: u8ToBase64(this.bgPaletteRAM), objPaletteRAM: u8ToBase64(this.objPaletteRAM),
       bcps: this.bcps, ocps: this.ocps,
       hdmaSrc: this.hdmaSrc, hdmaDst: this.hdmaDst, hdmaActive: this.hdmaActive, hdmaBlocksLeft: this.hdmaBlocksLeft,
       doubleSpeed: this.doubleSpeed, speedSwitchArmed: this.speedSwitchArmed,
-      rtc: this.mbcType === 3 ? this.rtc.serialize() : undefined,
-      rtcSelect: this.rtcSelect,
     };
   }
   deserialize(s) {
-    this.mbcType = s.mbcType; this.currentROMBank = s.currentROMBank; this.currentRAMBank = s.currentRAMBank;
-    this.ramEnabled = s.ramEnabled; this.bankingMode = s.bankingMode;
-    this.cartRAM.set(base64ToU8(s.cartRAM));
+    this._deserializeCommon(s);
     this.vramBanks[0].set(base64ToU8(s.vram0)); this.vramBanks[1].set(base64ToU8(s.vram1)); this.vbk = s.vbk;
     s.wram.forEach((b64, i) => this.wramBanks[i].set(base64ToU8(b64))); this.svbk = s.svbk;
-    this.oam.set(base64ToU8(s.oam)); this.hram.set(base64ToU8(s.hram)); this.io.set(base64ToU8(s.io));
-    this.ie = s.ie;
     this.bgPaletteRAM.set(base64ToU8(s.bgPaletteRAM)); this.objPaletteRAM.set(base64ToU8(s.objPaletteRAM));
     this.bcps = s.bcps; this.ocps = s.ocps;
     this.hdmaSrc = s.hdmaSrc; this.hdmaDst = s.hdmaDst; this.hdmaActive = s.hdmaActive; this.hdmaBlocksLeft = s.hdmaBlocksLeft;
     this.doubleSpeed = s.doubleSpeed; this.speedSwitchArmed = s.speedSwitchArmed;
-    if (s.rtc) this.rtc.deserialize(s.rtc);
-    this.rtcSelect = (s.rtcSelect === undefined) ? -1 : s.rtcSelect;
   }
 
-  read8(addr) {
-    addr &= 0xFFFF;
-    if (this.emulator.stats?.trackMemMap) this.emulator.stats.recordMemAccess(addr, this._regionForAddr(addr), 'read');
-    return this.peek8(addr);
-  }
-
-  peek8(addr) {
-    addr &= 0xFFFF;
-    const MEM = EMU_CORE_CONFIG.MEMORY;
-    if (addr < MEM.ROM0_END) return this.rom[addr] ?? 0xFF;
-    if (addr < MEM.ROMX_END) return this.rom[this.currentROMBank * MEM.ROM_BANK_SIZE + (addr - MEM.ROM0_END)] ?? 0xFF;
-    if (addr < MEM.VRAM_END) return this._vram[addr - MEM.ROMX_END];
-    if (addr < MEM.ERAM_END) {
-      if (this.mbcType === 3 && this.rtcSelect !== -1) return this._readRTCRegister();
-      if (this.mbcType === 2) {
-        if (!this.ramEnabled) return 0xFF;
-        return 0xF0 | (this.cartRAM[addr & 0x1FF] & 0x0F);
-      }
-      return this.ramEnabled ? this.cartRAM[this.currentRAMBank * MEM.RAM_BANK_SIZE + (addr - MEM.VRAM_END)] : 0xFF;
-    }
-    if (addr < MEM.WRAM_END) return this._readWRAM(addr - MEM.ERAM_END);       // 0xC000-0xDFFF
-    if (addr < MEM.ECHO_END) return this._readWRAM(addr - MEM.WRAM_END);       // echo of WRAM
-    if (addr < MEM.OAM_END) return this.oam[addr - MEM.ECHO_END];
-    if (addr < MEM.UNUSABLE_END) return 0xFF;
-    if (addr < MEM.IO_END) return this._readIO(addr);
-    if (addr < MEM.HRAM_END) return this.hram[addr - MEM.IO_END];
-    return this.ie;
-  }
-
-  // WRAM window is two 4KB halves: 0x0000-0x0FFF (of the window) is always bank 0;
-  // 0x1000-0x1FFF is whichever bank SVBK selects (0 behaves as 1, never selectable).
-  _readWRAM(offset) {
-    if (offset < 0x1000) return this.wramBanks[0][offset];
-    const bank = (this.svbk & 0x07) || 1;
-    return this.wramBanks[bank][offset - 0x1000];
-  }
-  _writeWRAM(offset, val) {
-    if (offset < 0x1000) { this.wramBanks[0][offset] = val; return; }
-    const bank = (this.svbk & 0x07) || 1;
-    this.wramBanks[bank][offset - 0x1000] = val;
-  }
-
-  write8(addr, val) {
-    addr &= 0xFFFF; val &= 0xFF;
-    if (this.emulator.stats?.trackMemMap) this.emulator.stats.recordMemAccess(addr, this._regionForAddr(addr), 'write');
-    const MEM = EMU_CORE_CONFIG.MEMORY;
-    if (addr < MEM.ROMX_END) { this._handleBanking(addr, val); return; }
-    if (addr < MEM.VRAM_END) { this._vram[addr - MEM.ROMX_END] = val; return; }
-    if (addr < MEM.ERAM_END) {
-      if (!this.ramEnabled) return;
-      if (this.mbcType === 3 && this.rtcSelect !== -1) { this._writeRTCRegister(val); return; }
-      if (this.mbcType === 2) { this.cartRAM[addr & 0x1FF] = val & 0x0F; return; }
-      this.cartRAM[this.currentRAMBank * MEM.RAM_BANK_SIZE + (addr - MEM.VRAM_END)] = val;
-      return;
-    }
-    if (addr < MEM.WRAM_END) { this._writeWRAM(addr - MEM.ERAM_END, val); return; }
-    if (addr < MEM.ECHO_END) { this._writeWRAM(addr - MEM.WRAM_END, val); return; }
-    if (addr < MEM.OAM_END) { this.oam[addr - MEM.ECHO_END] = val; return; }
-    if (addr < MEM.UNUSABLE_END) return;
-    if (addr < MEM.IO_END) { this._writeIO(addr, val); return; }
-    if (addr < MEM.HRAM_END) { this.hram[addr - MEM.IO_END] = val; return; }
-    this.ie = val;
-  }
-
-  /* ---- MBC banking (same logic as the DMG MMU - GBC carts use the same mapper chips) ---- */
-  _handleBanking(addr, val) {
-    if (this.mbcType === 0) return;
-    const prevROM = this.currentROMBank, prevRAM = this.currentRAMBank,
-          prevEnabled = this.ramEnabled, prevMode = this.bankingMode, prevRtcSelect = this.rtcSelect;
-
-    if (this.mbcType === 1) {
-      if (addr < 0x2000) { this.ramEnabled = (val & 0x0F) === 0x0A; }
-      else if (addr < 0x4000) {
-        let bank = val & 0x1F; if (bank === 0) bank = 1;
-        this.currentROMBank = (this.currentROMBank & 0x60) | bank;
-      } else if (addr < 0x6000) {
-        if (this.bankingMode === 0) this.currentROMBank = (this.currentROMBank & 0x1F) | ((val & 0x03) << 5);
-        else this.currentRAMBank = val & 0x03;
-      } else { this.bankingMode = val & 0x01; }
-    } else if (this.mbcType === 2) {
-      if (addr < 0x4000) {
-        if ((addr & 0x0100) === 0) { this.ramEnabled = (val & 0x0F) === 0x0A; }
-        else { let bank = val & 0x0F; if (bank === 0) bank = 1; this.currentROMBank = bank; }
-      }
-    } else if (this.mbcType === 3) {
-      if (addr < 0x2000) { this.ramEnabled = (val & 0x0F) === 0x0A; }
-      else if (addr < 0x4000) { let bank = val & 0x7F; if (bank === 0) bank = 1; this.currentROMBank = bank; }
-      else if (addr < 0x6000) {
-        if (val <= 0x03) { this.currentRAMBank = val; this.rtcSelect = -1; }
-        else if (val >= 0x08 && val <= 0x0C) { this.rtcSelect = val; }
-      } else {
-        if (this.rtc.lastLatchWrite === 0x00 && val === 0x01) this.rtc.latch();
-        this.rtc.lastLatchWrite = val;
-      }
-    } else if (this.mbcType === 5) {
-      if (addr < 0x2000) { this.ramEnabled = (val & 0x0F) === 0x0A; }
-      else if (addr < 0x3000) { this.currentROMBank = (this.currentROMBank & 0x100) | val; }
-      else if (addr < 0x4000) { this.currentROMBank = (this.currentROMBank & 0xFF) | ((val & 0x01) << 8); }
-      else if (addr < 0x6000) { this.currentRAMBank = val & (this.hasRumble ? 0x07 : 0x0F); }
-    }
-
-    if (this.currentROMBank !== prevROM) {
-      this.emulator.stats?.recordBankSwitch('rom', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
-    } else if (this.currentRAMBank !== prevRAM) {
-      this.emulator.stats?.recordBankSwitch('ram', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
-    } else if (this.rtcSelect !== prevRtcSelect) {
-      this.emulator.stats?.recordBankSwitch('rtc', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
-    } else if (this.ramEnabled !== prevEnabled) {
-      this.emulator.stats?.recordBankSwitch('enable', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
-    } else if (this.bankingMode !== prevMode) {
-      this.emulator.stats?.recordBankSwitch('mode', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
-    }
-  }
-
-  tickRTC() {
-    this.rtc.tick();
-  }
-  _readRTCRegister() {
-    return this.rtc.readRegister(this.rtcSelect);
-  }
-  _writeRTCRegister(val) {
-    this.rtc.writeRegister(this.rtcSelect, val);
-  }
-
-  /* ---- I/O ---- */
+  /* ---- I/O ----
+     read8/peek8/write8, _regionForAddr, _handleBanking (MBC1/2/3/5 - GBC carts use the same
+     mapper chips), and the RTC helpers are all inherited unchanged from the base MMU. Only
+     the CGB-only registers need handling here; anything else falls through to super. */
   _readIO(addr) {
     const reg = addr & 0xFF;
-    if (reg >= 0x10 && reg <= 0x3F) return this.emulator.apu.read(0xFF00 | reg);
     switch (reg) {
-      case 0x00: return this.emulator.joypad.read();
-      case 0x04: return this.emulator.timer.div;
-      case 0x05: return this.emulator.timer.tima;
-      case 0x06: return this.emulator.timer.tma;
-      case 0x07: return this.emulator.timer.tac;
       case 0x4D: return (this.doubleSpeed ? 0x80 : 0) | 0x7E | (this.speedSwitchArmed ? 0x01 : 0); // KEY1
       case 0x4F: return 0xFE | (this.vbk & 0x01); // VBK
       case 0x55: return this.hdmaActive ? ((this.hdmaBlocksLeft - 1) & 0x7F) : 0xFF; // HDMA5
@@ -332,22 +162,13 @@ class CGBMMU {
       case 0x6A: return this.ocps; // OCPS/OBPI
       case 0x6B: return this.objPaletteRAM[this.ocps & 0x3F]; // OCPD/OBPD
       case 0x70: return 0xF8 | ((this.svbk & 0x07) || 1); // SVBK (0 always reads back as 1)
-      default: return this.io[reg];
+      default: return super._readIO(addr);
     }
   }
 
   _writeIO(addr, val) {
     const reg = addr & 0xFF;
-    if (reg >= 0x10 && reg <= 0x3F) { this.emulator.apu.write(0xFF00 | reg, val); return; }
     switch (reg) {
-      case 0x00: this.emulator.joypad.write(val); return;
-      case 0x04: this.emulator.timer.div = 0; return;
-      case 0x05: this.emulator.timer.tima = val; return;
-      case 0x06: this.emulator.timer.tma = val; return;
-      case 0x07: this.emulator.timer.tac = val & 0x07; return;
-      case 0x41: this.io[reg] = (this.io[reg] & 0x07) | (val & 0xF8); return;
-      case 0x44: this.io[reg] = 0; return;
-      case 0x46: this._doDMA(val); return;
       // BGP/OBP0/OBP1 only actually drive the screen for a non-CGB cart (DMG-compat mode).
       case 0x47: this.io[reg] = val; if (!this.isCGBCart) this._applyDMGCompatPalette(0x47, val); return;
       case 0x48: this.io[reg] = val; if (!this.isCGBCart) this._applyDMGCompatPalette(0x48, val); return;
@@ -365,7 +186,7 @@ class CGBMMU {
       case 0x6B: this._writeOBJPaletteByte(val); return;
       case 0x6C: this.io[reg] = val; return; // OPRI - accepted but not acted on
       case 0x70: this.svbk = val & 0x07; return;
-      default: this.io[reg] = val; return;
+      default: super._writeIO(addr, val); return;
     }
   }
 
@@ -406,10 +227,6 @@ class CGBMMU {
     }
   }
 
-  _doDMA(val) {
-    performOAMDMA(this, val);
-  }
-
   // HDMA5 write: bit7 picks general-purpose (instant) vs H-Blank-mode transfer; bits0-6 are
   // (length / 0x10) - 1, i.e. 1-128 blocks of 16 bytes each.
   _startHDMA(val) {
@@ -423,11 +240,12 @@ class CGBMMU {
     }
   }
 
-  // Moves one 0x10-byte block from hdmaSrc to hdmaDst (both auto-advance).
+  // Moves one 0x10-byte block from hdmaSrc to hdmaDst (both auto-advance). Destination is
+  // always within the currently VBK-selected VRAM bank, same bank the `vram` getter exposes.
   _transferHDMABlock() {
     const CGB = EMU_CGB_CORE_CONFIG;
     for (let i = 0; i < CGB.HDMA_BLOCK_BYTES; i++) {
-      this._vram[(this.hdmaDst & 0x1FFF) + i] = this.read8((this.hdmaSrc + i) & 0xFFFF);
+      this.vram[(this.hdmaDst & 0x1FFF) + i] = this.read8((this.hdmaSrc + i) & 0xFFFF);
     }
     this.hdmaSrc = (this.hdmaSrc + CGB.HDMA_BLOCK_BYTES) & 0xFFFF;
     this.hdmaDst = (this.hdmaDst + CGB.HDMA_BLOCK_BYTES) & 0x1FFF;
@@ -441,6 +259,7 @@ class CGBMMU {
     if (this.hdmaBlocksLeft <= 0) this.hdmaActive = false;
   }
 }
+
 
 /* ============================== 2. CGBCPU (subclass of CPU) ============================= */
 
@@ -465,101 +284,17 @@ class CGBCPU extends CPU {
 
 /* ============================== 3. CGBPPU ================================================ */
 
-class CGBPPU {
-  constructor(emulator) {
-    this.emulator = emulator;
-    this.mmu = emulator.mmu;
-    this.modeClock = 0;
-    this.mode = 2;
-    this.windowLineCounter = 0;
-    this.framebuffer = new Uint8ClampedArray(EMU_CORE_CONFIG.SCREEN.WIDTH * EMU_CORE_CONFIG.SCREEN.HEIGHT * 4);
+class CGBPPU extends PPU {
+  // Constructor, serialize/deserialize, all mmu.io-backed getters (lcdc/stat/scy/scx/ly/lyc/
+  // bgp/obp0/obp1/wy/wx), step(), _setStatMode/_checkLYC/_checkStatInterrupt,
+  // bgWindowTileDataConfig(), _tintForLayer/toSigned8/_setPixel, and getSpriteCandidatesForLine()
+  // are all inherited unchanged from the base PPU. Only HDMA servicing, tile/sprite pixel
+  // decoding (banked VRAM + CGB palettes), and sprite priority genuinely differ.
 
-    this._spriteCandidates = [];
-    this._spriteSlotPool = Array.from({ length: EMU_CORE_CONFIG.SPRITES.MAX_PER_LINE },
-      () => ({ spriteY: 0, spriteX: 0, tileIndex: 0, attrs: 0, oamIndex: 0 }));
+  // One H-Blank-mode HDMA block transfers per H-Blank, right after the scanline renders.
+  _afterPixelTransfer() {
+    this.mmu.serviceHDMABlock();
   }
-
-  serialize() {
-    return {
-      modeClock: this.modeClock, mode: this.mode, windowLineCounter: this.windowLineCounter,
-      framebuffer: u8ToBase64(this.framebuffer),
-    };
-  }
-  deserialize(s) {
-    this.modeClock = s.modeClock; this.mode = s.mode; this.windowLineCounter = s.windowLineCounter;
-    this.framebuffer.set(base64ToU8(s.framebuffer));
-  }
-
-  get lcdc() { return this.mmu.io[0x40]; }
-  get _stat() { return this.mmu.io[0x41]; } set _stat(v) { this.mmu.io[0x41] = v; }
-  get scy()  { return this.mmu.io[0x42]; }
-  get scx()  { return this.mmu.io[0x43]; }
-  get ly()   { return this.mmu.io[0x44]; } set ly(v)   { this.mmu.io[0x44] = v & 0xFF; }
-  get _lyc()  { return this.mmu.io[0x45]; }
-  get bgp()  { return this.mmu.io[0x47]; }
-  get obp0() { return this.mmu.io[0x48]; }
-  get obp1() { return this.mmu.io[0x49]; }
-  get wy()   { return this.mmu.io[0x4A]; }
-  get wx()   { return this.mmu.io[0x4B]; }
-
-  step(cycles) {
-    if (!(this.lcdc & 0x80)) { this.modeClock = 0; this.ly = 0; this.mode = 0; this._setStatMode(0); return; }
-
-    const MODE = EMU_CORE_CONFIG.PPU_MODE_CYCLES, FRAME = EMU_CORE_CONFIG.FRAME;
-    this.modeClock += cycles;
-    switch (this.mode) {
-      case 2: // OAM search
-        if (this.modeClock >= MODE.OAM_SEARCH) { this.modeClock -= MODE.OAM_SEARCH; this.mode = 3; }
-        break;
-
-      case 3: // pixel transfer
-        if (this.modeClock >= MODE.PIXEL_TRANSFER) {
-          this.modeClock -= MODE.PIXEL_TRANSFER;
-          this.mode = 0; this._setStatMode(0);
-          this._renderScanline();
-          this._checkStatInterrupt(0x08);
-          this.mmu.serviceHDMABlock(); // one HDMA block per H-Blank
-        }
-        break;
-
-      case 0: // H-Blank
-        if (this.modeClock >= MODE.HBLANK) {
-          this.modeClock -= MODE.HBLANK;
-          this.ly++;
-          this._checkLYC();
-          if (this.ly === FRAME.VISIBLE_LINES) {
-            this.mode = 1; this._setStatMode(1);
-            this.emulator.requestInterrupt(0);
-            this._checkStatInterrupt(0x10);
-            this.emulator.frameReady = true;
-          } else {
-            this.mode = 2; this._setStatMode(2);
-            this._checkStatInterrupt(0x20);
-          }
-        }
-        break;
-
-      case 1: // V-Blank
-        if (this.modeClock >= FRAME.CYCLES_PER_LINE) {
-          this.modeClock -= FRAME.CYCLES_PER_LINE;
-          this.ly++;
-          if (this.ly > FRAME.TOTAL_LINES - 1) {
-            this.ly = 0; this.windowLineCounter = 0;
-            this.mode = 2; this._setStatMode(2);
-            this._checkStatInterrupt(0x20);
-          }
-          this._checkLYC();
-        }
-        break;
-    }
-  }
-
-  _setStatMode(mode) { this._stat = (this._stat & 0xFC) | mode; }
-  _checkLYC() {
-    if (this.ly === this._lyc) { this._stat |= 0x04; if (this._stat & 0x40) this.emulator.requestInterrupt(1); }
-    else this._stat &= ~0x04;
-  }
-  _checkStatInterrupt(bit) { if (this._stat & bit) this.emulator.requestInterrupt(1); }
 
   _renderScanline() {
     const y = this.ly;
@@ -585,19 +320,12 @@ class CGBPPU {
     return { tileIndexRaw, attrs };
   }
 
-  bgWindowTileDataConfig() {
-    const signedIndex = !(this.lcdc & 0x10);
-    if (this._tdConfig && this._tdConfig.signedIndex === signedIndex) return this._tdConfig;
-    this._tdConfig = { tileDataBase: signedIndex ? 0x9000 : 0x8000, signedIndex };
-    return this._tdConfig;
-  }
-
   // Color index (0-3) plus resolved CGB palette number/bank/priority for a BG or window
   // pixel at tile-space (mapX, mapY).
   getBGWindowPixel(tileMapBase, mapX, mapY) {
     const { tileIndexRaw, attrs } = this._getTileInfo(tileMapBase, mapX, mapY);
     const { tileDataBase, signedIndex } = this.bgWindowTileDataConfig();
-    const tileIndex = signedIndex ? this._toSigned8(tileIndexRaw) : tileIndexRaw;
+    const tileIndex = signedIndex ? this.toSigned8(tileIndexRaw) : tileIndexRaw;
     const bank = (attrs & 0x08) ? 1 : 0;
     const xFlip = !!(attrs & 0x20), yFlip = !!(attrs & 0x40);
     const priority = !!(attrs & 0x80);
@@ -678,13 +406,10 @@ class CGBPPU {
     if (drewAny) this.windowLineCounter++;
   }
 
-  // CGB default priority: OAM index order, lowest index drawn on top (not DMG's X-coordinate rule).
+  // CGB default priority: OAM index order, lowest index drawn on top (not DMG's X-coordinate
+  // rule). getSpriteCandidatesForLine() itself is inherited from PPU, which looks up this
+  // comparator via `this.constructor._compareSpritePriority`.
   static _compareSpritePriority(a, b) { return b.oamIndex - a.oamIndex; }
-
-  getSpriteCandidatesForLine(y, spriteHeight) {
-    return gatherSpriteCandidatesForLine(
-      this.mmu, y, spriteHeight, this._spriteCandidates, this._spriteSlotPool, CGBPPU._compareSpritePriority);
-  }
 
   getSpriteRowBits(sprite, y, spriteHeight) {
     const yFlip = !!(sprite.attrs & 0x40), xFlip = !!(sprite.attrs & 0x20);
@@ -702,11 +427,6 @@ class CGBPPU {
       hi: this.mmu.vramBanks[bank][tileOffset + rowInSprite * 2 + 1],
       xFlip,
     };
-  }
-
-  static _spriteRowColorIndex(lo, hi, xFlip, px) {
-    const bit = xFlip ? px : 7 - px;
-    return (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
   }
 
   _renderSpritesLine(y, bgPriority) {
@@ -731,7 +451,7 @@ class CGBPPU {
       for (let px = 0; px < 8; px++) {
         const sx = s.spriteX + px;
         if (sx < 0 || sx >= EMU_CORE_CONFIG.SCREEN.WIDTH) continue;
-        const colorNum = CGBPPU._spriteRowColorIndex(lo, hi, xFlip, px);
+        const colorNum = CGBPPU.spriteRowColorIndex(lo, hi, xFlip, px);
         if (colorNum === 0) continue;
         if (masterPriority) {
           const bgHasColor = !!(bgPriority[sx] & 1);
@@ -748,15 +468,8 @@ class CGBPPU {
       }
     }
   }
-
-  // Blends a pixel toward its layer's debug tint color when layer-tint mode is on.
-  _tintForLayer(r, g, b, layer) {
-    return tintForLayer(this.emulator, r, g, b, layer);
-  }
-
-  _toSigned8(v) { return toSigned8(v); }
-  _setPixel(x, y, r, g, b) { setFramebufferPixel(this.framebuffer, x, y, r, g, b); }
 }
+
 
 /* ================================== 4. CGBEmulator ======================================= */
 

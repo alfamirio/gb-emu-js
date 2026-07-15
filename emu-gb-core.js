@@ -1,19 +1,16 @@
 /* =========================================================================================
    emu-gb-core.js — JS GB (DMG) emulation core
-   -----------------------------------------------------------------------------------------
    Hardware emulation: MMU, CPU, PPU, Timer, Joypad, APU, and the GBEmulator that drives them.
 
-   Organized into seven parts, one per hardware component:
-     1. MMU      - memory map: ROM banking, RAM, VRAM, OAM, I/O registers
-     2. CPU      - the LR35902 processor: registers, flags, instruction set
-     3. PPU      - turns VRAM/OAM into the 160x144 screen image
-     4. Timer    - DIV/TIMA/TMA/TAC timer circuit
-     5. Joypad   - button state + joypad I/O register
-     6. APU      - 4-channel sound generator (Web Audio output)
+     1. MMU        - memory map: ROM banking, RAM, VRAM, OAM, I/O registers
+     2. CPU        - the LR35902 processor: registers, flags, instruction set
+     3. PPU        - turns VRAM/OAM into the 160x144 screen image
+     4. Timer      - DIV/TIMA/TMA/TAC timer circuit
+     5. Joypad     - button state + joypad I/O register
+     6. APU        - 4-channel sound generator (Web Audio output)
      7. GBEmulator - glues everything together and drives the main loop
 
-   New to GB internals? Start with the CPU: opcodes are decoded as bit fields, the same
-   way the hardware does it, so ~500 instruction/CB combinations stay compact.
+   New to GB internals? Start with the CPU: opcodes decode as bit fields, same as real hardware.
    ========================================================================================= */
 
 /* ============================== 0. Emulation core config =============================== */
@@ -103,10 +100,9 @@ const REGION_ROM0 = 0, REGION_ROMX = 1, REGION_VRAM = 2, REGION_ERAM = 3, REGION
 const REGION_COUNT = 10;
 const REGION_NAMES = ['ROM0', 'ROMX', 'VRAM', 'ERAM', 'WRAM', 'OAM', 'UNUSED', 'IO', 'HRAM', 'IE'];
 
-// MBC3 real-time clock. Shared by the DMG MMU and CGB MMU (identical chip/behavior on both
-// consoles) so the wall-clock tick, latch, and register read/write logic lives in one place.
-// `s/m/h/dl/dh` is the live counter, advanced from wall-clock time; `latched` is the frozen
-// snapshot 0xA000-0xBFFF reads actually return, updated only on a 0x00-then-0x01 latch write.
+// MBC3 real-time clock, shared by DMG and CGB MMUs. `s/m/h/dl/dh` is the live counter,
+// advanced from wall-clock time; `latched` is the frozen snapshot reads return, updated
+// only on a 0x00-then-0x01 latch write to 0x6000-0x7FFF.
 class RTCUnit {
   constructor() {
     this.reset();
@@ -119,8 +115,8 @@ class RTCUnit {
     this.lastRealMs = Date.now();
   }
 
-  // Advances the live counters by however much wall-clock time has passed. Skipped while
-  // halted (dh bit 6), which is how games freeze the clock to set it precisely.
+  // Advances counters by elapsed wall-clock time. Skipped while halted (dh bit 6), which
+  // is how games freeze the clock to set it precisely.
   tick() {
     const halted = (this.dh & 0x40) !== 0;
     const now = Date.now();
@@ -193,8 +189,7 @@ class RTCUnit {
 }
 
 // OAM DMA: copies 160 bytes from XX00-XX9F into OAM. Real hardware takes 160 cycles and
-// blocks memory access meanwhile; done instantly here. Shared by the DMG MMU and CGB MMU,
-// since OAM DMA behaves identically on both consoles.
+// blocks memory access meanwhile; done instantly here.
 function performOAMDMA(mmu, val) {
   const src = val << 8;
   for (let i = 0; i < EMU_CORE_CONFIG.OAM_DMA_BYTES; i++) mmu.oam[i] = mmu.read8(src + i);
@@ -223,28 +218,23 @@ class MMU {
     this.io   = new Uint8Array(MEM.IO_SIZE);
     this.ie   = 0; // 0xFFFF interrupt enable register
 
-    // Broken out so CGBMMU can replace flat VRAM/WRAM with banked memory (plus its other
-    // CGB-only state: palette RAM, HDMA, double-speed) without duplicating everything above.
+    // Broken out so CGBMMU can swap in banked VRAM/WRAM instead of flat arrays.
     this._initVRAMAndWRAM();
   }
 
-  // DMG: one flat VRAM bank and one flat WRAM bank. Overridden by CGBMMU, which allocates
-  // vramBanks/wramBanks instead and exposes the active VRAM bank via the `vram` getter below.
+  // DMG: one flat VRAM bank and one flat WRAM bank. CGBMMU overrides this with banked memory.
   _initVRAMAndWRAM() {
     const MEM = EMU_CORE_CONFIG.MEMORY;
     this.vram = new Uint8Array(MEM.VRAM_SIZE);
     this.wram = new Uint8Array(MEM.WRAM_SIZE);
   }
 
-  // Single-bank WRAM read/write, addressed relative to the start of the 0xC000-0xDFFF
-  // window. Overridden by CGBMMU to add SVBK bank switching.
+  // WRAM read/write relative to 0xC000. Overridden by CGBMMU for SVBK bank switching.
   _readWRAM(offset) { return this.wram[offset]; }
   _writeWRAM(offset, val) { this.wram[offset] = val; }
 
-  // MBC bank-select register defaults: bank 1 is always mapped at boot (bank 0 can't be
-  // selected into the 0x4000-0x7FFF window), everything else starts off/zeroed. Shared by
-  // the constructor and _detectCartType() (called again on every loadROM) so the two can't
-  // drift out of sync.
+  // MBC bank-select defaults: bank 1 is mapped at boot (bank 0 can't be selected into
+  // 0x4000-0x7FFF), everything else starts zeroed.
   _resetBankingRegisters() {
     this.currentROMBank = 1;
     this.currentRAMBank = 0;
@@ -268,8 +258,7 @@ class MMU {
     return REGION_IE;
   }
 
-  // Cartridge-header MBC detection and the banking/RTC state reset that follows it - shared
-  // verbatim by CGBMMU, since GBC carts use the exact same mapper chips as DMG carts.
+  // Detects the MBC type from the cartridge header and resets banking/RTC state.
   _detectCartType(bytes) {
     const cartType = bytes[0x147];
     this.cartTypeByte = cartType;
@@ -302,9 +291,7 @@ class MMU {
     this.io[0x49] = bootIO.OBP1;
   }
 
-  /* ---- save state ----
-     Split into a common part (MBC/cart-RAM/OAM/HRAM/IO/RTC state, identical for DMG and CGB)
-     and the VRAM/WRAM fields, which CGBMMU overrides to serialize its banked memory instead. */
+  // ---- save state: common MBC/RAM/IO/RTC fields, plus VRAM/WRAM which CGBMMU overrides ----
   _serializeCommon() {
     return {
       mbcType: this.mbcType, currentROMBank: this.currentROMBank, currentRAMBank: this.currentRAMBank,
@@ -342,8 +329,8 @@ class MMU {
     return this.peek8(addr);
   }
 
-  // Same address decoding as read8, without recording the access (for inspection reads
-  // like a RAM viewer, which shouldn't be misattributed to CPU activity).
+  // Same as read8 but doesn't record the access — for inspection reads (e.g. a RAM viewer)
+  // that shouldn't count as CPU activity.
   peek8(addr) {
     addr &= 0xFFFF;
     const MEM = EMU_CORE_CONFIG.MEMORY;
@@ -457,8 +444,8 @@ class MMU {
       }
     }
 
-    // Track what changed, for the MBC Banking debug view (ROM bank change checked first,
-    // since it's by far the most common event).
+    // Track what changed, for the MBC Banking debug view (ROM bank checked first — the
+    // most common case).
     if (this.currentROMBank !== prevROM) {
       this.emulator.stats?.recordBankSwitch('rom', addr, val, this.currentROMBank, this.currentRAMBank, this.emulator.ppu.ly);
     } else if (this.currentRAMBank !== prevRAM) {
@@ -531,8 +518,8 @@ class CPU {
     this.reset();
   }
 
-  // `boot` defaults to the DMG boot register state; CGBCPU overrides reset() to pass the
-  // CGB boot config instead, since the reset logic itself is identical on both consoles.
+  // `boot` defaults to DMG boot state; CGBCPU passes its own boot config through this
+  // same reset() logic.
   reset(boot = EMU_CORE_CONFIG.BOOT) {
     this.A = boot.A; this.B = boot.B; this.C = boot.C; this.D = boot.D; this.E = boot.E;
     this.H = boot.H; this.L = boot.L;
@@ -661,8 +648,8 @@ class CPU {
 
   _checkCond(cc) { switch (cc) { case 0: return !this.flagZ; case 1: return this.flagZ; case 2: return !this.flagC; case 3: return this.flagC; } }
 
-  // STOP (0x10) halts CPU + LCD until a button press on real hardware; that low-power
-  // mode isn't modeled here. Kept as its own method so subclasses can override it (e.g. CGB speed switch).
+  // STOP (0x10) halts CPU+LCD until a button press on real hardware; low-power mode isn't
+  // modeled here. Its own method so subclasses (CGB speed switch) can override it.
   handleStop() { this.PC = (this.PC + 1) & 0xFFFF; this.tick(4); }
 
   /* ---- fetch/execute step; returns T-cycles used ---- */
@@ -873,19 +860,17 @@ class CPU {
 
 /* ==================================== 3. PPU (graphics) ================================= */
 
-// Sign-extends an 8-bit tile index (used when LCDC.4 selects the signed 0x9000-relative
-// tile data area). Shared by the DMG and CGB PPUs.
+// Sign-extends an 8-bit tile index, used when LCDC.4 selects the signed 0x9000-relative
+// tile data area.
 function toSigned8(v) { return (v & 0x80) ? v - 256 : v; }
 
-// Writes one RGBA pixel into a PPU's framebuffer. Shared by the DMG and CGB PPUs, which
-// both use the same flat Uint8ClampedArray layout.
+// Writes one RGBA pixel into a PPU's framebuffer.
 function setFramebufferPixel(framebuffer, x, y, r, g, b) {
   const i = (y * EMU_CORE_CONFIG.SCREEN.WIDTH + x) * 4;
   framebuffer[i] = r; framebuffer[i + 1] = g; framebuffer[i + 2] = b; framebuffer[i + 3] = 255;
 }
 
-// Blends a pixel toward its layer's debug tint color when layer-tint mode is on. Shared by
-// the DMG and CGB PPUs.
+// Blends a pixel toward its layer's debug tint color when layer-tint mode is on.
 function tintForLayer(emulator, r, g, b, layer) {
   if (!emulator.layerTint) return [r, g, b];
   const [tr, tg, tb] = EMU_CORE_CONFIG.LAYER_TINTS[layer];
@@ -894,9 +879,8 @@ function tintForLayer(emulator, r, g, b, layer) {
 }
 
 // Sprite candidates for scanline y: OAM entries covering this line, capped at the hardware's
-// 10-per-line limit, sorted by `comparator`. Shared by the DMG and CGB PPUs, which only
-// differ in priority order (DMG: X-then-OAM-index; CGB: OAM-index only) - see each PPU's
-// own comparator. `candidates`/`pool` are the caller's reused arrays (avoids allocating).
+// 10-per-line limit, sorted by `comparator`. `candidates`/`pool` are reused arrays, to avoid
+// allocating on every call.
 function gatherSpriteCandidatesForLine(mmu, y, spriteHeight, candidates, pool, comparator) {
   const SPR = EMU_CORE_CONFIG.SPRITES;
   candidates.length = 0;
@@ -1101,10 +1085,8 @@ class PPU {
   }
 
   // Decodes a sprite's bit-planes for its row on scanline y, honoring Y-flip and (for
-  // 8x16 sprites) which half-tile the row falls in. The tile-offset/row math is identical
-  // for DMG and CGB; only which VRAM bytes back it differs (CGB sprites can select VRAM
-  // bank 1 via attrs bit3), so that part is delegated to _spriteTileBytes(), which CGBPPU
-  // overrides.
+  // 8x16 sprites) which half-tile the row falls in. VRAM byte lookup is delegated to
+  // _spriteTileBytes(), overridden by CGBPPU for banked VRAM.
   getSpriteRowBits(sprite, y, spriteHeight) {
     const yFlip = !!(sprite.attrs & 0x40), xFlip = !!(sprite.attrs & 0x20);
     let tileIndex = sprite.tileIndex;
@@ -1142,11 +1124,9 @@ class PPU {
     }
   }
 
-  // Shared by PPU and CGBPPU: bounds-check against WY/WX, walk the visible window columns,
-  // and bump windowLineCounter only if a pixel actually drew this scanline (the window's
-  // internal line counter freezes on scanlines where it's off-screen). Per-pixel color
-  // resolution differs (DMG: flat tile map + BGP; CGB: banked VRAM + per-tile CGB palette),
-  // so that part is delegated to _plotWindowPixel(), which CGBPPU overrides.
+  // Bounds-checks WY/WX, walks the visible window columns, and bumps windowLineCounter only
+  // if a pixel actually drew this scanline (the window's line counter freezes when off-screen).
+  // Per-pixel color is delegated to _plotWindowPixel(), overridden by CGBPPU.
   _renderWindowLine(y, bgPriority) {
     if (y < this.wy) return;
     const wx = this.wx - 7;
@@ -1169,11 +1149,9 @@ class PPU {
     this._plotTintedPixel(x, y, shade[0], shade[1], shade[2], 'window');
   }
 
-  // Shared by PPU and CGBPPU: gather this scanline's sprite candidates, decode each one's
-  // row bits, and walk its 8 columns finding non-transparent pixels. Palette resolution and
-  // the BG-priority test differ (DMG: OBP0/OBP1 + simple behind-BG check; CGB: per-sprite
-  // OBJ palette + LCDC.0 master-priority toggle), so that part is delegated to
-  // _plotSpritePixel(), which CGBPPU overrides.
+  // Gathers this scanline's sprite candidates, decodes each one's row bits, and walks its
+  // 8 columns for non-transparent pixels. Palette/priority resolution is delegated to
+  // _plotSpritePixel(), overridden by CGBPPU.
   _renderSpritesLine(y, bgPriority) {
     const SPR = EMU_CORE_CONFIG.SPRITES;
     const spriteHeight = (this.lcdc & 0x04) ? SPR.HEIGHT_TALL : SPR.HEIGHT_SMALL;
@@ -1211,9 +1189,7 @@ class PPU {
     return tintForLayer(this.emulator, r, g, b, layer);
   }
 
-  // Shared by background/window/sprite line renderers: applies the debug layer-tint (if
-  // active) before plotting, otherwise plots [r,g,b] as-is. Also used by CGBPPU, which
-  // inherits this unchanged.
+  // Applies the debug layer-tint (if active) before plotting, otherwise plots [r,g,b] as-is.
   _plotTintedPixel(x, y, r, g, b, layer) {
     if (this.emulator.layerTint) {
       [r, g, b] = this._tintForLayer(r, g, b, layer);
@@ -1355,13 +1331,10 @@ const APU_IO_MASK = {
   0xFF24: 0x00, 0xFF25: 0x00,
 };
 
-/* Audio output: same shape as the PPU's framebuffer. APU has no idea an AudioContext or a
-   <canvas>-shaped world exists — it just keeps writing mixed stereo samples into a ring
-   buffer (ringL/ringR, below) as it steps. Whatever's driving playback (app.js) drains that
-   ring buffer on its own schedule, the same way draw() reads emulator.ppu.framebuffer.
-   The only thing APU exposes *about* playback is setSampleRate(), because _pushSample()'s
-   cadence depends on knowing how many emulated cycles correspond to one output sample —
-   that's a fact about the consumer's clock, not a callback into it. */
+/* Audio output mirrors the PPU's framebuffer model: APU just writes mixed stereo samples
+   into a ring buffer (ringL/ringR) as it steps, with no knowledge of AudioContext or who
+   drains it. The one thing it needs from the consumer is setSampleRate(), since sample
+   cadence depends on the output device's actual rate. */
 
 class APU {
   constructor(emulator) {
@@ -1382,10 +1355,8 @@ class APU {
     this.fsStep = 0;
     this.frameSeqTimer = 0;
 
-    // Overwritten by setSampleRate() with the real output device rate (often not 44100,
-    // e.g. 48000) — getting this wrong desyncs sample production from consumption and
-    // causes periodic clicking. Defaults to 44100 so the ring buffer fills at a sane pace
-    // even before anything downstream has told APU what rate it's actually consuming at.
+    // Defaults to 44100; setSampleRate() overwrites this with the real output device rate.
+    // A wrong rate desyncs sample production from consumption and causes clicking.
     this.sampleRate = 44100;
     this.cyclesPerSample = EMU_CORE_CONFIG.CLOCK_HZ / this.sampleRate;
     this.sampleCounter = 0;
@@ -1397,16 +1368,15 @@ class APU {
     this.writePos = 0; this.readPos = 0; this.available = 0;
     this.lastL = 0; this.lastR = 0; // last sample played, for a graceful underrun fade-out
 
-    // Running sums used to *average* each channel's DAC output over every raw cycle since
-    // the last output sample, rather than point-sampling it. At speed > 1x many more cycles
-    // pass per output sample, so this box-filter averaging avoids aliasing into the wrong pitch.
+    // Running sums used to *average* each channel's DAC output since the last output
+    // sample, rather than point-sampling it — this box-filter averaging avoids aliasing
+    // at speed > 1x, where many cycles pass per output sample.
     this.accL = 0; this.accR = 0; this.accCycles = 0;
 
     // One-pole DC-blocking filter (mirrors the coupling capacitor real DMG hardware has on
     // its audio output).
     this.dcPrevInL = 0; this.dcPrevOutL = 0; this.dcPrevInR = 0; this.dcPrevOutR = 0;
-    // Priming flag: without it, the filter's first sample after a reset treats the initial
-    // silence-fade-into-real-audio boundary as a real edge and outputs a one-sample step
+    // Priming flag: avoids the filter treating the first post-reset sample as a real edge.
     this._dcPrimed = false;
 
     // Per-channel raw DAC history for the oscilloscope UI, independent of the mixed
@@ -1474,11 +1444,8 @@ class APU {
     this.writePos = 0; this.readPos = 0; this.available = 0; this.lastL = 0; this.lastR = 0;
   }
 
-  // Tells APU what rate output samples are actually being consumed at, so _pushSample()'s
-  // cadence (cyclesPerSample) matches reality instead of assuming 44100. Whoever owns the
-  // real output device (app.js) calls this once it knows — e.g. from audioCtx.sampleRate —
-  // the same way the <canvas> width/height are just given to the PPU's config, not pulled
-  // from it.
+  // Tells APU the real output sample rate, so its sampling cadence matches reality instead
+  // of assuming 44100.
   setSampleRate(rate) {
     if (!rate) return;
     this.sampleRate = rate;
@@ -1492,11 +1459,8 @@ class APU {
     else this.readPos = (this.readPos + 1) % this.RING_SIZE; // full: drop oldest sample
   }
 
-  // Drains `bufferSize` samples out of the ring buffer for whoever owns the real output
-  // device (app.js's ScriptProcessorNode). An underrun (ring buffer empty) decays toward
-  // silence via lastL/lastR instead of a hard click. This used to be app.js's own
-  // drainAudioRing() loop, poking ringL/ringR/readPos/RING_SIZE/available/lastL/lastR
-  // directly — moved here since it's really one operation on APU's own state.
+  // Drains `bufferSize` samples out of the ring buffer for the audio output device. An
+  // underrun (buffer empty) decays toward silence via lastL/lastR instead of a hard click.
   drain(bufferSize) {
     const left = new Float32Array(bufferSize);
     const right = new Float32Array(bufferSize);
@@ -1613,10 +1577,8 @@ class APU {
     this.fsStep = 0; this.frameSeqTimer = 0; this.sampleCounter = 0;
     this.enabled = false;
 
-    // Clear the mix accumulators and the ring buffer. Without this, a reset mid-frame
-    // leaves accL/accR/accCycles holding pre-reset sums, so the first _emitSample() after
-    // reset averages new audio state over a stale cycle count - a wrong, often loud, first
-    // sample.
+    // Clear the mix accumulators and ring buffer so the first post-reset sample doesn't
+    // average in stale pre-reset sums.
     this.accL = 0; this.accR = 0; this.accCycles = 0;
     this.ringL.fill(0); this.ringR.fill(0);
     this.writePos = 0; this.readPos = 0; this.available = 0;
@@ -1632,8 +1594,8 @@ class APU {
     this.write(0xFF24, 0x77); this.write(0xFF25, 0xF3);
 
     // Those NR14/19/1E/23 writes also trigger each channel for real. Real hardware's boot
-    // chime has already decayed to silence by the time a game runs, so mute what the
-    // trigger just started, keeping only the harmless register values.
+    // chime has decayed to silence by the time a game runs, so mute what the trigger just
+    // started, keeping only the register values.
     this.ch1.enabled = false;
     this.ch2.enabled = false;
     this.ch3.enabled = false;
@@ -1764,16 +1726,14 @@ class APU {
 
     this._accumulateMix(cycles);
 
-    // The emulated frame clock and the audio hardware's clock aren't perfectly locked
-    // together, so tiny timing differences accumulate over minutes of play. Nudge the
-    // effective sample period by up to +-1% based on ring-buffer fill, gently pulling it
-    // back toward half-full instead of drifting into underruns or overflows.
+    // Emulated and audio clocks aren't perfectly locked, so timing drift accumulates over
+    // time. Nudge the sample period by up to +-1% based on ring-buffer fill, pulling it
+    // back toward half-full.
     const fillRatio = this.available / this.RING_SIZE;
     const correction = 1 + (fillRatio - 0.5) * 0.02;
 
-    // Scale the target by emulator.speed so sample production stays paced to real time —
-    // otherwise the speed slider (e.g. 10%) would starve the ring buffer, since cycles
-    // would arrive far slower than the audio callback drains them.
+    // Scale by emulator.speed so sample production stays paced to real time — otherwise
+    // a slow speed setting would starve the ring buffer.
     const targetCyclesPerSample = this.cyclesPerSample * correction * this.emulator.speed;
 
     this.sampleCounter += cycles;
@@ -1859,19 +1819,16 @@ class APU {
    requestAnimationFrame/setTimeout itself, only these two methods:
      - requestFrame(cb): schedule cb(timestamp) for the next tick; returns an id.
      - cancelFrame(id): cancel a pending requestFrame().
-   `scheduler` may be null/undefined — every call against it below is optional-chained, so
-   an emulator built with no scheduler still runs (runFrame()/stepFrame() etc. all work),
-   it just won't drive itself continuously via start(). */
+   `scheduler` may be null/undefined; an emulator built without one still runs (runFrame(),
+   stepFrame(), etc.), it just won't drive itself continuously via start(). */
 
 /* ================================= 7. GBEmulator (glue) ==================================== */
 
 class GBEmulator {
   static CYCLES_PER_FRAME = EMU_CORE_CONFIG.FRAME.CYCLES_PER_FRAME; // 154 scanlines x 456 T-cycles
 
-  // `stats`/`instrumentation`/`scheduler` are all DI'd in by the composition root.
-  // GBEmulator never constructs any of them itself, and no-ops (via `?.`) if left
-  // null/undefined. Audio has no DI'd contract at all — the APU just exposes a ring buffer
-  // (see the APU class comment) that whoever owns the real output device drains on its own.
+  // `stats`/`instrumentation`/`scheduler` are injected; GBEmulator never constructs them
+  // and no-ops (via `?.`) if left null.
   constructor({ stats = null, instrumentation = null, scheduler = null } = {}) {
     this.mmu = new MMU(this);
     this.cpu = new CPU(this.mmu);
@@ -1886,10 +1843,8 @@ class GBEmulator {
     this.onFrame = null;      // called after a redraw-worthy point (frame/step/rewind), with this.stats.frameStats
     this.onInterrupt = null;  // called whenever an interrupt is actually dispatched, with (bit, pcBefore)
     this.onFpsUpdate = null;  // called ~once/sec during continuous play, with the rendered-frames-per-second count
-    // Fired from start()/pause() only (a real user gesture), not from the stepXxx() helpers
-    // below, which flip `running` true-then-false internally without actually starting
-    // continuous playback. Whoever owns the output device (app.js) wires these to actually
-    // create/resume/suspend it — GBEmulator itself has no idea what's on the other end.
+    // Fired only from start()/pause() (a real user gesture), not the stepXxx() helpers
+    // below, which flip `running` internally without starting continuous playback.
     this.onAudioResume = null;
     this.onAudioSuspend = null;
     this.frameReady = false;
@@ -1910,10 +1865,9 @@ class GBEmulator {
 
     this.romTitle = null; // set in loadROM; used to key save states and warn on mismatched loads
 
-    /* ---- rewind: in-memory ring buffer of full state snapshots, taken every
-       REWIND_SNAPSHOT_INTERVAL_SECONDS of emulated time, holding up to REWIND_MAX_SNAPSHOTS.
-       Lives only in a plain array — never touches localStorage or the save-state slots, so
-       it vanishes on reload. ---- */
+    // ---- rewind: in-memory ring buffer of state snapshots, taken every
+    // REWIND_SNAPSHOT_INTERVAL_SECONDS, capped at REWIND_MAX_SNAPSHOTS. Never persisted,
+    // so it vanishes on reload. ----
     this.REWIND_MAX_SNAPSHOTS = 10;
     this.REWIND_SNAPSHOT_INTERVAL_SECONDS = 2;
     this.rewindBuffer = [];  // oldest first, most recent last
@@ -1968,10 +1922,8 @@ class GBEmulator {
   }
 
   // ---- Channel mute ----
-  // A real audio-engine parameter (gates amp1..amp4 in the mixer) that app.js persists on
-  // every save regardless of whether any debug panel is open — not just a debug readout —
-  // so it lives here even though the toggle UI for it lives in the debugger's oscilloscope
-  // panel.
+  // A real audio parameter (gates amp1..amp4 in the mixer), not just a debug readout —
+  // lives here even though its toggle UI is in the debugger's oscilloscope panel.
   getChannelMuted(ch) { return this.apu.chMuted[ch]; }
   setChannelMuted(ch, muted) { this.apu.chMuted[ch] = muted; }
   getAllChannelMuted() { return this.apu.chMuted.slice(); }
@@ -2066,10 +2018,9 @@ class GBEmulator {
     return budgetCycles;
   }
 
-  // Feeds the T-cycles one CPU step took to the PPU/timer/APU, and returns how many cycles
-  // that step counts against the per-frame budget runFrame() uses. Its own method so a CGB
-  // subclass can override it: in double-speed mode the CPU burns T-cycles twice as fast, but
-  // PPU/APU real-time behavior must not speed up, so they need half as many cycles fed in.
+  // Feeds T-cycles from one CPU step to PPU/timer/APU. Its own method so a CGB subclass
+  // can override it: double-speed mode burns CPU cycles twice as fast, but PPU/APU must
+  // not speed up, so they need half as many cycles fed in.
   stepHardware(cycles) {
     this.ppu.step(cycles);
     this.timer.step(cycles);
@@ -2147,9 +2098,8 @@ class GBEmulator {
     if (this.onFrame) this.onFrame(this.stats?.frameStats);
   }
 
-  // Runs 60 full frames back to back (~1.005s of emulated time), then redraws — a coarse
-  // "step frame" for skipping past a slow intro, which also conveniently fills the Frame
-  // Activity ring buffer (60 entries) so every one becomes browsable afterwards.
+  // Runs 60 full frames back to back (~1s of emulated time), then redraws — a coarse way
+  // to skip past a slow intro.
   stepOneSecond() {
     if (this.running) this.pause();
     this._setRunning(true);
@@ -2215,9 +2165,8 @@ class GBEmulator {
     }
 
     if (framesRun > 0) {
-      // Cap actual rendering to ~60/s with a real-time gate, independent of _frameAcc —
-      // otherwise draws would fire near a high-refresh display's native rate at speed > 1x,
-      // even though the game itself only produces a new frame every ~16.74ms of emulated time.
+      // Cap actual rendering to ~60/s, independent of _frameAcc — otherwise draws would
+      // fire near a high-refresh display's native rate at speed > 1x.
       const RENDER_MS = 1000 / 60;
       if (now - this._lastRenderTime >= RENDER_MS - 1) { // -1ms slack absorbs rAF jitter
         this._lastRenderTime = now;
@@ -2233,8 +2182,8 @@ class GBEmulator {
   }
 }
 
-// Cartridge title, header bytes 0x134-0x143: uppercase ASCII, NUL-padded (NUL also acts as
-// an early terminator). Shared by GBEmulator.loadROM() and app.js's pre-load ROM-info display.
+// Cartridge title, header bytes 0x134-0x143: uppercase ASCII, NUL-padded (NUL also
+// terminates early).
 function parseROMTitle(bytes) {
   let title = '';
   for (let i = 0x134; i < 0x144; i++) {

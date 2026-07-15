@@ -1,11 +1,10 @@
 /* =========================================================================================
    emu-gbc-core.js — Game Boy Color (CGB) emulation core
-   -----------------------------------------------------------------------------------------
    Adds CGB support on top of the DMG core (emu-gb-core.js). Timer, Joypad and APU are
-   identical on both consoles and are reused as-is. CPU is subclassed (CGBCPU) since only
-   boot values and STOP's double-speed switch differ. MMU and PPU are separate classes
-   (CGBMMU, CGBPPU) since CGB memory layout (banked VRAM/WRAM, color palette RAM, HDMA) and
-   rendering diverge too much from DMG to share cleanly.
+   identical on both consoles and reused as-is. CPU is subclassed (CGBCPU) since only boot
+   values and STOP's double-speed switch differ. MMU and PPU are separate classes (CGBMMU,
+   CGBPPU) since CGB memory layout (banked VRAM/WRAM, color palette RAM, HDMA) and rendering
+   diverge too much from DMG to share cleanly.
 
    Load order: emu-gb-core.js -> emu-gbc-core.js -> emu-gb-app.js -> emu-gb-debug.js
 
@@ -35,9 +34,9 @@ const EMU_CGB_CORE_CONFIG = {
 /* ============================== 1. CGBMMU ================================================ */
 
 class CGBMMU extends MMU {
-  // MBC/cart-RAM/RTC/OAM/HRAM/IO/IE setup is identical to the DMG MMU and is inherited from
-  // the base constructor unchanged. CGB replaces flat VRAM/WRAM with banked memory (via the
-  // _initVRAMAndWRAM() override below) and adds palette RAM, HDMA, and double-speed state.
+  // MBC/cart-RAM/RTC/OAM/HRAM/IO/IE setup is inherited unchanged from the base MMU. CGB
+  // replaces flat VRAM/WRAM with banked memory (_initVRAMAndWRAM() below) and adds palette
+  // RAM, HDMA, and double-speed state.
 
   // Called from the base MMU constructor in place of the flat vram/wram allocation.
   _initVRAMAndWRAM() {
@@ -55,9 +54,7 @@ class CGBMMU extends MMU {
   }
 
   // Scalar CGB-only register defaults: bank-select/auto-increment/HDMA/speed-switch state.
-  // Shared by _initVRAMAndWRAM() (first-time setup, arrays not yet zeroed) and loadROM()
-  // (arrays already exist and are cleared separately via .fill(0)) so the two default sets
-  // can't drift apart.
+  // Shared by _initVRAMAndWRAM() and loadROM() so the two default sets can't drift apart.
   _resetCGBRegisters() {
     this.vbk = 0;   // 0xFF4F bit0: which VRAM bank is mapped
     this.svbk = 1;  // 0xFF70 bits0-2: which bank maps to 0xD000-0xDFFF (0 behaves as 1)
@@ -76,9 +73,8 @@ class CGBMMU extends MMU {
     this.speedSwitchArmed = false;
   }
 
-  // Currently-mapped VRAM bank as a flat Uint8Array, mirroring reads to 0x8000-0x9FFF.
-  // The base MMU's read8/peek8/write8 use `this.vram` directly, so overriding just this
-  // getter is enough to make all of that dispatch logic work unchanged for CGB.
+  // Currently-mapped VRAM bank as a flat Uint8Array. The base MMU's read8/peek8/write8 use
+  // `this.vram` directly, so overriding just this getter makes them work unchanged for CGB.
   get vram() { return this.vramBanks[this.vbk & 1]; }
 
   // WRAM window is two 4KB halves: 0x0000-0x0FFF (of the window) is always bank 0;
@@ -129,9 +125,8 @@ class CGBMMU extends MMU {
     }
   }
 
-  /* ---- save state ----
-     The MBC/cart-RAM/OAM/HRAM/IO/RTC portion is identical to the DMG MMU and comes from
-     _serializeCommon()/_deserializeCommon(); only the memory layout below it differs. */
+  // ---- save state: MBC/cart-RAM/OAM/HRAM/IO/RTC come from _serializeCommon()/
+  // _deserializeCommon(); only the memory layout below it differs from DMG. ----
   serialize() {
     return {
       ...this._serializeCommon(),
@@ -153,10 +148,9 @@ class CGBMMU extends MMU {
     this.doubleSpeed = s.doubleSpeed; this.speedSwitchArmed = s.speedSwitchArmed;
   }
 
-  /* ---- I/O ----
-     read8/peek8/write8, _regionForAddr, _handleBanking (MBC1/2/3/5 - GBC carts use the same
-     mapper chips), and the RTC helpers are all inherited unchanged from the base MMU. Only
-     the CGB-only registers need handling here; anything else falls through to super. */
+  // ---- I/O: read8/peek8/write8, _regionForAddr, _handleBanking, and RTC helpers are all
+  // inherited unchanged. Only CGB-only registers need handling here; everything else falls
+  // through to super. ----
   _readIO(addr) {
     const reg = addr & 0xFF;
     switch (reg) {
@@ -291,11 +285,10 @@ class CGBCPU extends CPU {
 /* ============================== 3. CGBPPU ================================================ */
 
 class CGBPPU extends PPU {
-  // Constructor, serialize/deserialize, all mmu.io-backed getters (lcdc/stat/scy/scx/ly/lyc/
-  // bgp/obp0/obp1/wy/wx), step(), _setStatMode/_checkLYC/_checkStatInterrupt,
-  // bgWindowTileDataConfig(), _tintForLayer/toSigned8/_setPixel, and getSpriteCandidatesForLine()
-  // are all inherited unchanged from the base PPU. Only HDMA servicing, tile/sprite pixel
-  // decoding (banked VRAM + CGB palettes), and sprite priority genuinely differ.
+  // Constructor, serialize/deserialize, io-backed getters, step(), stat/LYC helpers,
+  // bgWindowTileDataConfig(), pixel-plot helpers, and getSpriteCandidatesForLine() are all
+  // inherited unchanged from the base PPU. Only HDMA servicing, tile/sprite pixel decoding
+  // (banked VRAM + CGB palettes), and sprite priority genuinely differ.
 
   // One H-Blank-mode HDMA block transfers per H-Blank, right after the scanline renders.
   _afterPixelTransfer() {
@@ -348,13 +341,9 @@ class CGBPPU extends PPU {
     return { colorIndex, paletteNum, priority };
   }
 
-  // DEAD CODE (flagged, not renamed): zero callers anywhere, not just outside this class.
-  // Comment below claims these are shims for emu-gb-debug.js's layer viewer, but
-  // emu-gb-stats-instrumentation.js (~line 620-625) confirms that responsibility moved to
-  // getBGWindowPixel() and these two were never cleaned up. Candidates for removal rather
-  // than underscoring — underscoring would imply "kept, but private", which isn't the case.
-  // DMG-PPU-compatible shims for emu-gb-debug.js's layer viewer. CGB color depends on which
-  // of 8 BG/OBJ palettes a tile/sprite selects, so these approximate using BG palette 0.
+  // Unused: no callers anywhere in this codebase. Approximate DMG-PPU-compatible shims —
+  // CGB color depends on which of 8 BG/OBJ palettes a tile/sprite selects, so these use
+  // BG palette 0 as a stand-in. Kept for reference only.
   getBackgroundColorIndex(x, y) {
     const tileMapBase = (this.lcdc & 0x08) ? 0x9C00 : 0x9800;
     const bgX = (x + this.scx) & 0xFF, bgY = (y + this.scy) & 0xFF;
@@ -382,9 +371,9 @@ class CGBPPU extends PPU {
     }
   }
 
-  // CGB window pixel: banked VRAM tile lookup + per-tile CGB palette/priority, via the
-  // shared getBGWindowPixel() helper. Loop skeleton (WY/WX bounds, windowLineCounter
-  // bookkeeping) is inherited unchanged from PPU._renderWindowLine().
+  // CGB window pixel: banked VRAM tile lookup + per-tile CGB palette/priority, via
+  // getBGWindowPixel(). Loop skeleton (WY/WX bounds, windowLineCounter) is inherited from
+  // PPU._renderWindowLine().
   _plotWindowPixel(x, y, winX, winY, bgPriority) {
     const tileMapBase = (this.lcdc & 0x40) ? 0x9C00 : 0x9800;
     const { colorIndex, paletteNum, priority } = this.getBGWindowPixel(tileMapBase, winX, winY);
@@ -409,9 +398,8 @@ class CGBPPU extends PPU {
   }
 
   // CGB sprite pixel: LCDC.0 master-priority toggle instead of DMG's plain behind-BG test,
-  // and a per-sprite OBJ palette (attrs bits0-2 on CGB carts, DMG OBP0/OBP1 select
-  // otherwise) instead of BGP. Candidate-gather/loop skeleton is inherited unchanged from
-  // PPU._renderSpritesLine().
+  // and a per-sprite OBJ palette instead of BGP. Candidate-gather/loop skeleton is inherited
+  // from PPU._renderSpritesLine().
   _plotSpritePixel(sx, y, sprite, behindBG, colorNum, bgPriority) {
     // LCDC.0 master priority: when clear, sprites always draw on top regardless of any
     // per-tile/per-sprite priority bit.

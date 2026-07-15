@@ -579,7 +579,7 @@ async function loadROMBytes(bytes) {
   }
   if (stepDebugToggle.checked) {
     btnPause.textContent = '▶ Start';
-    bpStatus.textContent = 'Step Debug — paused at boot. Use the step buttons above.';
+    bpStatus.textContent = 'Step Debug — paused at boot.';
   } else {
     emulator.start();
   }

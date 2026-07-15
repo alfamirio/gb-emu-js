@@ -474,7 +474,7 @@
     image-rendering: -moz-crisp-edges;
     image-rendering: crisp-edges;
     cursor: pointer;
-    /* Rendered at its native 401x601 size (see TV_W/TV_H in emu-gb-debug.js) - deliberately
+    /* Rendered at its native 401x601 size (see TV_W/TV_H in emu-gb-debug-visualizers.js) - deliberately
        NOT scaled by CSS. Scaling it here would stretch the 1px gutter along with everything
        else (fractional scale factors make that stretch inconsistent column-to-column, and
        even a clean integer scale would make the gutter thicker than 1px). max-width/height:
@@ -2363,13 +2363,16 @@
 <script src="emu-gbc-core.js"></script>
 <script src="filters/game-filter-data.js"></script>
 <script src="emu-gb-app.js"></script>
-<script src="emu-gb-debug.js"></script>
+<script src="emu-gb-debug-core.js"></script>
+<script src="emu-gb-debug-visualizers.js"></script>
+<script src="emu-gb-debug-inspectors.js"></script>
 <script>
 // Boot: kick off the initial UI/toggle state and first draw of every panel now that
-// emu-gb-core.js, emu-gb-app.js, and emu-gb-debug.js have all loaded (this needs functions
-// from both emu-gb-app.js (updateStateButtons) and emu-gb-debug.js (applyMode and friends,
-// drawFrameActivity/drawFrameAnatomy/drawLineAnatomy) to already exist - see each file's
-// header comment for the load-order reasoning).
+// emu-gb-core.js, emu-gb-app.js, and the emu-gb-debug-*.js files have all loaded (this needs
+// functions from emu-gb-app.js (updateStateButtons) and emu-gb-debug-core.js (applyMode and
+// friends) plus emu-gb-debug-inspectors.js (drawFrameActivity/drawFrameAnatomy/
+// drawLineAnatomy) to already exist - see each file's header comment for the load-order
+// reasoning. emu-gb-debug-core.js must load before the other two emu-gb-debug-*.js files.
 updateStateButtons();
 applyMode();
 applyScreenModel();

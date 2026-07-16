@@ -56,25 +56,67 @@ function flashCopiedInline(el, text) {
 const debugToolsContainer = document.getElementById('debugTools');
 const visualToolsContainer = document.getElementById('visualTools');
 const cpuDebugControls = document.getElementById('cpuDebugControls');
-const TOOLS_NEEDING_CPU_CONTROLS = ['trace', 'disasm', 'stack'];
 const rtcTabBtn = visualToolsContainer.querySelector('.tool-tab[data-tool="rtc"]');
 
+/* ---- Panel registries: one entry per tab, keyed by its data-tool value. This is the single
+   place a panel's dispatch-relevant metadata lives - adding a new panel means adding one entry
+   here (plus the HTML tab button + panel div), not also hand-editing refreshDebugTools(),
+   updateCpuControlsVisibility(), and syncAccessTracking() to mention its tool name again.
+
+   `draw` is required and does the panel's actual redraw; wrapped in an arrow function (rather
+   than referencing e.g. drawRegisters directly) because these registries are built while this
+   script runs, before emu-gb-debug-visualizers.js/emu-gb-debug-inspectors.js have declared
+   their draw functions - the arrow function just defers the lookup until refreshDebugTools()
+   is actually called later, by which point every script has loaded. `needsCpuControls` shows
+   the CPU debug controls (step/run-to/breakpoint row) while that tab is active. `tracksAccess`
+   names which of emulator.stats/instrumentation's hot tracking flags should be enabled while
+   that tab is active (see syncAccessTracking below) - omit it for panels that don't need any.
+   `onActivate`, if present, runs once when the tab is clicked (before the resulting redraw) -
+   for one-off "reset to fresh defaults on open" behavior that isn't just a normal redraw. ---- */
+const DEBUG_PANELS = {
+  registers:  { draw: () => drawRegisters() },
+  disasm:     { draw: () => drawDisassembly(), needsCpuControls: true },
+  trace:      { draw: () => drawTrace(), needsCpuControls: true, tracksAccess: 'trace' },
+  eventlog:   { draw: () => drawEventLog(), tracksAccess: 'eventlog' },
+  stack:      { draw: () => drawStack(), needsCpuControls: true },
+  memmap:     { draw: () => drawMemMap(), tracksAccess: 'memmap' },
+  banking:    { draw: () => drawBanking(), tracksAccess: 'memmap' },
+  interrupts: { draw: () => drawInterrupts() },
+  ramedit:    { draw: () => drawRamEditor() },
+  memscan:    { draw: () => drawMemScan() },
+};
+const VISUAL_PANELS = {
+  tiles:        { draw: () => drawTileViewer() },
+  tilemap:      { draw: () => drawTileMap() },
+  tileinspect:  { draw: () => drawTileInspector(), onActivate: () => autoPasteTileInspectAddrFromClipboard() },
+  oam:          { draw: () => { drawOAMComposition(); drawOAMTable(); } },
+  palettes:     { draw: () => drawPalettes() },
+  layers:       { draw: () => drawLayers() },
+  oscilloscope: { draw: () => drawOscilloscope() },
+  scanline:     { draw: () => drawScanlineTimeline() },
+  rtc:          { draw: () => drawRTC(), onActivate: () => syncRtcInputsFromLive() },
+};
+
 function updateCpuControlsVisibility(tool) {
-  cpuDebugControls.classList.toggle('hidden', !TOOLS_NEEDING_CPU_CONTROLS.includes(tool));
+  cpuDebugControls.classList.toggle('hidden', !DEBUG_PANELS[tool]?.needsCpuControls);
 }
 
-// Keep emulator.stats.trackMemMap/emulator.instrumentation.trackTrace synced to (debug mode
-// on) AND (that tab active), so the hot instrumentation only runs when its tab is actually open.
+// Keep emulator.stats.trackMemMap/emulator.instrumentation.trackTrace/emulator.stats.trackEventLog
+// synced to (debug mode on) AND (that tab active), so the hot instrumentation only runs when its
+// tab is actually open. Driven by DEBUG_PANELS[tool].tracksAccess rather than hand-listing tool
+// names here, so it can't fall out of sync with which tab actually needs which flag.
 function syncAccessTracking(activeDebugTool) {
   const debugging = !document.body.classList.contains('playing-mode');
-  emulator.stats.trackMemMap = debugging && (activeDebugTool === 'memmap' || activeDebugTool === 'banking');
-  emulator.instrumentation.trackTrace = debugging && (activeDebugTool === 'trace');
-  emulator.stats.trackEventLog = debugging && (activeDebugTool === 'eventlog');
+  const tracksAccess = debugging ? DEBUG_PANELS[activeDebugTool]?.tracksAccess : undefined;
+  emulator.stats.trackMemMap = tracksAccess === 'memmap';
+  emulator.instrumentation.trackTrace = tracksAccess === 'trace';
+  emulator.stats.trackEventLog = tracksAccess === 'eventlog';
 }
 
 function setupTabGroup(container) {
   const tabs = container.querySelectorAll('.tool-tab');
   const panels = container.querySelectorAll('.tool-panel');
+  const registry = container === debugToolsContainer ? DEBUG_PANELS : VISUAL_PANELS;
   tabs.forEach(btn => {
     btn.addEventListener('click', () => {
       tabs.forEach(b => b.classList.remove('active'));
@@ -85,8 +127,7 @@ function setupTabGroup(container) {
         updateCpuControlsVisibility(btn.dataset.tool);
         syncAccessTracking(btn.dataset.tool);
       }
-      if (btn.dataset.tool === 'rtc') syncRtcInputsFromLive(); // fresh "Set clock" defaults each time the tab is opened
-      if (btn.dataset.tool === 'tileinspect') autoPasteTileInspectAddrFromClipboard();
+      registry[btn.dataset.tool]?.onActivate?.(); // e.g. rtc's fresh defaults, tileinspect's clipboard auto-paste
       refreshDebugTools();
     });
   });
@@ -259,27 +300,10 @@ function refreshDebugTools() {
   if (document.body.classList.contains('playing-mode')) return;
 
   const activeDebug = debugToolsContainer.querySelector('.tool-tab.active').dataset.tool;
-  if (activeDebug === 'registers') drawRegisters();
-  else if (activeDebug === 'disasm') drawDisassembly();
-  else if (activeDebug === 'trace') drawTrace();
-  else if (activeDebug === 'eventlog') drawEventLog();
-  else if (activeDebug === 'stack') drawStack();
-  else if (activeDebug === 'memmap') drawMemMap();
-  else if (activeDebug === 'banking') drawBanking();
-  else if (activeDebug === 'interrupts') drawInterrupts();
-  else if (activeDebug === 'ramedit') drawRamEditor();
-  else if (activeDebug === 'memscan') drawMemScan();
+  DEBUG_PANELS[activeDebug]?.draw();
 
   const activeVisual = visualToolsContainer.querySelector('.tool-tab.active').dataset.tool;
-  if (activeVisual === 'tiles') drawTileViewer();
-  else if (activeVisual === 'tilemap') drawTileMap();
-  else if (activeVisual === 'tileinspect') drawTileInspector();
-  else if (activeVisual === 'oam') { drawOAMComposition(); drawOAMTable(); }
-  else if (activeVisual === 'palettes') drawPalettes();
-  else if (activeVisual === 'layers') drawLayers();
-  else if (activeVisual === 'oscilloscope') drawOscilloscope();
-  else if (activeVisual === 'scanline') drawScanlineTimeline();
-  else if (activeVisual === 'rtc') drawRTC();
+  VISUAL_PANELS[activeVisual]?.draw();
 
   // Frame Activity isn't a tab - it's always visible - so it redraws every time.
   drawFrameActivity();

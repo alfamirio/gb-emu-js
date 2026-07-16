@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Gameboy body -->
+  <rect x="3" y="1" width="26" height="30" rx="3" fill="#D3D3D3" stroke="#979797" stroke-width="1"/>
+  
+  <!-- Screen bezel -->
+  <rect x="5" y="3" width="22" height="13" rx="1.5" fill="#707870" />
+  
+  <!-- Classic green LCD screen -->
+  <rect x="8" y="5" width="16" height="9" fill="#8bac0f" />
+  
+  <!-- D-pad -->
+  <path d="M7 21h2v-2h2v2h2v2h-2v2H9v-2H7z" fill="#2d2d2d" />
+  
+  <!-- B and A buttons -->
+  <circle cx="19.5" cy="23.5" r="2" fill="#a81030" />
+  <circle cx="24.5" cy="21.5" r="2" fill="#a81030" />
+  
+  <!-- Start and Select buttons -->
+  <rect x="11" y="27" width="4" height="1.2" rx="0.5" fill="#7B7B7B" transform="rotate(-28 11 27)" />
+  <rect x="17" y="27" width="4" height="1.2" rx="0.5" fill="#7B7B7B" transform="rotate(-28 17 27)" />
+</svg>

@@ -476,15 +476,9 @@ function renderChecksumBadges(checksums) {
     `<span class="checksum-badge" data-value="${value}" title="${value}">${label}</span>`
   ).join('');
   checksumBadges.querySelectorAll('.checksum-badge').forEach((el) => {
-    el.addEventListener('click', () => {
-      const value = el.dataset.value;
-      navigator.clipboard.writeText(value).then(() => {
-        const original = el.textContent;
-        el.textContent = 'Copied!';
-        el.classList.add('copied');
-        setTimeout(() => { el.textContent = original; el.classList.remove('copied'); }, 1000);
-      }).catch(() => { /* clipboard unavailable - silently ignore */ });
-    });
+    // flashCopiedBadge: emu-gb-debug-core.js, loaded after this file - fine, since it's only
+    // referenced from inside this click handler, well after every script has loaded.
+    el.addEventListener('click', () => flashCopiedBadge(el, el.dataset.value));
   });
 }
 
@@ -835,6 +829,13 @@ function loadSlots() {
   catch { return []; }
 }
 
+// Unique-enough id for a save-state slot: timestamp + a short random suffix to disambiguate
+// two slots saved within the same millisecond. Used at both slot-creation sites (quick-save
+// and state import) so the format can't drift between them.
+function makeSlotId() {
+  return 'slot-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+}
+
 // Writes the slot list back to localStorage, dropping the oldest slot(s) if quota is exceeded.
 function writeSlots(slots) {
   while (true) {
@@ -928,7 +929,7 @@ function applyLoadedState(state) {
 function quickSaveState() {
   if (!emulator.hasROM()) return;
   const slots = loadSlots();
-  slots.unshift({ id: 'slot-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+  slots.unshift({ id: makeSlotId(),
                   savedAt: new Date().toISOString(), state: emulator.getSaveState() });
   while (slots.length > MAX_SLOTS) slots.pop();
   try {
@@ -1015,7 +1016,7 @@ importStateInput.addEventListener('change', (e) => {
       applyLoadedState(state);
       // Also add the import to this ROM's slot list so it shows up in the sidebar.
       const slots = loadSlots();
-      slots.unshift({ id: 'slot-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+      slots.unshift({ id: makeSlotId(),
                        savedAt: state.savedAt || new Date().toISOString(), state });
       while (slots.length > MAX_SLOTS) slots.pop();
       writeSlots(slots);

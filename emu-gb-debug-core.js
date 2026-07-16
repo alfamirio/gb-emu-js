@@ -21,13 +21,19 @@
    ========================================================================================= */
 
 /* ---- shared: copy text to the clipboard and briefly flash something on `el` to confirm it.
-   The three call sites below (Sprite Sheet/OAM tooltips, Sprites (OAM) table rows, and the
-   Inspector tab's clickable readouts) each flash a different way - a replaced tooltip string,
-   a row highlight, or an inline "Copied!" - so flashCopied() takes what to show as options
-   rather than forcing one visual treatment on all of them. ---- */
-function flashCopied(el, text, { className, setText, setDisplayBlock, setDataFlag } = {}) {
+   The four call sites below (Sprite Sheet/OAM tooltips, Sprites (OAM) table rows, the
+   Inspector tab's clickable readouts, and the ROM checksum badges) each flash a different way
+   - a replaced tooltip string, a row highlight, an inline "Copied!" with a live-refreshing
+   panel to restore it, or an inline "Copied!" restored directly after the flash - so
+   flashCopied() takes what to show as options rather than forcing one visual treatment on
+   all of them. ---- */
+function flashCopied(el, text, { className, setText, setDisplayBlock, setDataFlag, restoreText } = {}) {
   navigator.clipboard.writeText(text).then(() => {
     clearTimeout(el._copiedTimeout);
+    // Captured before setText overwrites it below, so it can be put back once the flash ends -
+    // for callers (e.g. the checksum badges in emu-gb-app.js) whose element isn't otherwise
+    // periodically repainted, unlike setDataFlag's "let the next repaint restore it" approach.
+    const original = restoreText ? el.textContent : undefined;
     if (setDataFlag) el.dataset.copied = '1'; // lets a caller that periodically repaints el's
       // textContent (e.g. a live-refreshing panel) skip that repaint and avoid stomping on the flash
     if (setText !== undefined) el.textContent = setText;
@@ -35,6 +41,7 @@ function flashCopied(el, text, { className, setText, setDisplayBlock, setDataFla
     el.classList.add(className);
     el._copiedTimeout = setTimeout(() => {
       if (setDataFlag) delete el.dataset.copied;
+      if (restoreText) el.textContent = original;
       el.classList.remove(className);
     }, 700);
   }).catch(() => { /* clipboard unavailable - silently ignore */ });
@@ -50,6 +57,12 @@ function flashCopiedRow(rowEl, addrText) {
 // Used by the Inspector tab's clickable address-range and byte-values readouts.
 function flashCopiedInline(el, text) {
   flashCopied(el, text, { className: 'copied', setText: 'Copied!', setDataFlag: true });
+}
+// Used by the ROM checksum badges (emu-gb-app.js). Unlike flashCopiedInline's panel, badges
+// are only ever rendered once per ROM load rather than on a repaint loop, so restoreText is
+// used instead of setDataFlag to put the original label back once the flash ends.
+function flashCopiedBadge(el, text) {
+  flashCopied(el, text, { className: 'copied', setText: 'Copied!', restoreText: true });
 }
 
 /* ---- shared: "scroll-freeze + autoscroll" behavior for live-updating scrollback lists (the

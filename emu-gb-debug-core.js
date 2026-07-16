@@ -52,6 +52,68 @@ function flashCopiedInline(el, text) {
   flashCopied(el, text, { className: 'copied', setText: 'Copied!', setDataFlag: true });
 }
 
+/* ---- shared: "scroll-freeze + autoscroll" behavior for live-updating scrollback lists (the
+   Execution Trace and Event Log panels in emu-gb-debug-inspectors.js). Such a list only keeps
+   auto-scrolling to the bottom as new entries arrive if the autoscroll toggle is on AND the
+   user hasn't scrolled up to read older entries - otherwise it freezes in place (showing a
+   "frozen" note + "Jump to latest" button) so a burst of new entries can't yank the view out
+   from under someone. The two panels used to each hand-roll an identical copy of this; this is
+   the one shared implementation both build their `drawX()` around. ---- */
+function createAutoscrollList({ listEl, toggleEl, followBtn, frozenNoteEl, configKey, emptySelector }) {
+  function isAtBottom() {
+    return listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 24;
+  }
+
+  // Off by default, so the list never jumps on its own until the person opts in. Even when
+  // on, scrolling up still freezes it - the toggle only controls whether being at the bottom
+  // is enough to keep following new entries.
+  let autoscrollEnabled = typeof savedUIConfig[configKey] === 'boolean' ? savedUIConfig[configKey] : false;
+  toggleEl.checked = autoscrollEnabled;
+
+  // Shows/hides the "frozen" UI (note + jump button) to match current state, without touching
+  // the list content itself. The note text only applies to the scrolled-up case; when
+  // autoscroll is simply off (but we're at the bottom), the button alone is enough.
+  function setFrozenUI(frozen) {
+    followBtn.style.display = frozen ? '' : 'none';
+    frozenNoteEl.style.display = (frozen && !isAtBottom()) ? '' : 'none';
+  }
+
+  let lastRender = null; // remembered so the follow button/toggle handlers can re-invoke it
+
+  // Only live-updates while autoscroll is on AND pinned to the bottom; otherwise freezes the
+  // DOM so scrolled-up (or deliberately paused) content doesn't get swapped out under the user.
+  // `render` rebuilds the list's content from scratch and pins scrollTop to the bottom.
+  function draw(render) {
+    lastRender = render;
+    const hasContent = listEl.childElementCount > 0 && !listEl.querySelector(emptySelector);
+    if (hasContent && (!autoscrollEnabled || !isAtBottom())) {
+      setFrozenUI(true);
+      return;
+    }
+    setFrozenUI(false);
+    render();
+  }
+
+  // Manual scroll should immediately reflect frozen/live state.
+  listEl.addEventListener('scroll', () => setFrozenUI(!autoscrollEnabled || !isAtBottom()));
+
+  // Jump to latest always renders current entries and scrolls down, regardless of the
+  // autoscroll setting - a one-off catch-up, not a way to silently turn autoscroll on. If
+  // autoscroll is still off, the next new entry will freeze it again, which is correct.
+  followBtn.addEventListener('click', () => {
+    if (lastRender) lastRender();
+    setFrozenUI(false);
+  });
+
+  toggleEl.addEventListener('change', () => {
+    autoscrollEnabled = toggleEl.checked;
+    saveUIConfig({ [configKey]: autoscrollEnabled });
+    if (lastRender) draw(lastRender);
+  });
+
+  return { draw };
+}
+
 /* ---- tab switching (each sidebar tracks its own active tab) ---- */
 const debugToolsContainer = document.getElementById('debugTools');
 const visualToolsContainer = document.getElementById('visualTools');

@@ -1513,23 +1513,11 @@ function syncTraceListHeight() {
   }
 }
 
-function isTraceAtBottom() {
-  return traceList.scrollHeight - traceList.scrollTop - traceList.clientHeight < 24;
-}
-
-// Autoscroll toggle: off by default, so the list never jumps on its own until the person
-// opts in. Even when on, scrolling up still freezes it (see drawTrace below) — the toggle
-// only controls whether being at the bottom is enough to keep following new instructions.
-let traceAutoscrollEnabled = typeof savedUIConfig.traceAutoscroll === 'boolean' ? savedUIConfig.traceAutoscroll : false;
-traceAutoscrollToggle.checked = traceAutoscrollEnabled;
-
-// Shows/hides the "frozen" UI (note + jump button) to match current state, without
-// touching the trace list content itself. The note text only applies to the scrolled-up
-// case; when autoscroll is simply off (but we're at the bottom), the button alone is enough.
-function setTraceFrozenUI(frozen) {
-  btnTraceFollow.style.display = frozen ? '' : 'none';
-  traceFrozenNote.style.display = (frozen && !isTraceAtBottom()) ? '' : 'none';
-}
+// See createAutoscrollList() in emu-gb-debug-core.js for the shared freeze/autoscroll behavior.
+const traceAutoscroll = createAutoscrollList({
+  listEl: traceList, toggleEl: traceAutoscrollToggle, followBtn: btnTraceFollow,
+  frozenNoteEl: traceFrozenNote, configKey: 'traceAutoscroll', emptySelector: '.trace-empty',
+});
 
 // Cache of decoded mnemonic + explanation per trace ring-buffer slot, keyed by (addr,b0,b1,b2)
 // so a slot is only recomputed when its content actually changed.
@@ -1582,36 +1570,8 @@ function renderTraceEntries() {
 
 function drawTrace() {
   syncTraceListHeight();
-
-  // Only live-update while autoscroll is on AND pinned to the bottom; otherwise freeze the
-  // DOM so scrolled-up (or deliberately paused) content doesn't get swapped out under the user.
-  const hasContent = traceList.childElementCount > 0 && !traceList.querySelector('.trace-empty');
-  if (hasContent && (!traceAutoscrollEnabled || !isTraceAtBottom())) {
-    setTraceFrozenUI(true);
-    return;
-  }
-  setTraceFrozenUI(false);
-  renderTraceEntries();
+  traceAutoscroll.draw(renderTraceEntries);
 }
-
-// Manual scroll should immediately reflect frozen/live state.
-traceList.addEventListener('scroll', () => {
-  setTraceFrozenUI(!traceAutoscrollEnabled || !isTraceAtBottom());
-});
-
-// Jump to latest always renders the current entries and scrolls down, regardless of the
-// autoscroll setting — a one-off catch-up, not a way to silently turn autoscroll on. If
-// autoscroll is still off, the next new instruction will freeze it again, which is correct.
-btnTraceFollow.addEventListener('click', () => {
-  renderTraceEntries();
-  setTraceFrozenUI(false);
-});
-
-traceAutoscrollToggle.addEventListener('change', () => {
-  traceAutoscrollEnabled = traceAutoscrollToggle.checked;
-  saveUIConfig({ traceAutoscroll: traceAutoscrollEnabled });
-  drawTrace();
-});
 
 // Exports the entire trace ring buffer as plain text: address, opcode, disassembly, diff,
 // and explanation per line. Consecutive repeats are collapsed with "x N", same as on screen.
@@ -1656,25 +1616,13 @@ btnExportTrace.addEventListener('click', () => {
 
 /* ---- 6b. Event log: unified scrollback of hardware + system events, see CoreStats.logEvent() ---- */
 
-// Same freeze-while-scrolled-up behavior as the Trace panel, so a burst of events (e.g. an
-// interrupt storm) doesn't yank the view out from under someone reading older entries.
-function isEventLogAtBottom() {
-  return eventLogList.scrollHeight - eventLogList.scrollTop - eventLogList.clientHeight < 24;
-}
-
-// Autoscroll toggle: off by default, same rationale as the Trace panel's. Even when on,
-// scrolling up still freezes it — the toggle only controls whether being at the bottom is
-// enough to keep following new events.
-let eventLogAutoscrollEnabled = typeof savedUIConfig.eventLogAutoscroll === 'boolean' ? savedUIConfig.eventLogAutoscroll : false;
-eventLogAutoscrollToggle.checked = eventLogAutoscrollEnabled;
-
-// Shows/hides the "frozen" UI (note + jump button). The note text only applies to the
-// scrolled-up case; when autoscroll is simply off (but we're at the bottom), the button
-// alone is enough.
-function setEventLogFrozenUI(frozen) {
-  btnEventLogFollow.style.display = frozen ? '' : 'none';
-  eventLogFrozenNote.style.display = (frozen && !isEventLogAtBottom()) ? '' : 'none';
-}
+// See createAutoscrollList() in emu-gb-debug-core.js for the shared freeze/autoscroll behavior
+// (same rationale as the Trace panel's: a burst of events, e.g. an interrupt storm, shouldn't
+// yank the view out from under someone reading older entries).
+const eventLogAutoscroll = createAutoscrollList({
+  listEl: eventLogList, toggleEl: eventLogAutoscrollToggle, followBtn: btnEventLogFollow,
+  frozenNoteEl: eventLogFrozenNote, configKey: 'eventLogAutoscroll', emptySelector: '.event-empty',
+});
 
 function activeEventLogComponents() {
   return new Set(eventLogFilterBoxes.filter(b => b.checked).map(b => b.value));
@@ -1717,34 +1665,8 @@ function renderEventLogEntries() {
 }
 
 function drawEventLog() {
-  // Only live-update while autoscroll is on AND pinned to the bottom; otherwise freeze the
-  // DOM so scrolled-up (or deliberately paused) content doesn't get swapped out under the user.
-  const hasContent = eventLogList.childElementCount > 0 && !eventLogList.querySelector('.event-empty');
-  if (hasContent && (!eventLogAutoscrollEnabled || !isEventLogAtBottom())) {
-    setEventLogFrozenUI(true);
-    return;
-  }
-  setEventLogFrozenUI(false);
-  renderEventLogEntries();
+  eventLogAutoscroll.draw(renderEventLogEntries);
 }
-
-eventLogList.addEventListener('scroll', () => {
-  setEventLogFrozenUI(!eventLogAutoscrollEnabled || !isEventLogAtBottom());
-});
-
-// Jump to latest always renders the current entries and scrolls down, regardless of the
-// autoscroll setting. If autoscroll is still off, the next new event will freeze it again,
-// which is correct.
-btnEventLogFollow.addEventListener('click', () => {
-  renderEventLogEntries();
-  setEventLogFrozenUI(false);
-});
-
-eventLogAutoscrollToggle.addEventListener('change', () => {
-  eventLogAutoscrollEnabled = eventLogAutoscrollToggle.checked;
-  saveUIConfig({ eventLogAutoscroll: eventLogAutoscrollEnabled });
-  drawEventLog();
-});
 
 // Changing the level threshold only affects what gets recorded going forward (see
 // CoreStats.logEvent) — it doesn't retroactively filter what's already in the ring buffer.

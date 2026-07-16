@@ -90,47 +90,62 @@ const bankingLog = document.getElementById('bankingLog');
 
 /* ============================ Memory Map + MBC Banking visualizers ===================== */
 
-// Region layout for the 0x0000-0xFFFF strip. `weight` sets proportional width; `minPx` is a
-// floor for tiny regions; `purpose` shows as a hover tooltip.
-const MEM_REGIONS = [
-  { key: 'ROM0',   label: 'ROM Bank 0',    range: '0x0000–0x3FFF', color: '#5a9bd8', weight: 0x4000, minPx: 46,
+// ---- Single source of truth for the GB address map (0x0000-0xFFFF). Every debug panel that
+// needs to know where a region lives (Memory Map strip, RAM Editor, Memory Scanner) reads
+// base/length/label/color/purpose from here instead of keeping its own copy, so a region's
+// boundaries or description only ever need to change in one place. `minPx` is a rendering-only
+// floor width used by the Memory Map strip; `aliasOf` marks ECHO as a mirror of WRAM for the
+// access-flash logic below. `range` is filled in just below from base/length rather than
+// hand-typed, so it can't drift out of sync with them. ----
+const MEMORY_REGIONS = {
+  ROM0:   { label: 'ROM Bank 0', base: 0x0000, length: 0x4000, color: '#5a9bd8', minPx: 46,
     purpose: 'Fixed 16KB ROM bank, always mapped. Entry point, interrupt vectors, resident code/data.' },
-  { key: 'ROMX',   label: 'ROM Bank N',    range: '0x4000–0x7FFF', color: '#8fc0ec', weight: 0x4000, minPx: 46,
+  ROMX:   { label: 'ROM Bank N', base: 0x4000, length: 0x4000, color: '#8fc0ec', minPx: 46,
     purpose: 'Switchable 16KB ROM bank, swapped by the mapper (MBC) for games larger than 32KB.' },
-  { key: 'VRAM',   label: 'VRAM',          range: '0x8000–0x9FFF', color: '#e0a63d', weight: 0x2000, minPx: 34,
+  VRAM:   { label: 'VRAM', base: 0x8000, length: 0x2000, color: '#e0a63d', minPx: 34,
     purpose: 'Video RAM: tile pixel data and BG/window tile maps, read by the PPU each scanline.' },
-  { key: 'ERAM',   label: 'Cart RAM',      range: '0xA000–0xBFFF', color: '#d9534f', weight: 0x2000, minPx: 34,
+  ERAM:   { label: 'Cart RAM', base: 0xA000, length: 0x2000, color: '#d9534f', minPx: 34,
     purpose: 'Optional cartridge RAM (SRAM) for save data or MBC3 RTC registers. Mapper-gated.' },
-  { key: 'WRAM',   label: 'WRAM',          range: '0xC000–0xDFFF', color: '#5cb85c', weight: 0x2000, minPx: 34,
+  WRAM:   { label: 'WRAM', base: 0xC000, length: 0x2000, color: '#5cb85c', minPx: 34,
     purpose: 'General-purpose work RAM: variables, stack, internal state.' },
-  { key: 'ECHO',   label: 'Echo RAM',      range: '0xE000–0xFDFF', color: '#3f7a3f', weight: 0x1E00, minPx: 22, aliasOf: 'WRAM',
+  ECHO:   { label: 'Echo RAM', base: 0xE000, length: 0x1E00, color: '#3f7a3f', minPx: 22, aliasOf: 'WRAM',
     purpose: 'Mirror of WRAM 0xC000-0xDDFF; reads/writes here hit WRAM.' },
-  { key: 'OAM',    label: 'OAM',           range: '0xFE00–0xFE9F', color: '#b366cc', weight: 0x00A0, minPx: 20,
+  OAM:    { label: 'OAM', base: 0xFE00, length: 0x00A0, color: '#b366cc', minPx: 20,
     purpose: 'Object Attribute Memory: up to 40 sprite entries composited by the PPU each scanline.' },
-  { key: 'UNUSED', label: 'Unused',        range: '0xFEA0–0xFEFF', color: '#3a3a42', weight: 0x0060, minPx: 16,
+  UNUSED: { label: 'Unused', base: 0xFEA0, length: 0x0060, color: '#3a3a42', minPx: 16,
     purpose: 'Unmapped on DMG hardware; returns inconsistent values depending on model.' },
-  { key: 'IO',     label: 'I/O Regs',      range: '0xFF00–0xFF7F', color: '#e05fb0', weight: 0x0080, minPx: 20,
+  IO:     { label: 'I/O Regs', base: 0xFF00, length: 0x0080, color: '#e05fb0', minPx: 20,
     purpose: 'Memory-mapped hardware registers: joypad, serial, timers, sound, LCD/PPU control.' },
-  { key: 'HRAM',   label: 'HRAM',          range: '0xFF80–0xFFFE', color: '#f0d84a', weight: 0x007F, minPx: 20,
+  HRAM:   { label: 'HRAM', base: 0xFF80, length: 0x007F, color: '#f0d84a', minPx: 20,
     purpose: 'High RAM, 127 bytes, fastest to access. Common scratch space during OAM DMA.' },
-  { key: 'IE',     label: 'IE',            range: '0xFFFF',        color: '#f5f5f5', weight: 0x0001, minPx: 16,
+  IE:     { label: 'IE', base: 0xFFFF, length: 0x0001, color: '#f5f5f5', minPx: 16,
     purpose: 'Interrupt Enable register, one bit per interrupt source.' },
-];
+};
+// Display order for the Memory Map strip (and the basis for RAMEDIT_ORDER below).
+const MEMORY_REGION_ORDER = ['ROM0', 'ROMX', 'VRAM', 'ERAM', 'WRAM', 'ECHO', 'OAM', 'UNUSED', 'IO', 'HRAM', 'IE'];
+
+// "0x0000–0x3FFF"-style label, derived from base/length so it can't drift from the numbers above.
+function memRegionRangeLabel(base, length) {
+  return length <= 1 ? hex16(base) : `${hex16(base)}\u2013${hex16(base + length - 1)}`;
+}
+MEMORY_REGION_ORDER.forEach(key => { MEMORY_REGIONS[key].range = memRegionRangeLabel(MEMORY_REGIONS[key].base, MEMORY_REGIONS[key].length); });
+
 let memRegionEls = {}; // key -> { el, key } (ECHO shares WRAM's flash key via aliasOf)
 
 function buildMemMapStrip() {
   memmapStrip.innerHTML = '';
   memRegionEls = {};
-  MEM_REGIONS.forEach(r => {
+  MEMORY_REGION_ORDER.forEach(key => {
+    const r = MEMORY_REGIONS[key];
     const el = document.createElement('div');
     el.className = 'mem-region';
-    el.style.flex = `${r.weight} 0 ${r.minPx}px`;
+    el.style.flex = `${r.length} 0 ${r.minPx}px`;
     el.style.background = r.color;
     el.title = `${r.label} (${r.range})\n${r.purpose}`;
     el.innerHTML = `<span class="mem-label">${r.label}</span><span class="mem-range">${r.range}</span>` +
-      (r.key === 'ROMX' ? '<span class="mem-bank" id="mmRomBankTag">Bank 1</span>' : '');
+      (key === 'ROMX' ? '<span class="mem-bank" id="mmRomBankTag">Bank 1</span>' : '');
     memmapStrip.appendChild(el);
-    memRegionEls[r.key] = el;
+    memRegionEls[key] = el;
   });
 }
 
@@ -156,7 +171,7 @@ function drawMemMap() {
     }
   }
 
-  const regionMeta = MEM_REGIONS.find(r => r.key === (a.region === 'WRAM' && a.addr >= 0xE000 ? 'ECHO' : a.region));
+  const regionMeta = MEMORY_REGIONS[a.region === 'WRAM' && a.addr >= 0xE000 ? 'ECHO' : a.region];
   memmapReadout.innerHTML =
     `<span class="mm-swatch" style="background:${regionMeta ? regionMeta.color : '#888'}"></span>` +
     `<b>${hex16(a.addr)}</b> in <b>${regionMeta ? regionMeta.label : a.region}</b>` +
@@ -317,9 +332,8 @@ const RAMEDIT_META = {
   HRAM: { editable: true, mode: 'hex' },
   IE: { editable: true, mode: 'io' },
 };
-const RAMEDIT_ORDER = ['ROM0', 'ROMX', 'VRAM', 'ERAM', 'WRAM', 'ECHO', 'OAM', 'IO', 'HRAM', 'IE'];
-const RAMEDIT_BASE = { ROM0: 0x0000, ROMX: 0x4000, VRAM: 0x8000, ERAM: 0xA000, WRAM: 0xC000, ECHO: 0xE000, OAM: 0xFE00, IO: 0xFF00, HRAM: 0xFF80, IE: 0xFFFF };
-const RAMEDIT_LEN = { ROM0: 0x4000, ROMX: 0x4000, VRAM: 0x2000, ERAM: 0x2000, WRAM: 0x2000, ECHO: 0x1E00, OAM: 0xA0, IO: 0x80, HRAM: 0x7F, IE: 0x1 };
+// Same regions/order as the Memory Map strip, minus UNUSED (nothing to usefully edit there).
+const RAMEDIT_ORDER = MEMORY_REGION_ORDER.filter(key => key !== 'UNUSED');
 const RAMEDIT_PAGE = 256; // bytes per page (16 rows x 16 bytes) for regions bigger than this
 
 // Names/descriptions for known DMG I/O registers, with optional bit labels (MSB first).
@@ -375,8 +389,8 @@ let ramEditOffset = 0;
 
 function ramEditRegionMeta(key) {
   const m = RAMEDIT_META[key];
-  const mm = MEM_REGIONS.find(r => r.key === key) || {};
-  return { key, base: RAMEDIT_BASE[key], length: RAMEDIT_LEN[key], editable: m.editable, mode: m.mode, note: m.note, label: mm.label || key, color: mm.color || '#888', range: mm.range || '', purpose: mm.purpose || '' };
+  const mm = MEMORY_REGIONS[key];
+  return { key, base: mm.base, length: mm.length, editable: m.editable, mode: m.mode, note: m.note, label: mm.label, color: mm.color, range: mm.range, purpose: mm.purpose };
 }
 
 function buildRamEditRegionTabs() {
@@ -653,13 +667,12 @@ const memScanSavedListEl = document.getElementById('memScanSavedList');
 
 // Regions worth scanning for live game state. ROM/banking regs are constant or side-effecting,
 // and IO/IE are covered far better by the RAM Editor's per-bit view, so they're left out here.
-const MEMSCAN_REGIONS = [
-  { key: 'WRAM', base: 0xC000, length: 0x2000, defaultOn: true },
-  { key: 'HRAM', base: 0xFF80, length: 0x007F, defaultOn: true },
-  { key: 'OAM',  base: 0xFE00, length: 0x00A0, defaultOn: false },
-  { key: 'ERAM', base: 0xA000, length: 0x2000, defaultOn: false },
-  { key: 'VRAM', base: 0x8000, length: 0x2000, defaultOn: false },
-];
+// Which regions the Memory Scanner offers, and whether each is checked by default. base/length
+// come from MEMORY_REGIONS (the single source of truth) rather than being retyped here.
+const MEMSCAN_REGION_DEFAULTS = { WRAM: true, HRAM: true, OAM: false, ERAM: false, VRAM: false };
+const MEMSCAN_REGIONS = Object.keys(MEMSCAN_REGION_DEFAULTS).map(key => ({
+  key, base: MEMORY_REGIONS[key].base, length: MEMORY_REGIONS[key].length, defaultOn: MEMSCAN_REGION_DEFAULTS[key],
+}));
 const MEMSCAN_MAX_ROWS = 300; // render cap - narrow the scan further if you hit this
 
 const MEMSCAN_INITIAL_TYPES = [
@@ -739,14 +752,14 @@ function escapeHtml(s) {
 function buildMemScanRegionCheckboxes() {
   memScanRegionsEl.innerHTML = '';
   MEMSCAN_REGIONS.forEach(r => {
-    const meta = MEM_REGIONS.find(m => m.key === r.key) || {};
+    const meta = MEMORY_REGIONS[r.key];
     const label = document.createElement('label');
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.dataset.region = r.key;
     cb.checked = r.defaultOn;
     label.appendChild(cb);
-    label.append(`${meta.label || r.key} (${meta.range || ''})`);
+    label.append(`${meta.label} (${meta.range})`);
     memScanRegionsEl.appendChild(label);
   });
 }
@@ -796,11 +809,11 @@ function memScanRegionKeyForAddr(addr) {
 // Jumps into the RAM Editor tab focused on `addr` - lets a scan result be inspected/edited
 // with the fuller hex-dump view (ASCII column, surrounding bytes, etc).
 function jumpToRamEditor(addr) {
-  const key = RAMEDIT_ORDER.find(k => addr >= RAMEDIT_BASE[k] && addr < RAMEDIT_BASE[k] + RAMEDIT_LEN[k]);
+  const key = RAMEDIT_ORDER.find(k => addr >= MEMORY_REGIONS[k].base && addr < MEMORY_REGIONS[k].base + MEMORY_REGIONS[k].length);
   if (!key) return;
   ramEditKey = key;
-  const rel = addr - RAMEDIT_BASE[key];
-  ramEditOffset = Math.max(0, Math.min(RAMEDIT_LEN[key] - RAMEDIT_PAGE, Math.floor(rel / 16) * 16));
+  const rel = addr - MEMORY_REGIONS[key].base;
+  ramEditOffset = Math.max(0, Math.min(MEMORY_REGIONS[key].length - RAMEDIT_PAGE, Math.floor(rel / 16) * 16));
   buildRamEditRegionTabs();
   buildRamEditBody();
   debugToolsContainer.querySelector('.tool-tab[data-tool="ramedit"]').click();

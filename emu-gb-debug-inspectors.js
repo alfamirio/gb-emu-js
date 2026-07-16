@@ -1,26 +1,11 @@
 /* =========================================================================================
    emu-gb-debug-inspectors.js — Debug Tools sidebar
    -----------------------------------------------------------------------------------------
-   Renders every panel under the "Debug Tools" sidebar tab group:
+   Renders the "Debug Tools" tab group: CPU registers/flags, memory map + MBC banking,
+   RAM editor, Memory Scanner + Saved Cheats, Frame Activity, live disassembler, interrupts,
+   stack, execution trace, and event log.
 
-   - Editable CPU registers/flags panel (writes directly to CPU state while paused).
-   - Memory map strip + MBC banking panel.
-   - RAM editor (hex + I/O bit-level views).
-   - Memory Scanner (Cheat Engine-style value search) + Saved Cheats.
-   - Frame Activity (per-frame instruction count, frame anatomy, line anatomy) — always
-     visible, not a tab, but grouped here since it's core execution/debug info.
-   - Live disassembler.
-   - Interrupts panel (IME/IE/IF + recently-serviced log).
-   - Stack panel.
-   - Execution trace (scrollback of executed instructions).
-   - Event log (unified hardware + system event scrollback).
-
-   Depends on DOM refs and helpers declared in emu-gb-debug-core.js (debugToolsContainer,
-   flashCopiedInline) and on drawing functions from emu-gb-debug-visualizers.js
-   (refreshDebugTools calls both, but only from callbacks/timers, so load order relative to
-   the visualizers file doesn't matter — it just needs to load after emu-gb-debug-core.js).
-
-   Load order (required): after emu-gb-debug-core.js.
+   Uses DOM refs/helpers from emu-gb-debug-core.js — load this file after it.
    ========================================================================================= */
 
 /* ---- 0. CPU registers editor refs ---- */
@@ -90,13 +75,8 @@ const bankingLog = document.getElementById('bankingLog');
 
 /* ============================ Memory Map + MBC Banking visualizers ===================== */
 
-// ---- Single source of truth for the GB address map (0x0000-0xFFFF). Every debug panel that
-// needs to know where a region lives (Memory Map strip, RAM Editor, Memory Scanner) reads
-// base/length/label/color/purpose from here instead of keeping its own copy, so a region's
-// boundaries or description only ever need to change in one place. `minPx` is a rendering-only
-// floor width used by the Memory Map strip; `aliasOf` marks ECHO as a mirror of WRAM for the
-// access-flash logic below. `range` is filled in just below from base/length rather than
-// hand-typed, so it can't drift out of sync with them. ----
+// ---- Single source of truth for the GB address map (0x0000-0xFFFF), shared by the Memory
+// Map strip, RAM Editor, and Memory Scanner. `aliasOf` marks ECHO as a mirror of WRAM. ----
 const MEMORY_REGIONS = {
   ROM0:   { label: 'ROM Bank 0', base: 0x0000, length: 0x4000, color: '#5a9bd8', minPx: 46,
     purpose: 'Fixed 16KB ROM bank, always mapped. Entry point, interrupt vectors, resident code/data.' },
@@ -642,15 +622,8 @@ buildRamEditRegionTabs();
 buildRamEditBody();
 
 
-/* ---- Memory Scanner: Cheat Engine-style value search, used to hunt down which address holds
-   something like lives/HP/coins/a timer. Two-phase workflow:
-     1. "New Scan" snapshots every byte (or LE word) in the checked regions, optionally filtered
-        to an exact starting value.
-     2. "Next Scan" repeatedly narrows that candidate set by comparing each candidate's *live*
-        value against the value it had at the last scan (changed/unchanged/increased/decreased/
-        exact/by-delta) until only a couple of addresses are left.
-   Also supports freezing a found address so its value is rewritten every frame - handy for
-   confirming a find (infinite lives) or just for a permanent cheat. ---- */
+/* ---- Memory Scanner: Cheat Engine-style value search for locating things like lives/HP/coins.
+   "New Scan" snapshots candidates, "Next Scan" narrows them; found addresses can be frozen. ---- */
 const memScanRegionsEl = document.getElementById('memScanRegions');
 const memScanSizeEl = document.getElementById('memScanSize');
 const memScanTypeEl = document.getElementById('memScanType');
@@ -665,10 +638,8 @@ const memScanFrozenSectionEl = document.getElementById('memScanFrozenSection');
 const memScanFrozenListEl = document.getElementById('memScanFrozenList');
 const memScanSavedListEl = document.getElementById('memScanSavedList');
 
-// Regions worth scanning for live game state. ROM/banking regs are constant or side-effecting,
-// and IO/IE are covered far better by the RAM Editor's per-bit view, so they're left out here.
-// Which regions the Memory Scanner offers, and whether each is checked by default. base/length
-// come from MEMORY_REGIONS (the single source of truth) rather than being retyped here.
+// Regions worth scanning for live game state, and whether each is checked by default.
+// ROM/banking/IO/IE are left out — constant, side-effecting, or better read bit-by-bit.
 const MEMSCAN_REGION_DEFAULTS = { WRAM: true, HRAM: true, OAM: false, ERAM: false, VRAM: false };
 const MEMSCAN_REGIONS = Object.keys(MEMSCAN_REGION_DEFAULTS).map(key => ({
   key, base: MEMORY_REGIONS[key].base, length: MEMORY_REGIONS[key].length, defaultOn: MEMSCAN_REGION_DEFAULTS[key],
@@ -693,11 +664,8 @@ let memScanCandidates = null;      // null until a scan has run; else Map<addr, 
 let memScanActiveSize = 1;         // byte width locked in for the current scan
 let memScanFrozen = new Map();     // addr -> {value, size} - rewritten every emulated frame
 
-// ---- Saved cheats: name + address + size, persisted in localStorage keyed by the loaded
-// ROM's CRC32 (plus its title, kept just for display/debugging the storage). Reappears in the
-// "Saved cheats for this ROM" list any time this same ROM is loaded again, ready to re-apply
-// (apply = freeze, same mechanism as the manual Freeze checkboxes below). Storage key comes
-// from the central STORAGE_KEYS registry in app.js. ----
+// ---- Saved cheats: name + address + size, persisted per-ROM (keyed by CRC32) so they
+// reappear whenever that ROM is reloaded. Applying one just freezes it, like the checkboxes below. ----
 
 function loadCheatStore() {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEYS.MEMSCAN_CHEATS)) || {}; }
@@ -825,9 +793,8 @@ function toggleMemScanFreeze(addr, size, checked) {
   refreshFreezeRelatedUI();
 }
 
-// Freeze state is shown in three places at once (scan-table checkboxes, the Frozen addresses
-// list, and the Apply checkboxes in Saved Cheats) - whenever memScanFrozen changes, redraw all
-// three from it rather than trying to keep each mutation in sync by hand.
+// Freeze state shows up in three places (scan table, Frozen list, Saved Cheats) — redraw
+// all three from memScanFrozen whenever it changes, rather than syncing each by hand.
 function refreshFreezeRelatedUI() {
   drawMemScanFrozenList();
   drawSavedCheats();
@@ -860,9 +827,8 @@ function drawMemScanFrozenList() {
   });
 }
 
-// Renders the persistent "Saved cheats for this ROM" list from localStorage. Each row's Apply
-// checkbox just drives the same memScanFrozen map as the ad-hoc Freeze checkboxes in the scan
-// results table - saving a cheat only remembers the address; it doesn't apply it by itself.
+// Renders the "Saved cheats for this ROM" list. Each row's Apply checkbox drives the same
+// memScanFrozen map as the scan table's Freeze checkboxes; saving doesn't apply by itself.
 function drawSavedCheats() {
   if (!lastROMBytes) {
     memScanSavedListEl.innerHTML = '<div class="memscan-empty">Load a ROM to manage cheats.</div>';
@@ -1064,9 +1030,8 @@ memScanResetBtn.addEventListener('click', () => {
   buildMemScanTable();
 });
 
-// Any candidate set or freeze from before is meaningless once a (possibly different) ROM is
-// (re)loaded - the address space is the same, but what lives there has changed. The Saved
-// Cheats list is rebuilt from localStorage for the newly-active ROM's CRC32 instead.
+// Any prior candidate set or freeze is meaningless once a ROM is (re)loaded, since what
+// lives at each address has changed. The Saved Cheats list is rebuilt for the new ROM's CRC32.
 function onRomChangedForMemScan() {
   memScanCandidates = null;
   memScanFrozen.clear();
@@ -1081,9 +1046,8 @@ function onRomChangedForMemScan() {
   drawSavedCheats();
 }
 
-// refreshBankingAndRtcPanels() (app.js) is the shared "a ROM was just (re)loaded" hook - it's
-// called from both loadROMBytes() and resetEmulator(), which is exactly when the Memory
-// Scanner needs to reset itself and reload the Saved Cheats list for whichever ROM is now active.
+// refreshBankingAndRtcPanels() (app.js) is the shared "ROM just (re)loaded" hook — also the
+// right moment for the Memory Scanner to reset and reload Saved Cheats for the active ROM.
 const _memScanPrevRefreshBankingAndRtcPanels = window.refreshBankingAndRtcPanels;
 window.refreshBankingAndRtcPanels = function () {
   _memScanPrevRefreshBankingAndRtcPanels();
@@ -1101,10 +1065,8 @@ window.addEventListener('resize', () => {
 });
 
 /* ---- 5. Live disassembler: decodes the bytes around PC into mnemonics ---- */
-/* ---- Frame Activity: emulated-hardware content per frame, not JS/host timing ----
-   Left canvas: instructions per recent frame, click a bar to select it. Middle canvas: the
-   selected frame's 154 scanlines with event markers and a sprites-per-line sparkline, click
-   to select a line. Bottom canvas: that scanline's mode structure plus its recorded events. */
+/* ---- Frame Activity: emulated-hardware timing per frame, not JS/host timing. Left canvas
+   picks a recent frame, middle canvas picks a scanline within it, bottom shows that line. ---- */
 const frameActivityCanvas = document.getElementById('frameActivityCanvas');
 const frameAnatomyCanvas = document.getElementById('frameAnatomyCanvas');
 const lineAnatomyCanvas = document.getElementById('lineAnatomyCanvas');
@@ -1306,9 +1268,8 @@ function drawLineAnatomy() {
   lineAnatomyStatsEl.innerHTML = html;
 }
 
-// Cache of the previous frame's "before PC" resync result for the Disassembly panel. On
-// straight-line execution, slides the window forward instead of re-running the resync search.
-// Falls back to a full resync on jumps, single-steps, breakpoints, or a new ROM.
+// Cache of the last resync for the Disassembly panel: slides forward on straight-line
+// execution, falls back to a full resync on jumps, single-steps, breakpoints, or a new ROM.
 let disasmResyncCache = null; // { pc, rom, beforeLines, currentText, nextExpectedPc } or null
 
 function drawDisassembly() {
@@ -1535,9 +1496,8 @@ function getTraceDecoded(idx, addr, b0, b1, b2) {
   return entry;
 }
 
-// Rebuilds the trace list content from the ring buffer and pins the scroll to the bottom.
-// Split out from drawTrace() so "Jump to latest" can force a refresh even while autoscroll
-// is off (it's a one-off catch-up, not a way to silently turn autoscroll on).
+// Rebuilds the trace list from the ring buffer and scrolls to the bottom. Split out from
+// drawTrace() so "Jump to latest" can force a one-off refresh even while autoscroll is off.
 const TRACE_VISIBLE_ROWS = 50; // on-screen cap; export still covers the full ring buffer
 function renderTraceEntries() {
   const entries = emulator.instrumentation.getTraceEntries();
@@ -1616,9 +1576,8 @@ btnExportTrace.addEventListener('click', () => {
 
 /* ---- 6b. Event log: unified scrollback of hardware + system events, see CoreStats.logEvent() ---- */
 
-// See createAutoscrollList() in emu-gb-debug-core.js for the shared freeze/autoscroll behavior
-// (same rationale as the Trace panel's: a burst of events, e.g. an interrupt storm, shouldn't
-// yank the view out from under someone reading older entries).
+// See createAutoscrollList() in emu-gb-debug-core.js: a burst of events (e.g. an interrupt
+// storm) shouldn't yank the view away from someone reading older entries.
 const eventLogAutoscroll = createAutoscrollList({
   listEl: eventLogList, toggleEl: eventLogAutoscrollToggle, followBtn: btnEventLogFollow,
   frozenNoteEl: eventLogFrozenNote, configKey: 'eventLogAutoscroll', emptySelector: '.event-empty',
@@ -1639,9 +1598,8 @@ function formatEventTime(ms) {
   return `${m}:${s}`;
 }
 
-// Rebuilds the event log content from the buffer and pins the scroll to the bottom. Split
-// out from drawEventLog() so "Jump to latest" can force a refresh even while autoscroll is
-// off (it's a one-off catch-up, not a way to silently turn autoscroll on).
+// Rebuilds the event log from the buffer and scrolls to the bottom. Split out from
+// drawEventLog() so "Jump to latest" can force a one-off refresh even while autoscroll is off.
 const EVENT_LOG_VISIBLE_ROWS = 50; // on-screen cap; export still covers the full buffer
 function renderEventLogEntries() {
   const shown = activeEventLogComponents();

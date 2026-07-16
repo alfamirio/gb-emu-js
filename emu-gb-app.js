@@ -1,20 +1,15 @@
 /* =========================================================================================
    emu-gb-app.js — Application Wiring
    -----------------------------------------------------------------------------------------
-   Manages the emulator UI and system integration (everything except the core and debugger).
+   Wires up the emulator UI: screen canvas, input, audio/speed controls, ROM loading
+   (drag-and-drop, ZIP extraction), playback (rewind, step/breakpoint, save states), and
+   media export (.sav battery RAM, screenshots, audio/video clips).
 
-   - Screen canvas, input handling, and audio/speed controls.
-   - ROM loading (drag-and-drop, ZIP extraction).
-   - Playback mechanics (rewind, step/breakpoint controls, save states).
-   - File/media export (.sav battery RAM, screenshots, audio/video clips).
+   Educational-use guardrails (play-time cap, commercial-ROM filter) live in
+   emu-gb-guardrails.js; this file only calls into them, via resetPlayTime() and
+   checkCommercialRomGate().
 
-   The educational-use guardrails (play-time cap, commercial-ROM filter, dev-unlock override)
-   live in emu-gb-guardrails.js, not here - this file just calls into them (resetPlayTime()
-   after a ROM load/reset, checkCommercialRomGate(bytes) before accepting one).
-
-   Load order: emu-gb-core.js (core logic/config) -> emu-gb-guardrails.js -> emu-gb-app.js (UI
-   constants the debugger reads) -> emu-gb-debug.js (safe to load last; app calls into it are
-   deferred inside callbacks).
+   Load order: emu-gb-core.js -> emu-gb-guardrails.js -> emu-gb-app.js -> emu-gb-debug.js.
    ========================================================================================= */
 
 // App-level UI/feature configuration (not emulator-core values, which stay next to their CPU/PPU/APU/MMU usage).
@@ -43,8 +38,8 @@ const APP_CONFIG = {
 const canvas = document.getElementById('screen');
 const coreToggle = document.getElementById('coreToggle'); // unchecked = GB core, checked = GBC core
 
-// Composition root: injects live stats/instrumentation/scheduler so the core itself
-// (emu-gb-core.js) stays UI-agnostic. Audio is wired up separately below.
+// Composition root: injects stats/instrumentation/scheduler so the core itself stays
+// UI-agnostic. Audio is wired up separately below.
 function createEmulator(EmulatorClass) {
   return new EmulatorClass({
     stats: new CoreStats(),
@@ -54,21 +49,16 @@ function createEmulator(EmulatorClass) {
 }
 let emulator = createEmulator(GBEmulator);
 
-/* ---- screen rendering: the core only produces a framebuffer (emulator.getFramebuffer());
-   app.js turns that into pixels on screen. Rendered via WebGL (upload framebuffer as a
-   texture each frame, draw it onto a fullscreen quad with a NEAREST-filtered sampler so
-   pixels stay crisp) with a plain canvas-2D fallback for browsers/contexts without WebGL.
-   The debug-only scanline marker is drawn on `screenOverlay`, a separate 2D canvas stacked
-   on top via CSS - simplest way to keep that per-pixel overlay without a second GL pass. ---- */
+/* ---- screen rendering: the core only produces a framebuffer; app.js draws it via WebGL
+   (texture + fullscreen quad), falling back to canvas-2D where WebGL isn't available. ---- */
 const SCREEN_W = EMU_CORE_CONFIG.SCREEN.WIDTH;
 const SCREEN_H = EMU_CORE_CONFIG.SCREEN.HEIGHT;
 const screenOverlay = document.getElementById('screenOverlay');
 const overlayCtx = screenOverlay.getContext('2d');
 let markCurrentLine = false; // debug-only "scanline mark" navbar toggle; app-side, not a core concept
 
-// preserveDrawingBuffer: true so canvas.toBlob() (screenshots) and canvas.captureStream()
-// (clip recording) further down this file can still read back whatever was last drawn -
-// without it the browser is free to clear the GL backbuffer right after compositing.
+// preserveDrawingBuffer: true keeps the GL backbuffer readable after compositing, which
+// canvas.toBlob() (screenshots) and canvas.captureStream() (clip recording) below need.
 const gl = canvas.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: true })
         || canvas.getContext('experimental-webgl', { alpha: false, antialias: false, preserveDrawingBuffer: true });
 
@@ -97,8 +87,8 @@ function initWebGL() {
       vTexCoord = aTexCoord;
     }
   `;
-  // Flat texture2D lookup - the emulator core already does all the color/palette work, so
-  // this fragment shader has nothing to do but sample the framebuffer texture as-is.
+  // The core already does all the color/palette work, so this fragment shader just
+  // samples the framebuffer texture as-is.
   const fsSource = `
     precision mediump float;
     varying vec2 vTexCoord;
@@ -120,9 +110,8 @@ function initWebGL() {
   }
   gl.useProgram(glProgram);
 
-  // Fullscreen quad as a triangle strip: xy clip-space position + uv texture coord per vertex.
-  // V is flipped (1 at the top, 0 at the bottom) because the framebuffer's row 0 is the GB
-  // screen's top row, while WebGL addresses textures bottom-up.
+  // Fullscreen quad as a triangle strip. V is flipped (1 at top) because the framebuffer's
+  // row 0 is the screen's top row, while WebGL addresses textures bottom-up.
   const quadVerts = new Float32Array([
     /* x,  y,   u, v */
     -1, -1,   0, 1,
@@ -192,8 +181,8 @@ function drawCurrentLineMarker() {
   overlayCtx.restore();
 }
 
-/* ---- audio engine: mirrors the canvas rendering above. The core APU only produces mixed
-   stereo samples (emulator.drainAudioSamples()); app.js turns that into actual sound. ---- */
+/* ---- audio engine: mirrors the canvas rendering above - the core APU only produces mixed
+   stereo samples (emulator.drainAudioSamples()); app.js turns those into actual sound. ---- */
 let audioCtx = null;
 let masterGain = null;
 let audioNode = null; // ScriptProcessorNode feeding masterGain, pulling from the ring buffer
@@ -220,10 +209,8 @@ function ensureAudioEngine() {
   applyGain();
 }
 
-// Pushes current master volume/mute onto the GainNode. The slider is a plain 0-100%, but
-// mapped to gain through a squared curve rather than linearly: ears perceive loudness
-// roughly logarithmically, so a linear mapping crams all the useful range into the bottom
-// of the slider and makes the top end feel disproportionately loud.
+// Maps the volume slider (0-100%) to gain through a squared curve, since perceived loudness
+// is roughly logarithmic - a linear mapping would make the top of the slider feel too loud.
 function applyGain() {
   if (!masterGain) return;
   const pct = soundControls.volumeSlider.value / APP_CONFIG.VOLUME_MAX; // 0..1, straight off the slider
@@ -232,8 +219,7 @@ function applyGain() {
 }
 
 // Wires the core's cross-cutting hooks (onFrame/onFpsUpdate/onBreakpointHit) onto whichever
-// GBEmulator instance is current. Re-run on every GB<->GBC swap so a mid-session toggle
-// doesn't drop this wiring.
+// emulator instance is current. Re-run on every GB<->GBC swap so the wiring follows along.
 function wireEmulatorCallbacks() {
   emulator.onFrame = () => { draw(); refreshDebugTools(); };
   emulator.onFpsUpdate = (fps) => { document.getElementById('fps').textContent = fps + ' fps'; };
@@ -244,8 +230,8 @@ function wireEmulatorCallbacks() {
   };
   emulator.onAudioResume = () => { ensureAudioEngine(); if (audioCtx?.state === 'suspended') audioCtx.resume(); };
   emulator.onAudioSuspend = () => { if (audioCtx?.state === 'running') audioCtx.suspend(); };
-  // A GB<->GBC core swap gives us a fresh APU defaulting to 44100 — if the audio engine is
-  // already running, tell it the real rate immediately rather than waiting for a resume.
+  // A core swap creates a fresh APU defaulting to 44100 - if audio is already running,
+  // tell it the real sample rate right away instead of waiting for a resume.
   if (audioCtx) emulator.setSampleRate(audioCtx.sampleRate);
 }
 wireEmulatorCallbacks();
@@ -279,8 +265,7 @@ const btnStep1s = document.getElementById('btnStep1s');
 const bpStatus = document.getElementById('bpStatus');
 
 // Navbar toggle: when checked, a (re)loaded ROM is left paused on its first instruction
-// instead of auto-starting, ready to be stepped via the buttons above. Not persisted —
-// always starts off on load, same as the scanline-mark toggle.
+// instead of auto-starting, ready to be stepped via the buttons above.
 const stepDebugToggle = document.getElementById('stepDebugToggle');
 const stepDebugLabelOn = document.getElementById('stepDebugLabelOn');
 stepDebugToggle.addEventListener('change', () => {
@@ -289,12 +274,8 @@ stepDebugToggle.addEventListener('change', () => {
 
 let lastROMBytes = null;
 
-// Central registry of every localStorage key this app persists to, across every file (RAM
-// editor cheats and the RTC correction panel are debug-tools files, loaded later, but list
-// their keys here too so this stays the one place any of them can be looked up). This is
-// what "Clear all saved config" below iterates instead of needing to separately remember
-// each persisted feature by name. Split from STORAGE_KEY_PREFIXES (below) because a prefix
-// names a whole family of keys (one save-slot key per ROM) rather than one removable key.
+// Central registry of every localStorage key this app persists, including keys owned by
+// other files, so "Clear all saved config" below can iterate one place instead of a list.
 const STORAGE_KEYS = {
   UI_CONFIG: 'jsgb-config:ui',                     // model/mode/etc - this file
   SOUND_CONFIG: 'jsgb-config:sound',               // volume/mute - this file
@@ -343,8 +324,7 @@ function applyCoreToggle() {
   saveUIConfig({ gbcCore: wantGBC });
   if (lastROMBytes) loadROMBytes(lastROMBytes); // re-run the currently loaded ROM through the newly forced core
   else ensureEmulatorMatchesCoreToggle();
-  // Logged after the reload above: loadROM() resets the event log, so logging before it
-  // would just get wiped immediately.
+  // Logged after the reload above, since loadROM() resets the event log.
   emulator.stats?.logEvent('System', 'info', 'core-switch', wantGBC ? 'Switched to GBC core' : 'Switched to GB (DMG) core');
 }
 
@@ -425,20 +405,17 @@ function getGBCInfoNote(bytes) {
 }
 
 
-// File-integrity checksums for the loaded ROM image, computed over the raw file bytes
-// (the values a ROM database or verification tool would use). Distinct from the cartridge
-// header's own internal checksum bytes.
+// File-integrity checksums for the loaded ROM image, over the raw file bytes - distinct
+// from the cartridge header's own internal checksum bytes.
 
-// CRC32 (ISO-HDLC / zlib polynomial 0xEDB88320), via the crc-32 library (global CRC32,
-// loaded from cdnjs in index.html). CRC32.buf() returns a signed 32-bit int; mask to
-// unsigned so it hex-formats the same way the old table-based implementation did.
+// CRC32 (ISO-HDLC / zlib polynomial), via the crc-32 library. CRC32.buf() returns a signed
+// 32-bit int, so mask it to unsigned before hex-formatting.
 function crc32(bytes) {
   return CRC32.buf(bytes) >>> 0;
 }
 
-// MD5 via the spark-md5 library (global SparkMD5, loaded from cdnjs in index.html).
-// SparkMD5.ArrayBuffer.hash() wants a real ArrayBuffer, so if `bytes` is a view over a
-// larger buffer (e.g. a subarray), slice out just the bytes we care about first.
+// MD5 via the spark-md5 library. SparkMD5.ArrayBuffer.hash() wants a real ArrayBuffer, so
+// slice one out first if `bytes` is a view over a larger buffer.
 function md5(bytes) {
   const arrayBuffer = (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength)
     ? bytes.buffer
@@ -483,8 +460,7 @@ function renderChecksumBadges(checksums) {
 }
 
 // After any emulator.loadROM() call (fresh load or reset/reboot), the banking panel and RTC
-// tab need to be rebuilt against the new ROM's mapper state. Shared by loadROMBytes() and
-// resetEmulator() so the two can't drift apart.
+// tab need rebuilding against the new ROM's mapper state.
 function refreshBankingAndRtcPanels() {
   lastRenderedAccessSeq = -1;
   lastRenderedBankSwitchT = -1;
@@ -545,8 +521,7 @@ async function loadROMBytes(bytes) {
 }
 
 /* Zipped ROM support: minimal dependency-free ZIP reader. Walks the central directory for
-   .gb/.gbc/.bin entries, then extracts via the local file header. Stored entries used as-is;
-   deflated entries go through DecompressionStream. Encrypted/zip64 archives aren't supported. */
+   .gb/.gbc/.bin entries, then extracts via the local file header. */
 const ROM_IN_ZIP_RE = /\.(gb|gbc|bin)$/i;
 
 function readZipEntries(bytes) {
@@ -647,9 +622,8 @@ btnPause.addEventListener('click', () => {
   }
   refreshDebugTools();
 });
-// Shared by Reset and .sav import: reboots the emulator on the loaded ROM. loadROM()
-// reinitializes CPU/PPU/banking/RTC state but leaves cartRAM untouched, mirroring a
-// power-cycle on real hardware.
+// Shared by Reset and .sav import: reboots on the loaded ROM. loadROM() reinitializes
+// CPU/PPU/banking/RTC state but leaves cartRAM untouched, mirroring a power-cycle.
 function resetEmulator(statusMsg) {
   if (!lastROMBytes) return;
   emulator.loadROM(lastROMBytes);
@@ -796,14 +770,8 @@ window.addEventListener('keydown', (e) => { const m = KEY_MAP[e.key]; if (m) { e
 window.addEventListener('keyup', (e) => { const m = KEY_MAP[e.key]; if (m) { emulator.setButton(m[0], false, m[1]); e.preventDefault(); } });
 
 
-/* ===================================== Save / load states =====================================
-   Up to MAX_SLOTS snapshots per ROM (most recent first) in localStorage, each a full
-   emulator.getSaveState() snapshot including the PPU framebuffer as thumbnail.
-     - [ / "Save" button  -> quick-saves a new slot (oldest dropped at the limit)
-     - ] / "Load" button  -> quick-loads the most recent slot
-     - clicking a sidebar card -> loads that specific slot
-     - Export/Import .json -> moves a single snapshot in or out as a file
-   =============================================================================================== */
+/* ---- Save / load states: up to MAX_SLOTS snapshots per ROM in localStorage. [/Save
+   quick-saves, ]/Load loads latest, sidebar cards load a specific slot, Export/Import moves one as JSON. ---- */
 
 const MAX_SLOTS = APP_CONFIG.MAX_SAVE_SLOTS;
 
@@ -829,9 +797,8 @@ function loadSlots() {
   catch { return []; }
 }
 
-// Unique-enough id for a save-state slot: timestamp + a short random suffix to disambiguate
-// two slots saved within the same millisecond. Used at both slot-creation sites (quick-save
-// and state import) so the format can't drift between them.
+// Unique-enough id for a save-state slot: timestamp + a short random suffix, in case two
+// slots are saved within the same millisecond.
 function makeSlotId() {
   return 'slot-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
 }
@@ -1110,9 +1077,7 @@ btnScreenshot.addEventListener('click', () => {
 });
 
 // Generic MediaRecorder-based capture session, shared by gameplay-clip and audio-only export
-// below (they only differ in mime candidates/tracks/bitrates/status text). `buildStream` does
-// the recording-specific track setup and returns null (after its own alert) if it can't
-// proceed; `cleanup` undoes whatever `buildStream` connected/opened.
+// below. `buildStream` sets up tracks (or returns null after its own alert); `cleanup` tears them down.
 function createCaptureRecorder({
   mimeCandidates, unsupportedMsg, noCodecMsg, buildStream, recorderOptions, filename, savedMsg,
   timerLabel, button, idleLabel, recordingLabel,
@@ -1237,10 +1202,8 @@ const audioRecorderCtl = createCaptureRecorder({
   recordingLabel: '⏹ Audio',
 });
 
-/* ---- clear saved config: wipes every entry in STORAGE_KEYS (UI/sound/RTC-correction/
-   memscan-cheats config) plus all save-state slots from localStorage, resetting to defaults
-   on next load. Reading STORAGE_KEYS here means a newly persisted feature just needs to add
-   itself to that registry to be included - it can't be forgotten in this handler by hand. ---- */
+/* ---- clear saved config: wipes every entry in STORAGE_KEYS plus all save-state slots,
+   resetting to defaults on next load. ---- */
 const btnClearConfig = document.getElementById('btnClearConfig');
 btnClearConfig.addEventListener('click', () => {
   const ok = confirm('Clear all saved emulator config (model, play/debug mode, sound settings, RTC correction, saved cheats) AND all game save states? This cannot be undone.');

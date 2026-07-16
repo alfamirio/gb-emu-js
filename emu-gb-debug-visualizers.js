@@ -1,25 +1,11 @@
 /* =========================================================================================
    emu-gb-debug-visualizers.js — Visualization Tools sidebar
    -----------------------------------------------------------------------------------------
-   Renders every panel under the "Visualization Tools" sidebar tab group:
+   Renders the "Visualization Tools" tab group: VRAM tile viewer, tile map viewer + tile
+   inspector/editor, BG/window/sprite layer viewer, OAM/sprite inspector, palette viewer,
+   per-channel audio oscilloscope, scanline timeline, and RTC (MBC3 clock) viewer.
 
-   - VRAM tile viewer (raw greyscale tile sheet, both CGB banks).
-   - Tile map viewer + Tile inspector/editor (decode and paint an 8x8 tile by address).
-   - Layer viewer (BG/window/sprites, independently toggleable).
-   - OAM / sprite inspector (table + composited view).
-   - Palette viewer (BGP/OBP0/OBP1 on DMG, all BG+OBJ palettes on CGB).
-   - Per-channel audio oscilloscope.
-   - Scanline timeline (frame + zoomed line view).
-   - RTC (MBC3 real-time clock) viewer, including its tab-availability check.
-
-   Depends on DOM refs and helpers declared in emu-gb-debug-core.js (debugToolsContainer,
-   visualToolsContainer, rtcTabBtn, flashCopied* helpers) and on a couple of functions from
-   emu-gb-debug-inspectors.js (e.g. syncTraceListHeight) that are only ever called from
-   deferred event callbacks, not at load time.
-
-   Load order (required): must load after emu-gb-debug-core.js — this file checks initial
-   RTC-tab availability synchronously at the bottom of its top-level code, which reads
-   emu-gb-debug-core.js's rtcTabBtn/visualToolsContainer refs.
+   Uses DOM refs/helpers from emu-gb-debug-core.js — load this file after it.
    ========================================================================================= */
 
 /* ---- 1. VRAM tile viewer refs ---- */
@@ -125,9 +111,8 @@ document.querySelectorAll('input[name="tmSelect"]').forEach(r => {
 /* ---- 1. VRAM tile viewer: every tile in a VRAM bank, raw, greyscale (no palette applied).
    CGB has two 384-tile banks; a bank selector below (CGB ROMs only) picks which is shown. ---- */
 let tileViewerBank = 0;
-// Decodes one pixel of a GB tile row into a palette-agnostic grayscale shade (0->white,
-// 3->black). Shared by the Sprite Sheet viewer and the Tile Inspector, which both render
-// raw 2bpp tile data without a real BG/OBJ palette applied.
+// Decodes one pixel of a GB tile row into a grayscale shade (0->white, 3->black), for
+// viewers that render raw 2bpp tile data without a real BG/OBJ palette applied.
 function tileRowGrayShade(lo, hi, px) {
   const bit = 7 - px;
   const colorNum = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
@@ -316,10 +301,8 @@ function showTileInspectStatus(msg, ok) {
   tileInspectPasteStatus._timeout = setTimeout(() => { tileInspectPasteStatus.textContent = ''; }, 2500);
 }
 
-// Reads an address from the clipboard (e.g. copied via the Sprite Sheet or Sprites (OAM)
-// tabs' click-to-copy) and jumps the inspector there. Accepts a bare/"0x"-prefixed hex value,
-// pulling the first hex-looking token out of the clipboard text if there's extra content.
-// Pulls the first hex-looking address out of clipboard text (bare or "0x"-prefixed).
+// Reads an address from the clipboard and jumps the inspector there. Pulls the first
+// hex-looking token out of the text, bare or "0x"-prefixed.
 function parseAddressFromClipboardText(text) {
   const match = text.trim().match(/(?:0x)?([0-9a-fA-F]{1,4})/);
   return match ? parseInt(match[1], 16) : null;
@@ -339,10 +322,8 @@ tileInspectPasteAddrBtn.addEventListener('click', async () => {
   showTileInspectStatus(`✓ Jumped to ${hex16(tileInspectAddr)}.`, true);
 });
 
-// Runs automatically whenever the Inspector tab is opened: silently checks the clipboard for
-// an address (e.g. one copied via the Sprite Sheet or Sprites (OAM) tabs' click-to-copy) and,
-// if found, jumps there. Unlike the Paste addr button, failures stay silent - opening the tab
-// shouldn't surface clipboard-permission noise, only a genuine hit is worth mentioning.
+// Runs when the Inspector tab opens: checks the clipboard for an address and jumps there
+// if found. Unlike the Paste addr button, failures stay silent here.
 async function autoPasteTileInspectAddrFromClipboard() {
   let text;
   try {
@@ -356,9 +337,8 @@ async function autoPasteTileInspectAddrFromClipboard() {
   showTileInspectStatus(`✓ Jumped to ${hex16(tileInspectAddr)} (from clipboard).`, true);
 }
 
-// Parses typed text into exactly 16 byte values (0-255). Accepts space/comma/newline
-// separated hex pairs with optional "0x" prefixes (e.g. "3C 7E 42 ..." or "0x3C,0x7E,...")
-// as well as one contiguous 32-hex-digit blob ("3C7E4242...") with no separators at all.
+// Parses typed text into exactly 16 byte values (0-255): space/comma/newline-separated hex
+// pairs, with or without "0x" prefixes, or one contiguous 32-hex-digit blob.
 function parseHexByteList(text) {
   const cleaned = text.replace(/0x/gi, ' ');
   const tokens = cleaned.split(/[^0-9a-fA-F]+/).filter(Boolean);
@@ -399,9 +379,8 @@ tileInspectBytesValEl.addEventListener('click', () => {
   flashCopiedInline(tileInspectBytesValEl, tileInspectBytesValEl.textContent);
 });
 
-/* ---- 2c. Tile editor: paint pixels directly onto the tile shown above, writing straight
-   through the real MMU write path (same as the RAM editor) so edits take effect immediately -
-   lets you touch up an existing tile or, combined with Clear Tile, draw a brand new one. ---- */
+/* ---- 2c. Tile editor: paint pixels onto the tile shown above, writing through the real
+   MMU write path so edits take effect immediately. ---- */
 tileInspectSwatches.forEach(sw => {
   sw.addEventListener('click', () => {
     tileInspectDrawColor = parseInt(sw.dataset.color, 10);
@@ -477,8 +456,7 @@ tileInspectCanvas.addEventListener('touchend', () => { tileInspectLastPaintedCel
 
 
 /* ---- 2b. Layer viewer: background / window / sprites, each rendered independently at full
-   frame resolution using the PPU's current registers. Window/sprites use transparent pixels
-   where nothing is drawn. ---- */
+   frame resolution using the PPU's current registers. ---- */
 const layerCanvasBG = document.getElementById('layerCanvasBG');
 const layerCtxBG = layerCanvasBG.getContext('2d');
 const layerImageDataBG = layerCtxBG.createImageData(EMU_CORE_CONFIG.SCREEN.WIDTH, EMU_CORE_CONFIG.SCREEN.HEIGHT);
@@ -521,9 +499,8 @@ document.querySelectorAll('.layer-download-btn').forEach(btn => {
   });
 });
 
-// Renders every on-screen sprite into an RGBA pixel buffer, using the same per-scanline
-// candidate selection and priority rules as the real renderer (10-sprite-per-line cap
-// included). Shared by the Layers > Sprites panel and the OAM composited view.
+// Renders every on-screen sprite into an RGBA buffer, using the real renderer's per-scanline
+// selection and priority rules (10-sprite-per-line cap included).
 function renderSpriteLayerPixels(data, W, H) {
   const ppu = emulator.ppu; // still passed through to spritePixelRGB(), which needs the ppu handle itself
   const { lcdc } = emulator.instrumentation.readPPUState();
@@ -618,9 +595,8 @@ function oamSpriteGeometry(i, spriteHeight) {
   return { spriteX, spriteY, tileIndex, idxTile, attrs };
 }
 
-/* ---- 3a. Composited sprite view: same rendering as Layers > Sprites, always drawn
-   regardless of LCDC.1 since this tab inspects raw OAM data, not what's currently visible.
-   Sprites only - no background/window layer underneath. ---- */
+/* ---- 3a. Composited sprite view: same rendering as Layers > Sprites, but always drawn
+   since this tab inspects raw OAM data rather than what's currently on screen. ---- */
 function drawOAMComposition() {
   const W = EMU_CORE_CONFIG.SCREEN.WIDTH, H = EMU_CORE_CONFIG.SCREEN.HEIGHT;
   const imgData = oamCompCtx.createImageData(W, H);
@@ -882,9 +858,8 @@ const frameTimelineCanvas = document.getElementById('frameTimelineCanvas');
 const lineTimelineCanvas = document.getElementById('lineTimelineCanvas');
 const scanlineStatsEl = document.getElementById('scanlineStats');
 
-// Color-coded PPU-mode legend (Mode 2/3/0/1), shared by the Scanline Timeline tool's
-// "current scanline" chart and the Frame Anatomy tool's "line anatomy" chart — identical
-// except for how precisely V-Blank's duration is spelled out.
+// Color-coded PPU-mode legend (Mode 2/3/0/1), shared by the Scanline Timeline and Frame
+// Anatomy tools' line charts.
 function ppuModeLegendHTML(vblankLabel) {
   return `<span><i style="background:#e0b45a"></i>Mode 2: OAM Search (80T)</span>
     <span><i style="background:#5ac2e0"></i>Mode 3: Pixel Transfer (172T)</span>

@@ -1,25 +1,18 @@
 /* =========================================================================================
    emu-gb-guardrails.js — Educational-use guardrails
    -----------------------------------------------------------------------------------------
-   Everything that exists to keep this an emulator-debugging/teaching tool rather than a way
-   to just play games, gated by a single master switch (GUARDRAIL_CONFIG.ENABLED):
+   Keeps this an emulator-debugging/teaching tool rather than a way to just play games, all
+   gated behind one master switch (GUARDRAIL_CONFIG.ENABLED):
 
-   - Hidden dev-unlock override (localStorage flag + navbar click-combo in
+   - Dev-unlock override: a hidden localStorage flag (plus a navbar click-combo in
      emu-gb-debug-core.js) that lets a developer bypass both guardrails below.
-   - Play-time cap: the badge next to "Load ROM" that colors amber/red, warns, and eventually
+   - Play-time cap: the badge next to "Load ROM" colors amber/red, warns, and eventually
      auto-reloads the page after a set amount of continuous runtime.
-   - Commercial-ROM filter: blocks ROMs matching a prebuilt No-Intro bloom filter (from
-     bloom_filter_builder.html), so only homebrew/non-commercial ROMs load. Checked against
-     both GB/GBC filters regardless of which core is loading it.
+   - Commercial-ROM filter: blocks ROMs matching a prebuilt No-Intro bloom filter, so only
+     homebrew/non-commercial ROMs load. Both GB and GBC filters are checked regardless of core.
 
-   None of this is a fact about the emulator or its UI chrome - it's a policy layered on top
-   - so it stays out of emu-gb-app.js (screen/input/ROM-loading/playback/export) and gets
-   called into from there instead: app.js calls resetPlayTime() after a ROM (re)load/reset,
-   and checkCommercialRomGate(bytes) before accepting a ROM.
-
-   Load order (required): after filters/game-filter-data.js (window.GAME_FILTER_DATA) and the
-   crc-32 library, before emu-gb-app.js (calls into this file) and emu-gb-debug-core.js (its
-   navbar click-combo calls enableEmuDevUnlock()).
+   Load order: after filters/game-filter-data.js and the crc-32 library; before emu-gb-app.js
+   and emu-gb-debug-core.js.
    ========================================================================================= */
 
 const GUARDRAIL_CONFIG = {
@@ -28,9 +21,8 @@ const GUARDRAIL_CONFIG = {
   PLAY_TIME_UNITS_TOTAL: 20, // hard cap, in units of PLAY_TIME_BASE_UNIT
 };
 
-/* Hidden dev/debug override: lets a developer bypass the guardrails below (play-time cap,
-   commercial-ROM filter) without exposing this in the UI. Enable: enableEmuDevUnlock() in
-   the console, then reload. Disable: disableEmuDevUnlock() (also reload), or clear site data. */
+/* Hidden dev/debug override: lets a developer bypass the guardrails below without exposing
+   this in the UI. Enable/disable via enableEmuDevUnlock()/disableEmuDevUnlock() in the console. */
 const DEV_UNLOCK_KEY = 'emuDevUnlock';
 const DEV_UNLOCK_VALUE = 'you shall not pass!';
 function isDevUnlocked() {
@@ -74,8 +66,7 @@ const PLAY_TIME_LIMIT_CONFIG = {
 };
 
 // Play-time timer (badge next to "Load ROM"): wall-clock time the current ROM has been
-// running. Resets on new ROM load / Reset (app.js calls resetPlayTime() at both points).
-// Polled so it stays correct regardless of how playback was started/stopped.
+// running, polled so it stays correct regardless of how playback was started/stopped.
 const playTimeLabel = document.getElementById('playTime');
 let playTimeSeconds = 0;
 let playTimeLastTick = null; // performance.now() at last tick while running, else null
@@ -132,11 +123,8 @@ function tickPlayTime() {
 }
 setInterval(tickPlayTime, 500);
 
-/* ---- commercial-ROM filter: blocks ROMs matching a prebuilt No-Intro bloom filter (from
-   bloom_filter_builder.html), keeping this limited to homebrew/non-commercial ROMs. Both
-   GB and GBC filters are checked regardless of core, so a match on either blocks the ROM.
-   window.GAME_FILTER_DATA comes from filters/game-filter-data.js, fetched once at startup.
-   If missing/unparsable, the check is silently skipped for that core. ---- */
+/* ---- commercial-ROM filter: blocks ROMs matching a prebuilt No-Intro bloom filter, keeping
+   this limited to homebrew/non-commercial ROMs. Both GB and GBC filters are checked regardless of core. ---- */
 
 // Bloom filter used to exclude commercial games.
 class BloomFilter {
@@ -195,10 +183,8 @@ if (GAME_FILTER_ENABLED) {
   loadCommercialRomFilter('gbc');
 }
 
-// Checks `bytes` against both GB/GBC commercial-ROM filters regardless of core. Called by
-// app.js's loadROMBytes() before touching any loaded-ROM state, so a blocked ROM leaves the
-// previously loaded one untouched. Returns the CRC32 too so the caller can show it in its
-// "blocked" message without recomputing it.
+// Checks `bytes` against both GB/GBC filters. Called before touching any loaded-ROM state,
+// and returns the CRC32 too so the caller can show it in its "blocked" message.
 function checkCommercialRomGate(bytes) {
   const crc32Hex = crc32(bytes).toString(16).toUpperCase().padStart(8, '0');
   const blocked = (commercialRomFilters.gb && commercialRomFilters.gb.isCommercial(crc32Hex))

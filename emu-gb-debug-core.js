@@ -9,33 +9,24 @@
      tint overlay, dot-matrix overlay, the hidden dev-unlock click-combo, and the
      show/hide toggles for each sidebar + the Frame Activity panel.
    - refreshDebugTools(): the orchestrator that redraws whichever tab is active in each
-     sidebar. Calls into functions defined in emu-gb-debug-visualizers.js and
-     emu-gb-debug-inspectors.js, but only from callbacks/timers that run after every
-     script has finished loading, so it doesn't matter that those functions live elsewhere.
+     sidebar. Calls into emu-gb-debug-visualizers.js and emu-gb-debug-inspectors.js, but
+     only from callbacks/timers that run after every script has finished loading, so it
+     doesn't matter that those functions live elsewhere.
 
    Load order (required): emu-gb-core.js -> emu-gb-app.js -> emu-gb-debug-core.js ->
-   emu-gb-debug-visualizers.js -> emu-gb-debug-inspectors.js. emu-gb-debug-core.js must
-   load before the other two: it declares debugToolsContainer/visualToolsContainer/
-   rtcTabBtn, which emu-gb-debug-visualizers.js reads immediately (not just from inside a
-   later callback) while checking initial RTC-tab availability.
+   emu-gb-debug-visualizers.js -> emu-gb-debug-inspectors.js. This file must load before the
+   other two: it declares debugToolsContainer/visualToolsContainer/rtcTabBtn, which
+   emu-gb-debug-visualizers.js reads immediately while checking initial RTC-tab availability.
    ========================================================================================= */
 
 /* ---- shared: copy text to the clipboard and briefly flash something on `el` to confirm it.
-   The four call sites below (Sprite Sheet/OAM tooltips, Sprites (OAM) table rows, the
-   Inspector tab's clickable readouts, and the ROM checksum badges) each flash a different way
-   - a replaced tooltip string, a row highlight, an inline "Copied!" with a live-refreshing
-   panel to restore it, or an inline "Copied!" restored directly after the flash - so
-   flashCopied() takes what to show as options rather than forcing one visual treatment on
-   all of them. ---- */
+   Different call sites want different visual treatments, so options control what to show. ---- */
 function flashCopied(el, text, { className, setText, setDisplayBlock, setDataFlag, restoreText } = {}) {
   navigator.clipboard.writeText(text).then(() => {
     clearTimeout(el._copiedTimeout);
-    // Captured before setText overwrites it below, so it can be put back once the flash ends -
-    // for callers (e.g. the checksum badges in emu-gb-app.js) whose element isn't otherwise
-    // periodically repainted, unlike setDataFlag's "let the next repaint restore it" approach.
+    // Captured before setText overwrites it, so restoreText callers can put it back later.
     const original = restoreText ? el.textContent : undefined;
-    if (setDataFlag) el.dataset.copied = '1'; // lets a caller that periodically repaints el's
-      // textContent (e.g. a live-refreshing panel) skip that repaint and avoid stomping on the flash
+    if (setDataFlag) el.dataset.copied = '1'; // lets a repainting panel skip its repaint here
     if (setText !== undefined) el.textContent = setText;
     if (setDisplayBlock) el.style.display = 'block';
     el.classList.add(className);
@@ -58,34 +49,24 @@ function flashCopiedRow(rowEl, addrText) {
 function flashCopiedInline(el, text) {
   flashCopied(el, text, { className: 'copied', setText: 'Copied!', setDataFlag: true });
 }
-// Used by the ROM checksum badges (emu-gb-app.js). Unlike flashCopiedInline's panel, badges
-// are only ever rendered once per ROM load rather than on a repaint loop, so restoreText is
-// used instead of setDataFlag to put the original label back once the flash ends.
+// Used by the ROM checksum badges: rendered once per ROM load (not a repaint loop), so
+// restoreText puts the original label back once the flash ends.
 function flashCopiedBadge(el, text) {
   flashCopied(el, text, { className: 'copied', setText: 'Copied!', restoreText: true });
 }
 
-/* ---- shared: "scroll-freeze + autoscroll" behavior for live-updating scrollback lists (the
-   Execution Trace and Event Log panels in emu-gb-debug-inspectors.js). Such a list only keeps
-   auto-scrolling to the bottom as new entries arrive if the autoscroll toggle is on AND the
-   user hasn't scrolled up to read older entries - otherwise it freezes in place (showing a
-   "frozen" note + "Jump to latest" button) so a burst of new entries can't yank the view out
-   from under someone. The two panels used to each hand-roll an identical copy of this; this is
-   the one shared implementation both build their `drawX()` around. ---- */
+/* ---- shared: "scroll-freeze + autoscroll" for live-updating lists (Execution Trace, Event
+   Log). Freezes in place with a "Jump to latest" button once the user scrolls up. ---- */
 function createAutoscrollList({ listEl, toggleEl, followBtn, frozenNoteEl, configKey, emptySelector }) {
   function isAtBottom() {
     return listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 24;
   }
 
-  // Off by default, so the list never jumps on its own until the person opts in. Even when
-  // on, scrolling up still freezes it - the toggle only controls whether being at the bottom
-  // is enough to keep following new entries.
+  // Off by default, so the list never jumps on its own until the person opts in.
   let autoscrollEnabled = typeof savedUIConfig[configKey] === 'boolean' ? savedUIConfig[configKey] : false;
   toggleEl.checked = autoscrollEnabled;
 
-  // Shows/hides the "frozen" UI (note + jump button) to match current state, without touching
-  // the list content itself. The note text only applies to the scrolled-up case; when
-  // autoscroll is simply off (but we're at the bottom), the button alone is enough.
+  // Shows/hides the "frozen" UI (note + jump button) without touching the list content.
   function setFrozenUI(frozen) {
     followBtn.style.display = frozen ? '' : 'none';
     frozenNoteEl.style.display = (frozen && !isAtBottom()) ? '' : 'none';
@@ -93,9 +74,8 @@ function createAutoscrollList({ listEl, toggleEl, followBtn, frozenNoteEl, confi
 
   let lastRender = null; // remembered so the follow button/toggle handlers can re-invoke it
 
-  // Only live-updates while autoscroll is on AND pinned to the bottom; otherwise freezes the
-  // DOM so scrolled-up (or deliberately paused) content doesn't get swapped out under the user.
-  // `render` rebuilds the list's content from scratch and pins scrollTop to the bottom.
+  // Only live-updates while autoscroll is on AND pinned to the bottom; `render` rebuilds
+  // the list from scratch and pins scrollTop to the bottom.
   function draw(render) {
     lastRender = render;
     const hasContent = listEl.childElementCount > 0 && !listEl.querySelector(emptySelector);
@@ -110,9 +90,7 @@ function createAutoscrollList({ listEl, toggleEl, followBtn, frozenNoteEl, confi
   // Manual scroll should immediately reflect frozen/live state.
   listEl.addEventListener('scroll', () => setFrozenUI(!autoscrollEnabled || !isAtBottom()));
 
-  // Jump to latest always renders current entries and scrolls down, regardless of the
-  // autoscroll setting - a one-off catch-up, not a way to silently turn autoscroll on. If
-  // autoscroll is still off, the next new entry will freeze it again, which is correct.
+  // Jump to latest is a one-off catch-up, not a way to silently turn autoscroll on.
   followBtn.addEventListener('click', () => {
     if (lastRender) lastRender();
     setFrozenUI(false);
@@ -133,21 +111,8 @@ const visualToolsContainer = document.getElementById('visualTools');
 const cpuDebugControls = document.getElementById('cpuDebugControls');
 const rtcTabBtn = visualToolsContainer.querySelector('.tool-tab[data-tool="rtc"]');
 
-/* ---- Panel registries: one entry per tab, keyed by its data-tool value. This is the single
-   place a panel's dispatch-relevant metadata lives - adding a new panel means adding one entry
-   here (plus the HTML tab button + panel div), not also hand-editing refreshDebugTools(),
-   updateCpuControlsVisibility(), and syncAccessTracking() to mention its tool name again.
-
-   `draw` is required and does the panel's actual redraw; wrapped in an arrow function (rather
-   than referencing e.g. drawRegisters directly) because these registries are built while this
-   script runs, before emu-gb-debug-visualizers.js/emu-gb-debug-inspectors.js have declared
-   their draw functions - the arrow function just defers the lookup until refreshDebugTools()
-   is actually called later, by which point every script has loaded. `needsCpuControls` shows
-   the CPU debug controls (step/run-to/breakpoint row) while that tab is active. `tracksAccess`
-   names which of emulator.stats/instrumentation's hot tracking flags should be enabled while
-   that tab is active (see syncAccessTracking below) - omit it for panels that don't need any.
-   `onActivate`, if present, runs once when the tab is clicked (before the resulting redraw) -
-   for one-off "reset to fresh defaults on open" behavior that isn't just a normal redraw. ---- */
+/* ---- Panel registries: one entry per tab, keyed by its data-tool value - the single place
+   a panel's dispatch metadata lives, alongside its HTML tab button + panel div. ---- */
 const DEBUG_PANELS = {
   registers:  { draw: () => drawRegisters() },
   disasm:     { draw: () => drawDisassembly(), needsCpuControls: true },
@@ -176,10 +141,8 @@ function updateCpuControlsVisibility(tool) {
   cpuDebugControls.classList.toggle('hidden', !DEBUG_PANELS[tool]?.needsCpuControls);
 }
 
-// Keep emulator.stats.trackMemMap/emulator.instrumentation.trackTrace/emulator.stats.trackEventLog
-// synced to (debug mode on) AND (that tab active), so the hot instrumentation only runs when its
-// tab is actually open. Driven by DEBUG_PANELS[tool].tracksAccess rather than hand-listing tool
-// names here, so it can't fall out of sync with which tab actually needs which flag.
+// Keeps the hot instrumentation flags synced to (debug mode on) AND (that tab active), so
+// they only run while their tab is actually open.
 function syncAccessTracking(activeDebugTool) {
   const debugging = !document.body.classList.contains('playing-mode');
   const tracksAccess = debugging ? DEBUG_PANELS[activeDebugTool]?.tracksAccess : undefined;
@@ -313,8 +276,7 @@ if (typeof savedUIConfig.dotMatrix === 'boolean') dotMatrixToggle.checked = save
 dotMatrixToggle.addEventListener('change', applyDotMatrix);
 
 /* ---- hidden click-combo for enableEmuDevUnlock(): click the navbar badge 13 times while
-   dotMatrix is on and model is set to GB. Sets the same localStorage flag as the console
-   path; requires a page reload to take effect. ---- */
+   dotMatrix is on and model is set to GB. Requires a page reload to take effect. ---- */
 const navTitle = document.getElementById('navTitle');
 const DEV_UNLOCK_CLICKS_NEEDED = 13;
 let devUnlockClickCount = 0;

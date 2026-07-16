@@ -16,17 +16,14 @@ function hex8(v) { return '0x' + v.toString(16).padStart(2, '0').toUpperCase(); 
 function hex16(v) { return '0x' + v.toString(16).padStart(4, '0').toUpperCase(); }
 
 // Zero-pads a number to 2 digits for clock/timer readouts (e.g. "05:09"), shared by the
-// play-time badge and media-capture timers in app.js and the RTC panel in
-// emu-gb-debug-visualizers.js, so this small formatting rule lives in exactly one place.
+// play-time badge, media-capture timers, and RTC panel.
 function pad2(n) { return String(n).padStart(2, '0'); }
 
 // Interrupt bit -> name, used by CoreStats.recordInterrupt() below.
 const INTERRUPT_KIND_NAMES = ['vblank', 'stat', 'timer', 'serial', 'joypad'];
 
-// Event Log severities, low to high. 'trace' is reserved for things that fire many times
-// per frame (PPU mode transitions) and is filtered out at the default level; 'debug' covers
-// per-frame hardware events (bank switches, DMA, APU triggers, timer overflow, interrupts);
-// 'info' covers rare, human-scale milestones (ROM loaded, save state, speed/core changes).
+// Event Log severities, low to high: 'trace' fires many times per frame (PPU mode changes),
+// 'debug' covers per-frame hardware events, 'info' covers rare human-scale milestones.
 const EVENT_LEVELS = { trace: 0, debug: 1, info: 2 };
 const PPU_MODE_NAMES = ['HBlank', 'VBlank', 'OAM search', 'Pixel transfer'];
 
@@ -163,18 +160,8 @@ class CoreStats {
     this.logEvent('PPU', 'trace', 'ppu-mode', `→ ${PPU_MODE_NAMES[mode] || mode}`, ly);
   }
 
-  // Unified Event Log, backing the Event Log debug panel. Gated behind trackEventLog (only
-  // on while that tab is open) and eventLogLevel (only entries at/above this severity are
-  // kept — see EVENT_LEVELS). ly is optional: null for app-level lifecycle events (ROM
-  // loaded, save state, speed change) that aren't tied to a scanline.
-  //
-  // Each entry carries two clocks, which is the point of the panel educationally:
-  //   - emuMs: emulated Game Boy time elapsed since ROM load, derived from the real DMG
-  //     hardware clock (4.194304 MHz, 70224 T-cycles/frame — see EMU_CORE_CONFIG). This is
-  //     what the actual hardware experiences: fixed, deterministic, independent of the host.
-  //   - wallMs: real time elapsed on THIS machine since ROM load. At 1x speed the two track
-  //     each other closely; at 2x/4x turbo (or when the host stutters) they diverge — a
-  //     concrete way to see the difference between "hardware time" and "real time".
+  // Unified Event Log, gated behind trackEventLog + eventLogLevel (see EVENT_LEVELS). Each
+  // entry carries emuMs (emulated GB time) and wallMs (real time) — they diverge at turbo speed.
   logEvent(component, level, kind, detail, ly = null) {
     if (!this.trackEventLog) return;
     if (EVENT_LEVELS[level] < EVENT_LEVELS[this.eventLogLevel]) return;
@@ -429,10 +416,8 @@ function explainInstruction(mnemonicText) {
   return note;
 }
 
-/* Instrumentation — execution trace ring buffer + breakpoint state.
-   Holds a back-reference to `emulator` rather than caching cpu/mmu, since CGBEmulator
-   replaces this.cpu/this.mmu right after super() — anything needing "the current cpu"
-   must read this.emulator.cpu fresh, not a stale copy. */
+/* Instrumentation — execution trace ring buffer + breakpoint state. Holds a back-reference
+   to `emulator` rather than caching cpu/mmu, since a core swap replaces them. */
 
 class Instrumentation {
   // `emulator` optional: composition root may build this before its GBEmulator exists;
@@ -520,9 +505,8 @@ class Instrumentation {
     this._bpSkipFirstMatch = false;
   }
 
-  // Pauses emulation and records why, so a breakpoint hit looks like pressing Pause.
-  // `kind` is 'pc' (value = the PC that was reached) or 'opcode' (value = the opcode byte,
-  // extra = the PC it was fetched from).
+  // Pauses emulation and records why. `kind` is 'pc' (value = PC reached) or 'opcode'
+  // (value = opcode byte, extra = the PC it was fetched from).
   triggerBreakpoint(kind, value, extra) {
     const e = this.emulator;
     e._setRunning(false);
@@ -552,9 +536,8 @@ class Instrumentation {
     };
   }
 
-  // Window of 16-bit words around `sp`: `aboveWords` above (already-popped) through
-  // `belowWords` below (still on the stack), each tagged with its signed word-offset.
-  // Uses peek8, not read8 — debugger inspection, not real CPU memory activity.
+  // Window of 16-bit words around `sp`, each tagged with its signed word-offset. Uses
+  // peek8, not read8 — debugger inspection, not real CPU memory activity.
   walkStack(sp, aboveWords, belowWords) {
     const mmu = this.emulator.mmu;
     const words = [];
@@ -567,14 +550,12 @@ class Instrumentation {
     return words;
   }
 
-  // Register editor writes a single field by name — mirrors readRegisters() above, which
-  // already reads through this class. No validation here; callers (debug.js) parse/clamp
-  // the input themselves before calling.
+  // Register editor writes a single field by name. No validation here; callers (debug.js)
+  // parse/clamp the input themselves before calling.
   writeRegister(key, value) { this.emulator.cpu[key] = value; }
 
   // Memory editor write — deliberately the *real* write path (mmu.write8, side effects
-  // included: IO register masks, MBC bank-switch triggers, etc.), unlike walkStack()'s use
-  // of peek8 above.
+  // included), unlike walkStack()'s use of peek8 above.
   writeMemory(addr, value) { this.emulator.mmu.write8(addr, value); }
 
   // Generic byte/region reads for the memory/tile/sprite viewers. All go through peek8 (or
@@ -594,9 +575,8 @@ class Instrumentation {
     return start === undefined ? oam : oam.subarray(start, start + length);
   }
 
-  // Aggregate mapper/banking state for the MBC Banking panel and the Interrupts panel's
-  // IE/IF readout (ie/io are included here rather than a separate method since they're
-  // read alongside the rest of this snapshot everywhere they're used).
+  // Aggregate mapper/banking state for the MBC Banking panel, plus the Interrupts panel's
+  // IE/IF readout.
   readMBCState() {
     const m = this.emulator.mmu;
     return {
@@ -671,9 +651,8 @@ class Instrumentation {
              scx: p.scx, scy: p.scy, wx: p.wx, wy: p.wy };
   }
 
-  // Oscilloscope scope buffers (one ring per channel) plus the shared write position, for
-  // the APU oscilloscope panel. Raw typed-array references, same as readROM/readVRAM/readOAM
-  // above — inspection reads, not copies, since these are redrawn every frame.
+  // Oscilloscope scope buffers plus the shared write position. Raw typed-array references,
+  // not copies, since these are redrawn every frame.
   readOscilloscope() {
     const a = this.emulator.apu;
     return { ch1: a.scopeCh1, ch2: a.scopeCh2, ch3: a.scopeCh3, ch4: a.scopeCh4, writePos: a.scopeWritePos };
@@ -687,9 +666,8 @@ class Instrumentation {
       .map(s => ({ ...s, ...ppu.getSpriteRowBits(s, line, spriteHeight) }));
   }
 
-  /* ---- CGB-aware color helpers, shared by every visualization panel in debug.js. DMG uses
-     one flat BGP/OBP0/OBP1 register per layer; CGB resolves color per-tile/per-sprite from
-     palette RAM. ---- */
+  /* ---- CGB-aware color helpers, shared by every visualization panel. DMG uses one flat
+     BGP/OBP0/OBP1 register per layer; CGB resolves color per-tile/per-sprite from palette RAM. ---- */
 
   // One consistent way to detect CGB mode, so callers don't need a CGBPPU reference.
   isCGBRun() { return this.emulator instanceof CGBEmulator; }
@@ -715,31 +693,27 @@ class Instrumentation {
   spriteRowColorIndex(lo, hi, xFlip, px) { return PPU.spriteRowColorIndex(lo, hi, xFlip, px); }
 
   // DMG palette register values, for the Palette viewer's BGP/OBP0/OBP1 readout. Meaningless
-  // on CGB (which resolves color from palette RAM instead) — callers branch on isCGBRun()
-  // before reading these.
+  // on CGB — callers branch on isCGBRun() before reading these.
   readPaletteRegisters() {
     const p = this.emulator.ppu;
     return { bgp: p.bgp, obp0: p.obp0, obp1: p.obp1 };
   }
 
   // Single swatch color for the Palette viewer. On CGB, `paletteRegOrIndex` is a palette
-  // number (0-7) resolved through palette RAM; on DMG it's one of the register values from
-  // readPaletteRegisters() above, run through the classic 2-bit lookup.
+  // number resolved through palette RAM; on DMG it's a register value via the classic lookup.
   paletteSwatchRGB(isObj, paletteRegOrIndex, colorNum) {
     const p = this.emulator.ppu;
     if (this.isCGBRun()) return p.mmu.getPaletteRGB(isObj, paletteRegOrIndex, colorNum);
     return p.applyPalette(colorNum, paletteRegOrIndex);
   }
 
-  // Disassembles the instruction at `addr`, reading live memory through the real read8 path
-  // (mirrors what the CPU would actually fetch, banking included) — used by the Disassembly
-  // panel's resync search and forward-decode.
+  // Disassembles the instruction at `addr` via the real read8 path (banking included) —
+  // used by the Disassembly panel's resync search and forward-decode.
   disassembleAt(addr) { return disassembleAt(this.emulator.mmu, addr); }
 }
 
-/* RafScheduler — real implementation of GBEmulator's scheduler contract
-   (requestFrame/cancelFrame), using requestAnimationFrame. Browser/DOM concern the core
-   itself has no business knowing about. */
+/* RafScheduler — real implementation of GBEmulator's scheduler contract, using
+   requestAnimationFrame. A browser/DOM concern the core itself has no business knowing about. */
 
 class RafScheduler {
   requestFrame(cb) { return requestAnimationFrame(cb); }

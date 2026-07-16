@@ -1308,12 +1308,17 @@ function drawLineAnatomy() {
   lineAnatomyIndexEl.textContent = line;
   lineAnatomyFrameIndexEl.textContent = '#' + entry.index;
 
+  const PT_BASE = EMU_CORE_CONFIG.PPU_MODE_CYCLES.PIXEL_TRANSFER_BASE; // 172
+  const mode3T = line < 144 ? entry.mode3PerLine[line] : PT_BASE;
+  const mode0T = 456 - 80 - mode3T;
+
   if (line < 144) {
-    // Mode 2 (80T) -> Mode 3 (172T) -> Mode 0 (204T), to scale
+    // Mode 2 (80T, fixed) -> Mode 3 (this line's actual recorded length) -> Mode 0
+    // (whatever's left of the 456T line budget), to scale.
     const modes = [
-      { t: 80,  color: '#e0b45a' },
-      { t: 172, color: '#5ac2e0' },
-      { t: 204, color: '#4a4a55' },
+      { t: 80,     color: '#e0b45a' },
+      { t: mode3T, color: '#5ac2e0' },
+      { t: mode0T, color: '#4a4a55' },
     ];
     let x = 0;
     for (const m of modes) {
@@ -1333,8 +1338,10 @@ function drawLineAnatomy() {
 
   let html = '';
   if (line < 144) {
+    const stretch = mode3T - PT_BASE;
+    const stretchLabel = stretch === 0 ? 'base' : (stretch > 0 ? `+${stretch}T vs. 172T base` : `${stretch}T vs. 172T base`);
     html += `<span><b>Visible line</b> — Mode 2 80T (${pctOfLine(80)} of line, ${pctOfFrame(80)} of frame) &rarr; `
-          + `Mode 3 172T (${pctOfLine(172)}, ${pctOfFrame(172)}) &rarr; Mode 0 204T (${pctOfLine(204)}, ${pctOfFrame(204)})</span>`;
+          + `Mode 3 ${mode3T}T, ${stretchLabel} (${pctOfLine(mode3T)}, ${pctOfFrame(mode3T)}) &rarr; Mode 0 ${mode0T}T (${pctOfLine(mode0T)}, ${pctOfFrame(mode0T)})</span>`;
     html += `<span><b>${sprites}</b>/10 sprites drawn on this line</span>`;
   } else {
     html += `<span><b>V-Blank line</b> — Mode 1 for the whole 456T (${pctOfFrame(456)} of frame)</span>`;

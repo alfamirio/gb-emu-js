@@ -63,6 +63,10 @@ class CoreStats {
       spritesPerLine: new Uint8Array(EMU_CORE_CONFIG.SCREEN.HEIGHT),
       spritesTotal: 0,
       spritesMaxLine: 0,
+      // Actual mode-3 (pixel transfer) length recorded per scanline - varies with
+      // SCX/sprites/window, unlike the old fixed 172T assumption. Defaults to the base
+      // length for any line that hasn't rendered yet this frame.
+      mode3PerLine: new Uint16Array(EMU_CORE_CONFIG.SCREEN.HEIGHT).fill(EMU_CORE_CONFIG.PPU_MODE_CYCLES.PIXEL_TRANSFER_BASE),
     };
   }
 
@@ -158,6 +162,12 @@ class CoreStats {
 
   recordPPUMode(mode, ly) {
     this.logEvent('PPU', 'trace', 'ppu-mode', `→ ${PPU_MODE_NAMES[mode] || mode}`, ly);
+  }
+
+  // This scanline's real mode-3 length, locked in the instant mode 3 starts. Feeds the
+  // Frame Activity "Anatomy of line" panel.
+  recordMode3Length(ly, length) {
+    if (ly < this.frameStats.mode3PerLine.length) this.frameStats.mode3PerLine[ly] = length;
   }
 
   // Unified Event Log, gated behind trackEventLog + eventLogLevel (see EVENT_LEVELS). Each
@@ -648,7 +658,10 @@ class Instrumentation {
   readPPUState() {
     const p = this.emulator.ppu;
     return { ly: p.ly, mode: p.mode, modeClock: p.modeClock, lcdc: p.lcdc,
-             scx: p.scx, scy: p.scy, wx: p.wx, wy: p.wy };
+             scx: p.scx, scy: p.scy, wx: p.wx, wy: p.wy,
+             // Actual mode-3 length for this scanline (SCX/sprite/window-stretched), not the
+             // old fixed 172T assumption - see PPU._mode3Length() in emu-gb-core.js.
+             mode3Length: p._curMode3Length };
   }
 
   // Oscilloscope scope buffers plus the shared write position. Raw typed-array references,

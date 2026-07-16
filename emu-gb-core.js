@@ -27,11 +27,15 @@ const EMU_CORE_CONFIG = {
     get CYCLES_PER_FRAME() { return this.CYCLES_PER_LINE * this.TOTAL_LINES; },  // 70224
   },
 
-  // Fixed cycle length per PPU mode (VBlank instead uses FRAME.CYCLES_PER_LINE).
+  // Cycle length per PPU mode (VBlank instead uses FRAME.CYCLES_PER_LINE). OAM_SEARCH is
+  // fixed; PIXEL_TRANSFER_BASE/HBLANK are the *floor* mode-3/mode-0 lengths — real hardware
+  // stretches mode 3 (and shrinks mode 0 to compensate) based on SCX fine scroll, sprites on
+  // the line, and the window, so PPU.step() computes the actual per-scanline split at
+  // runtime. See PPU._mode3Length().
   PPU_MODE_CYCLES: {
-    OAM_SEARCH: 80,      // mode 2
-    PIXEL_TRANSFER: 172, // mode 3
-    HBLANK: 204,         // mode 0
+    OAM_SEARCH: 80,           // mode 2
+    PIXEL_TRANSFER_BASE: 172, // mode 3 floor (SCX=0, no sprites, no window on this line)
+    HBLANK: 204,              // mode 0 floor (line total 456 minus OAM_SEARCH minus PIXEL_TRANSFER_BASE)
   },
 
   SCREEN: { WIDTH: 160, HEIGHT: 144 },
@@ -926,6 +930,10 @@ class PPU {
     this.modeClock = 0;
     this.mode = 2;
     this.windowLineCounter = 0;
+    // This scanline's mode-3 (pixel transfer) length, locked in the instant mode 3 starts
+    // (see _mode3Length()); defaults to the bare-minimum length until the first OAM search
+    // completes.
+    this._curMode3Length = EMU_CORE_CONFIG.PPU_MODE_CYCLES.PIXEL_TRANSFER_BASE;
     this.framebuffer = new Uint8ClampedArray(EMU_CORE_CONFIG.SCREEN.WIDTH * EMU_CORE_CONFIG.SCREEN.HEIGHT * 4);
 
     // Reused every getSpriteCandidatesForLine() call instead of allocating: a fixed array
@@ -945,6 +953,37 @@ class PPU {
   deserialize(s) {
     this.modeClock = s.modeClock; this.mode = s.mode; this.windowLineCounter = s.windowLineCounter;
     this.framebuffer.set(base64ToU8(s.framebuffer));
+    // Not itself serialized (it's re-derived every scanline); recompute so a state resumed
+    // mid-mode-3 uses the right length instead of the default floor value.
+    this._curMode3Length = this._mode3Length();
+  }
+
+  // Approximates real hardware's variable mode-3 (pixel transfer) length for the upcoming
+  // scanline: a fixed 172-cycle floor, stretched by fine-scroll discard (SCX % 8), by each
+  // sprite visible on the line, and by the window turning on this line. Games commonly time
+  // their HBlank/STAT interrupt handlers (e.g. mid-frame SCX rewrites for split-scroll
+  // effects) against the *real* per-scanline length, so treating mode 3 as always exactly
+  // 172 cycles fires those interrupts a few cycles early/late and shifts the effect onto the
+  // wrong scanline by a pixel or two - visible as a horizontal misalignment partway down a
+  // vertical object. See Pan Docs "Mode 3 length" for the formula this approximates.
+  _mode3Length() {
+    const MODE = EMU_CORE_CONFIG.PPU_MODE_CYCLES;
+    let length = MODE.PIXEL_TRANSFER_BASE + (this.scx & 7);
+
+    if (this.lcdc & 0x02) { // OBJ enabled
+      const SPR = EMU_CORE_CONFIG.SPRITES;
+      const spriteHeight = (this.lcdc & 0x04) ? SPR.HEIGHT_TALL : SPR.HEIGHT_SMALL;
+      const candidates = this.getSpriteCandidatesForLine(this.ly, spriteHeight);
+      for (const s of candidates) {
+        length += 11 - Math.min(5, (s.spriteX + this.scx) & 7);
+      }
+    }
+
+    if ((this.lcdc & 0x20) && this.ly >= this.wy && this.wx <= 166) { // window active this line
+      length += 6;
+    }
+
+    return length;
   }
 
   get lcdc() { return this.mmu.io[0x40]; }
@@ -968,12 +1007,20 @@ class PPU {
     this.modeClock += cycles;
     switch (this.mode) {
       case 2: // OAM search
-        if (this.modeClock >= MODE.OAM_SEARCH) { this.modeClock -= MODE.OAM_SEARCH; this.mode = 3; }
+        if (this.modeClock >= MODE.OAM_SEARCH) {
+          this.modeClock -= MODE.OAM_SEARCH;
+          this.mode = 3;
+          // Length is fixed for the rest of this scanline the instant mode 3 starts (real
+          // hardware locks in sprite/window/SCX penalties here), so compute it once now
+          // rather than re-deriving it when mode 3 ends.
+          this._curMode3Length = this._mode3Length();
+          this.emulator.stats?.recordMode3Length(this.ly, this._curMode3Length);
+        }
         break;
 
       case 3: // pixel transfer
-        if (this.modeClock >= MODE.PIXEL_TRANSFER) {
-          this.modeClock -= MODE.PIXEL_TRANSFER;
+        if (this.modeClock >= this._curMode3Length) {
+          this.modeClock -= this._curMode3Length;
           this.mode = 0; this._setStatMode(0);
           this._renderScanline();
           this._checkStatInterrupt(0x08);
@@ -981,9 +1028,12 @@ class PPU {
         }
         break;
 
-      case 0: // HBlank
-        if (this.modeClock >= MODE.HBLANK) {
-          this.modeClock -= MODE.HBLANK;
+      case 0: { // HBlank
+        // Mode 0 shrinks/grows to absorb whatever mode 3 didn't spend of/spent beyond its
+        // base length, so OAM_SEARCH + mode3 + mode0 always totals 456 cycles for this line.
+        const hblankLength = MODE.HBLANK + (MODE.PIXEL_TRANSFER_BASE - this._curMode3Length);
+        if (this.modeClock >= hblankLength) {
+          this.modeClock -= hblankLength;
           this.ly++;
           this._checkLYC();
           if (this.ly === FRAME.VISIBLE_LINES) {
@@ -997,6 +1047,7 @@ class PPU {
           }
         }
         break;
+      }
 
       case 1: // VBlank (10 lines, each one line's worth of cycles)
         if (this.modeClock >= FRAME.CYCLES_PER_LINE) {

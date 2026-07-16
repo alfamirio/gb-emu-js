@@ -846,8 +846,8 @@ function drawOscilloscope() {
 /* ---- 4c. Scanline timeline: PPU position within the 154-line frame, plus a zoomed-in view
    of the current line's OAM Search / Pixel Transfer / H-Blank split. ---- */
 const SCANLINE_OAM = EMU_CORE_CONFIG.PPU_MODE_CYCLES.OAM_SEARCH;
-const SCANLINE_TRANSFER = EMU_CORE_CONFIG.PPU_MODE_CYCLES.PIXEL_TRANSFER;
-const SCANLINE_HBLANK = EMU_CORE_CONFIG.PPU_MODE_CYCLES.HBLANK;
+const SCANLINE_TRANSFER_BASE = EMU_CORE_CONFIG.PPU_MODE_CYCLES.PIXEL_TRANSFER_BASE; // used only as a legend/reference length; live views use ppuState.mode3Length
+const SCANLINE_HBLANK_BASE = EMU_CORE_CONFIG.PPU_MODE_CYCLES.HBLANK;
 const SCANLINE_LINE_CYCLES = EMU_CORE_CONFIG.FRAME.CYCLES_PER_LINE; // 456
 const SCANLINE_VISIBLE_LINES = EMU_CORE_CONFIG.FRAME.VISIBLE_LINES, SCANLINE_VBLANK_LINES = EMU_CORE_CONFIG.FRAME.VBLANK_LINES;
 const SCANLINE_TOTAL_LINES = EMU_CORE_CONFIG.FRAME.TOTAL_LINES;         // 154
@@ -862,8 +862,8 @@ const scanlineStatsEl = document.getElementById('scanlineStats');
 // Anatomy tools' line charts.
 function ppuModeLegendHTML(vblankLabel) {
   return `<span><i style="background:#e0b45a"></i>Mode 2: OAM Search (80T)</span>
-    <span><i style="background:#5ac2e0"></i>Mode 3: Pixel Transfer (172T)</span>
-    <span><i style="background:#4a4a55"></i>Mode 0: H-Blank (204T)</span>
+    <span><i style="background:#5ac2e0"></i>Mode 3: Pixel Transfer (172T base, stretched by SCX/sprites/window)</span>
+    <span><i style="background:#4a4a55"></i>Mode 0: H-Blank (204T base, shrinks to compensate)</span>
     <span><i style="background:#8a5ac2"></i>Mode 1: V-Blank (${vblankLabel})</span>`;
 }
 document.getElementById('lineTimelineLegend').innerHTML = ppuModeLegendHTML('whole line');
@@ -916,8 +916,13 @@ function drawLineTimeline(ppuState) {
     return;
   }
 
+  // This scanline's real mode-3 length (SCX/sprite/window-stretched) and the mode-0 length
+  // that compensates for it, so the split drawn here matches what actually ran.
+  const transferLength = ppuState.mode3Length;
+  const hblankLength = SCANLINE_HBLANK_BASE + (SCANLINE_TRANSFER_BASE - transferLength);
+
   const oamW = (SCANLINE_OAM / SCANLINE_LINE_CYCLES) * w;
-  const transferW = (SCANLINE_TRANSFER / SCANLINE_LINE_CYCLES) * w;
+  const transferW = (transferLength / SCANLINE_LINE_CYCLES) * w;
   const hblankW = w - oamW - transferW;
 
   ctx.fillStyle = '#e0b45a'; ctx.fillRect(0, 0, oamW, h);
@@ -926,8 +931,8 @@ function drawLineTimeline(ppuState) {
 
   const [segStart, segWidth, modeTotal] =
     ppuState.mode === 2 ? [0, oamW, SCANLINE_OAM] :
-    ppuState.mode === 3 ? [oamW, transferW, SCANLINE_TRANSFER] :
-                      [oamW + transferW, hblankW, SCANLINE_HBLANK];
+    ppuState.mode === 3 ? [oamW, transferW, transferLength] :
+                      [oamW + transferW, hblankW, hblankLength];
   const frac = Math.min(1, ppuState.modeClock / modeTotal);
   ctx.fillStyle = '#ffdd00';
   ctx.fillRect(Math.max(0, segStart + frac * segWidth - 1.5), 0, 3, h);
@@ -939,23 +944,29 @@ function scanlineStat(label, value) {
 
 function drawScanlineStats(ppuState) {
   const ly = ppuState.ly, mode = ppuState.mode;
+  const transferLength = ppuState.mode3Length;
+  const hblankLength = SCANLINE_HBLANK_BASE + (SCANLINE_TRANSFER_BASE - transferLength);
   const modeNames  = { 0: 'H-Blank', 1: 'V-Blank', 2: 'OAM Search', 3: 'Pixel Transfer' };
-  const modeTotals = { 0: SCANLINE_HBLANK, 1: SCANLINE_LINE_CYCLES, 2: SCANLINE_OAM, 3: SCANLINE_TRANSFER };
+  const modeTotals = { 0: hblankLength, 1: SCANLINE_LINE_CYCLES, 2: SCANLINE_OAM, 3: transferLength };
   const modeClock = Math.min(ppuState.modeClock, modeTotals[mode]);
 
   const intraLine =
     mode === 2 ? modeClock :
     mode === 3 ? SCANLINE_OAM + modeClock :
-    mode === 0 ? SCANLINE_OAM + SCANLINE_TRANSFER + modeClock :
+    mode === 0 ? SCANLINE_OAM + transferLength + modeClock :
     modeClock; // mode 1, V-Blank
   const cyclesIntoFrame = ly * SCANLINE_LINE_CYCLES + intraLine;
   const framePct = (cyclesIntoFrame / SCANLINE_FRAME_CYCLES * 100).toFixed(1);
   const usIntoFrame = (cyclesIntoFrame / GB_CLOCK_HZ * 1e6).toFixed(0);
 
+  const stretch = transferLength - SCANLINE_TRANSFER_BASE; // + means this line's HBlank/STAT interrupt fires later than the naive fixed-172T model would
+  const stretchLabel = stretch === 0 ? '±0T (base)' : (stretch > 0 ? `+${stretch}T` : `${stretch}T`);
+
   scanlineStatsEl.innerHTML =
     scanlineStat('Scanline (LY)', `${ly} / 153`) +
     scanlineStat('PPU mode', `${mode} · ${modeNames[mode]}`) +
     scanlineStat('Cycles into mode', `${modeClock} / ${modeTotals[mode]} T`) +
+    scanlineStat('Mode 3 length (this line)', `${transferLength}T (${stretchLabel} vs. 172T base — SCX/sprites/window)`) +
     scanlineStat('Cycles into frame', `${cyclesIntoFrame} / ${SCANLINE_FRAME_CYCLES} T`) +
     scanlineStat('Frame progress', `${framePct}%`) +
     scanlineStat('Time into frame', `${usIntoFrame} µs`);

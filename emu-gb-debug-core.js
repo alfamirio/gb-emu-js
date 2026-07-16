@@ -20,41 +20,36 @@
    later callback) while checking initial RTC-tab availability.
    ========================================================================================= */
 
-/* ---- shared: copy an address to the clipboard and briefly flash it in a tooltip/element.
-   Used by the Sprite Sheet and Sprites (OAM) tabs when a cell is clicked. ---- */
-function flashCopiedTooltip(tooltipEl, addrText) {
-  navigator.clipboard.writeText(addrText).then(() => {
-    clearTimeout(tooltipEl._copiedTimeout);
-    tooltipEl.textContent = `Copied ${addrText}!`;
-    tooltipEl.classList.add('copied');
-    tooltipEl.style.display = 'block';
-    tooltipEl._copiedTimeout = setTimeout(() => tooltipEl.classList.remove('copied'), 700);
-  }).catch(() => { /* clipboard unavailable - silently ignore */ });
-}
-
-function flashCopiedRow(rowEl, addrText) {
-  navigator.clipboard.writeText(addrText).then(() => {
-    clearTimeout(rowEl._copiedTimeout);
-    rowEl.classList.add('row-copied');
-    rowEl._copiedTimeout = setTimeout(() => rowEl.classList.remove('row-copied'), 700);
-  }).catch(() => { /* clipboard unavailable - silently ignore */ });
-}
-
-// Copies `text` and swaps el's own displayed text to "Copied!" briefly. Sets dataset.copied
-// while flashing so a caller that periodically repaints el's textContent (e.g. a live-refreshing
-// panel) can skip that repaint and avoid stomping on the flash. Used by the Inspector tab's
-// clickable address-range and byte-values readouts.
-function flashCopiedInline(el, text) {
+/* ---- shared: copy text to the clipboard and briefly flash something on `el` to confirm it.
+   The three call sites below (Sprite Sheet/OAM tooltips, Sprites (OAM) table rows, and the
+   Inspector tab's clickable readouts) each flash a different way - a replaced tooltip string,
+   a row highlight, or an inline "Copied!" - so flashCopied() takes what to show as options
+   rather than forcing one visual treatment on all of them. ---- */
+function flashCopied(el, text, { className, setText, setDisplayBlock, setDataFlag } = {}) {
   navigator.clipboard.writeText(text).then(() => {
     clearTimeout(el._copiedTimeout);
-    el.dataset.copied = '1';
-    el.textContent = 'Copied!';
-    el.classList.add('copied');
+    if (setDataFlag) el.dataset.copied = '1'; // lets a caller that periodically repaints el's
+      // textContent (e.g. a live-refreshing panel) skip that repaint and avoid stomping on the flash
+    if (setText !== undefined) el.textContent = setText;
+    if (setDisplayBlock) el.style.display = 'block';
+    el.classList.add(className);
     el._copiedTimeout = setTimeout(() => {
-      delete el.dataset.copied;
-      el.classList.remove('copied');
+      if (setDataFlag) delete el.dataset.copied;
+      el.classList.remove(className);
     }, 700);
   }).catch(() => { /* clipboard unavailable - silently ignore */ });
+}
+
+// Used by the Sprite Sheet and Sprites (OAM) tabs when a cell/row is clicked.
+function flashCopiedTooltip(tooltipEl, addrText) {
+  flashCopied(tooltipEl, addrText, { className: 'copied', setText: `Copied ${addrText}!`, setDisplayBlock: true });
+}
+function flashCopiedRow(rowEl, addrText) {
+  flashCopied(rowEl, addrText, { className: 'row-copied' });
+}
+// Used by the Inspector tab's clickable address-range and byte-values readouts.
+function flashCopiedInline(el, text) {
+  flashCopied(el, text, { className: 'copied', setText: 'Copied!', setDataFlag: true });
 }
 
 /* ---- tab switching (each sidebar tracks its own active tab) ---- */

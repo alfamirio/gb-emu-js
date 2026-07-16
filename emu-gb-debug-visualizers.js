@@ -994,7 +994,7 @@ function drawScanlineTimeline() {
 }
 
 /* ---- 4d. RTC (MBC3 real-time clock) viewer: for MBC3+TIMER carts (0x0F/0x10) ---- */
-function pad2(n) { return String(n).padStart(2, '0'); }
+// pad2() comes from emu-gb-stats-instrumentation.js (loads first), alongside hex8/hex16.
 function rtcClamp(v, lo, hi) {
   let n = Math.floor(Number(v));
   if (!Number.isFinite(n)) n = lo;

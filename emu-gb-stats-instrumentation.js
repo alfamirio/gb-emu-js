@@ -15,6 +15,11 @@
 function hex8(v) { return '0x' + v.toString(16).padStart(2, '0').toUpperCase(); }
 function hex16(v) { return '0x' + v.toString(16).padStart(4, '0').toUpperCase(); }
 
+// Zero-pads a number to 2 digits for clock/timer readouts (e.g. "05:09"), shared by the
+// play-time badge and media-capture timers in app.js and the RTC panel in
+// emu-gb-debug-visualizers.js, so this small formatting rule lives in exactly one place.
+function pad2(n) { return String(n).padStart(2, '0'); }
+
 // Interrupt bit -> name, used by CoreStats.recordInterrupt() below.
 const INTERRUPT_KIND_NAMES = ['vblank', 'stat', 'timer', 'serial', 'joypad'];
 

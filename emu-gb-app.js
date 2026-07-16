@@ -96,8 +96,7 @@ function formatPlayTime(totalSeconds) {
   const hh = Math.floor(s / 3600);
   const mm = Math.floor((s % 3600) / 60);
   const ss = s % 60;
-  const pad = (n) => String(n).padStart(2, '0');
-  return hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${pad(mm)}:${pad(ss)}`;
+  return hh > 0 ? `${hh}:${pad2(mm)}:${pad2(ss)}` : `${pad2(mm)}:${pad2(ss)}`;
 }
 
 function resetPlayTime() {
@@ -1272,8 +1271,8 @@ function createCaptureRecorder({
 
   function updateTimer() {
     const secs = Math.floor((Date.now() - startedAt) / 1000);
-    const mm = String(Math.floor(secs / 60)).padStart(2, '0');
-    const ss = String(secs % 60).padStart(2, '0');
+    const mm = pad2(Math.floor(secs / 60));
+    const ss = pad2(secs % 60);
     captureInfo.textContent = timerLabel(mm, ss);
   }
 

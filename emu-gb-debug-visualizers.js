@@ -1003,7 +1003,7 @@ function rtcClamp(v, lo, hi) {
 
 // Clock correction: offsets some games apply on top of raw RTC (e.g. Pokémon G/S/C).
 // Added when the clock is set; persisted per save file.
-const rtcCorrectionStore = makePersistedConfig('jsgb-config:rtc-correction', { h: 0, m: 0 });
+const rtcCorrectionStore = makePersistedConfig(STORAGE_KEYS.RTC_CORRECTION, { h: 0, m: 0 });
 function loadRtcCorrection() { return rtcCorrectionStore.load(); }
 function saveRtcCorrection(partial) { rtcCorrectionStore.save(partial); }
 

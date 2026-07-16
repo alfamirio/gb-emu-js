@@ -289,6 +289,22 @@ stepDebugToggle.addEventListener('change', () => {
 
 let lastROMBytes = null;
 
+// Central registry of every localStorage key this app persists to, across every file (RAM
+// editor cheats and the RTC correction panel are debug-tools files, loaded later, but list
+// their keys here too so this stays the one place any of them can be looked up). This is
+// what "Clear all saved config" below iterates instead of needing to separately remember
+// each persisted feature by name. Split from STORAGE_KEY_PREFIXES (below) because a prefix
+// names a whole family of keys (one save-slot key per ROM) rather than one removable key.
+const STORAGE_KEYS = {
+  UI_CONFIG: 'jsgb-config:ui',                     // model/mode/etc - this file
+  SOUND_CONFIG: 'jsgb-config:sound',               // volume/mute - this file
+  RTC_CORRECTION: 'jsgb-config:rtc-correction',    // RTC panel - emu-gb-debug-visualizers.js
+  MEMSCAN_CHEATS: 'jsgb-config:memscan-cheats',    // saved cheats - emu-gb-debug-inspectors.js
+};
+const STORAGE_KEY_PREFIXES = {
+  SAVE_SLOTS: 'jsgb-saveslots:', // one key per ROM title - this file
+};
+
 /* Small factory for the "load merged JSON from a key, save merged JSON back to it" pattern,
    shared by the UI config and sound config below. */
 function makePersistedConfig(key, defaults = {}) {
@@ -310,7 +326,7 @@ function makePersistedConfig(key, defaults = {}) {
 
 /* Unified UI config: model (GB/GBP), play/debug mode, and "mark current line" persisted
    together. Sound mute/volume use a separate entry below; speed is never persisted. */
-const uiConfigStore = makePersistedConfig('jsgb-config:ui');
+const uiConfigStore = makePersistedConfig(STORAGE_KEYS.UI_CONFIG);
 function loadUIConfig() { return uiConfigStore.load(); }
 function saveUIConfig(partial) { uiConfigStore.save(partial); }
 
@@ -708,7 +724,7 @@ btnStep1s.addEventListener('click', () => {
 });
 
 // Sound controls: mute state + volume persisted in localStorage.
-const soundConfigStore = makePersistedConfig('jsgb-config:sound');
+const soundConfigStore = makePersistedConfig(STORAGE_KEYS.SOUND_CONFIG);
 function saveSoundConfig() {
   soundConfigStore.save({ muted: isMuted, volume: Number(soundControls.volumeSlider.value), channelMuted: emulator.getAllChannelMuted() });
 }
@@ -812,7 +828,7 @@ const btnImportSavLabel = document.getElementById('btnImportSav');
 const importSavInput = document.getElementById('importSavInput');
 const savInfo = document.getElementById('savInfo');
 
-function slotsKey() { return 'jsgb-saveslots:' + (emulator.romTitle || 'rom'); }
+function slotsKey() { return STORAGE_KEY_PREFIXES.SAVE_SLOTS + (emulator.romTitle || 'rom'); }
 
 function loadSlots() {
   try { return JSON.parse(localStorage.getItem(slotsKey())) || []; }
@@ -1220,17 +1236,18 @@ const audioRecorderCtl = createCaptureRecorder({
   recordingLabel: '⏹ Audio',
 });
 
-/* ---- clear saved config: wipes UI config, sound config, and all save-state
-   slots from localStorage, resetting to defaults on next load. ---- */
+/* ---- clear saved config: wipes every entry in STORAGE_KEYS (UI/sound/RTC-correction/
+   memscan-cheats config) plus all save-state slots from localStorage, resetting to defaults
+   on next load. Reading STORAGE_KEYS here means a newly persisted feature just needs to add
+   itself to that registry to be included - it can't be forgotten in this handler by hand. ---- */
 const btnClearConfig = document.getElementById('btnClearConfig');
 btnClearConfig.addEventListener('click', () => {
-  const ok = confirm('Clear all saved emulator config (model, play/debug mode, sound settings) AND all game save states? This cannot be undone.');
+  const ok = confirm('Clear all saved emulator config (model, play/debug mode, sound settings, RTC correction, saved cheats) AND all game save states? This cannot be undone.');
   if (!ok) return;
   try {
-    localStorage.removeItem('jsgb-config:ui');
-    localStorage.removeItem('jsgb-config:sound');
+    Object.values(STORAGE_KEYS).forEach(key => localStorage.removeItem(key));
     Object.keys(localStorage)
-      .filter(k => k.startsWith('jsgb-saveslots:'))
+      .filter(k => k.startsWith(STORAGE_KEY_PREFIXES.SAVE_SLOTS))
       .forEach(k => localStorage.removeItem(k));
   } catch (e) { /* storage unavailable - nothing to clear */ }
   location.reload();

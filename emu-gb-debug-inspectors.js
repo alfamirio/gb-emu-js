@@ -696,16 +696,16 @@ let memScanFrozen = new Map();     // addr -> {value, size} - rewritten every em
 // ---- Saved cheats: name + address + size, persisted in localStorage keyed by the loaded
 // ROM's CRC32 (plus its title, kept just for display/debugging the storage). Reappears in the
 // "Saved cheats for this ROM" list any time this same ROM is loaded again, ready to re-apply
-// (apply = freeze, same mechanism as the manual Freeze checkboxes below). ----
-const MEMSCAN_CHEATS_STORAGE_KEY = 'jsgb-config:memscan-cheats';
+// (apply = freeze, same mechanism as the manual Freeze checkboxes below). Storage key comes
+// from the central STORAGE_KEYS registry in app.js. ----
 
 function loadCheatStore() {
-  try { return JSON.parse(localStorage.getItem(MEMSCAN_CHEATS_STORAGE_KEY)) || {}; }
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEYS.MEMSCAN_CHEATS)) || {}; }
   catch (e) { return {}; } // corrupt JSON or storage blocked - fail to an empty store
 }
 
 function saveCheatStore(store) {
-  try { localStorage.setItem(MEMSCAN_CHEATS_STORAGE_KEY, JSON.stringify(store)); }
+  try { localStorage.setItem(STORAGE_KEYS.MEMSCAN_CHEATS, JSON.stringify(store)); }
   catch (e) { /* storage full/blocked - silently ignore, matches saveSlots() precedent in app.js */ }
 }
 

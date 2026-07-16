@@ -1,0 +1,1507 @@
+/* =========================================================================================
+   styles.css — JS GB Emulator styles
+   -----------------------------------------------------------------------------------------
+   All CSS for index.html: layout, navbar, screen, debug/visualization sidebars, and every
+   panel within them. Extracted from index.html's inline <style> block for maintainability
+   and separate browser caching.
+   ========================================================================================= */
+
+  :root {
+    --screen-bg: #343434;
+    --accent: #6b4fa0;
+    --accent-dark: #4e3878;
+    --text: #2b2b2b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: linear-gradient(180deg, #2e2e38, #1b1b22);
+    color: #eee;
+    font-family: 'Segoe UI', Tahoma, Verdana, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    padding: 0 0 60px;
+  }
+
+  .navbar {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 24px;
+    background: #1b1b22;
+    border-bottom: 1px solid #333;
+    box-shadow: 0 2px 10px rgba(0,0,0,.4);
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    position: sticky;
+    top: 0;
+    z-index: 200;
+  }
+
+  .nav-divider {
+    width: 1px;
+    align-self: stretch;
+    background: #3a3a45;
+    flex-shrink: 0;
+    margin: 0 2px;
+  }
+
+    /* Ensure the navbar behaves as a standard flex row and aligns items vertically centered */
+    .navbar {
+      display: flex;
+      align-items: center;
+      gap: 12px; /* Adds clean spacing between the title, the folder icon, and subsequent items */
+    }
+
+    /* Remove the rigid sibling selector rule and apply the push directly to the controls container */
+    .navbar .cpu-debug-controls {
+      margin-left: auto; 
+    }
+
+  .icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: #888;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .icon-btn.danger { color: #d67a7a; }
+  .icon-btn.danger:hover { background: #b93a3a; color: #fff; }
+  /* Keep the navbar's height stable when switching modes: instead of removing the debug
+     controls from the flex layout (which would let the bar shrink to the height of the
+     remaining toggles), just make them invisible and non-interactive while still reserving
+     their space. */
+  body.playing-mode .navbar #cpuDebugControls { visibility: hidden; pointer-events: none; }
+
+  .model-toggle { display: flex; align-items: center; gap: 10px; font-size: 0.82rem; color: #888; }
+  .model-toggle .model-label { transition: color .15s; }
+  .model-toggle .model-label.active { color: #eee; font-weight: 600; }
+
+  .mode-toggle { display: flex; align-items: center; gap: 10px; font-size: 0.82rem; color: #888; }
+  .step-debug-toggle { margin-left: auto; }
+  .mode-toggle .mode-label { transition: color .15s; }
+  .mode-toggle .mode-label.active { color: #eee; font-weight: 600; }
+  .switch { position: relative; display: inline-block; width: 34px; height: 18px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .toggle-track {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    background: #444; border-radius: 18px; cursor: pointer; transition: background .2s;
+  }
+  .toggle-thumb {
+    position: absolute; height: 12px; width: 12px; left: 3px; top: 3px;
+    background: #eee; border-radius: 50%; transition: transform .2s;
+  }
+  .switch input:checked + .toggle-track { background: var(--accent); }
+  .switch input:checked + .toggle-track .toggle-thumb { transform: translateX(16px); }
+  .switch input:disabled + .toggle-track { opacity: 0.4; cursor: not-allowed; }
+
+  /* visibility (not display) keeps each sidebar's flex slot reserved, so toggling
+     debug mode hides/shows their content without reflowing the other columns */
+  body.playing-mode .debug-tools-sidebar,
+  body.playing-mode .visual-tools-sidebar,
+  body.playing-mode .frame-activity-panel { visibility: hidden; }
+
+  /* Manual per-panel visibility toggles (navbar). Unlike the play/debug switch above, these
+     use display:none - the person is choosing to reclaim the screen space, not just pausing
+     debug output, so the other columns should reflow to fill the gap. */
+  .panel-vis-toggles { display: flex; align-items: center; gap: 14px; }
+  .panel-vis-toggle .mode-label { color: #888; }
+  .panel-vis-toggle .mode-label.active { color: #eee; }
+  body.hide-debug-tools .debug-tools-sidebar,
+  body.hide-visual-tools .visual-tools-sidebar,
+  body.hide-frame-activity .frame-activity-panel { display: none; }
+
+  .page-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 12px 0;
+  }
+
+  .subtitle { color: #aaa; margin-bottom: 20px; font-size: 0.9rem; text-align: center; max-width: 640px; }
+
+  .layout { display: flex; gap: 24px; flex-wrap: wrap; justify-content: center; align-items: flex-start; }
+
+  .main-content {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    flex: 1;
+    min-width: 300px;
+  }
+  .main-row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+
+  /* ---- screen ---- */
+  .screen-bezel {
+    background: #333;
+    border-radius: 10px;
+    padding: 22px 22px 30px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.5), inset 0 3px 8px rgba(0,0,0,.6);
+    width: 540px;
+    max-width: 90vw;
+  }
+  .screen-label {
+    display: flex;
+    justify-content: space-between;
+    color: #999;
+    font-size: 0.75rem;
+    padding: 0 4px 8px;
+    letter-spacing: 1px;
+  }
+  #screen {
+    display: block;
+    width: 100%;
+    aspect-ratio: 160 / 144;
+    background: var(--screen-bg);
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    border-radius: 2px;
+  }
+  .screen-stage { position: relative; }
+  /* Debug-only scanline marker is drawn on a separate 2D canvas stacked on top of the
+     WebGL screen canvas (WebGL doesn't have a convenient per-pixel 2D drawing API of its
+     own, and this overlay is only repainted a handful of times a frame, not worth a shader). */
+  #screenOverlay {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    border-radius: 2px;
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+  }
+  /* Pixel dot-matrix shader: a hairline grid drawn over the screen at the GB's native
+     160x144 resolution, mimicking the visible pixel grid of a real Game Boy LCD.
+     Off by default; toggled via the navbar and persisted in the UI config. */
+  .dot-matrix-overlay {
+    position: absolute;
+    inset: 0;
+    border-radius: 2px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .15s;
+    background-image:
+      linear-gradient(to right, rgba(0,0,0,.45) 0, rgba(0,0,0,.45) 1px, transparent 1px, transparent 100%),
+      linear-gradient(to bottom, rgba(0,0,0,.45) 0, rgba(0,0,0,.45) 1px, transparent 1px, transparent 100%);
+    background-size: calc(100% / 160) calc(100% / 144);
+  }
+  body.dot-matrix-on .dot-matrix-overlay { opacity: 1; }
+  .drop-hint {
+    text-align: center;
+    color: #777;
+    font-size: 0.75rem;
+    margin-top: 8px;
+  }
+
+  /* ---- side panel ---- */
+  .control-panel {
+    width: 300px;
+    background: #23232c;
+    border-radius: 10px;
+    padding: 18px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.4);
+  }
+  .control-panel h2 {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 1rem;
+    margin: 0 0 10px;
+    color: #ddd;
+  }
+  .control-panel h2 .badge {
+    font-size: 0.68rem;
+    color: #999;
+    font-weight: normal;
+    background: #1b1b22;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-family: 'Consolas', monospace;
+    white-space: nowrap;
+  }
+  /* Play-time guardrail color states (see PLAY_TIME_LIMIT_CONFIG in emu-gb-app.js) - default
+     (no class) is the plain badge styling above; these override it as the session approaches
+     the continuous-use limit. */
+  #playTime.playtime-green { color: #6fcf7a; background: #16261a; }
+  #playTime.playtime-amber { color: #e0b23a; background: #2a2312; }
+  #playTime.playtime-red { color: #fff; background: #b93a3a; font-weight: 600; }
+  .file-drop {
+    /* The label wraps its text onto two lines via <br>. As an inline element (the
+       default for <label>), a border on content that spans multiple lines gets drawn
+       as separate disconnected fragments per line - that's what caused the stray
+       extra dashed line. Making it block-level gives it one single continuous box. */
+    display: block;
+    border: 2px dashed #555;
+    border-radius: 4px;
+    padding: 8px;
+    text-align: center;
+    font-size: 0.85rem;
+    color: #999;
+    cursor: pointer;
+    transition: border-color .15s, color .15s;
+  }
+  .file-drop:hover, .file-drop.drag-over { border-color: var(--accent); color: #ddd; }
+  .file-drop input { display: none; }
+
+  .rom-info { margin-top: 12px; font-size: 0.8rem; color: #bbb; line-height: 1.5; }
+  .rom-info b { color: #fff; }
+
+  .btn-row { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+
+  .sound-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  .sound-row input[type="range"] { flex: 1; accent-color: var(--accent); }
+  .volume-label { font-size: 0.8rem; color: #bbb; min-width: 34px; text-align: right; flex-shrink: 0; }
+  .speed-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 0.82rem; color: #bbb; }
+  .speed-label { white-space: nowrap; }
+  .speed-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+  .speed-badge {
+    background: #34343f;
+    border: 1px solid #444;
+    color: #bbb;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-family: 'Consolas', monospace;
+    cursor: pointer;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  .speed-badge:hover { border-color: var(--accent); color: #eee; }
+  .speed-badge.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .speed-badge.active:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
+  button.ui-btn {
+    background: var(--accent);
+    border: none;
+    color: white;
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  button.ui-btn:hover { background: var(--accent-dark); }
+
+  .checksum-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .checksum-badge {
+    background: #34343f;
+    border: 1px solid #444;
+    color: #bbb;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-family: 'Consolas', monospace;
+    cursor: pointer;
+    transition: background .15s, border-color .15s, color .15s;
+    user-select: none;
+  }
+  .checksum-badge:hover { border-color: var(--accent); color: #eee; }
+  .checksum-badge.copied {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  button.ui-btn:disabled { background: #444; cursor: not-allowed; }
+  button.ui-btn.danger { background: #b93a3a; }
+  button.ui-btn.danger:hover { background: #922c2c; }
+  button.ui-btn.danger:disabled { background: #444; cursor: not-allowed; }
+  button.ui-btn.recording { background: #b93a3a; animation: recPulse 1.1s ease-in-out infinite; }
+  button.ui-btn.recording:hover { background: #922c2c; }
+  @keyframes recPulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+
+  label.ui-btn {
+    background: var(--accent);
+    border: none;
+    color: white;
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+  }
+  label.ui-btn:hover { background: var(--accent-dark); }
+  label.ui-btn.disabled { background: #444; cursor: not-allowed; pointer-events: none; }
+
+  .state-info { margin-top: 8px; font-size: 0.75rem; color: #999; min-height: 1.2em; }
+
+  /* ---- save-state panel ---- */
+  .save-panel {
+    width: 100%;
+    background: #23232c;
+    border-radius: 10px;
+    padding: 18px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.4);
+  }
+  .save-panel h2 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 1rem;
+    margin: 0 0 6px;
+    color: #ddd;
+  }
+  .save-panel .badge {
+    font-size: 0.68rem;
+    color: #999;
+    font-weight: normal;
+    background: #1b1b22;
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+  .hotkey-hint { font-size: 0.68rem; color: #888; line-height: 1.5; margin: 8px 0 12px; }
+  .slot-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+  .slot-empty { grid-column: 1 / -1; font-size: 0.78rem; color: #777; text-align: center; padding: 24px 8px; }
+
+  .slot-card {
+    position: relative;
+    background: #1b1b22;
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: border-color .15s;
+  }
+  .slot-card:hover { border-color: var(--accent); }
+  .slot-card.latest { border-color: rgba(255, 221, 0, .5); }
+  .slot-card canvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 160 / 144;
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    background: #000;
+  }
+  .slot-card .slot-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 8px;
+    font-size: 0.68rem;
+    color: #aaa;
+  }
+  .slot-card.latest .slot-tag { color: #ffdd00; }
+  .slot-card .slot-time { font-family: 'Consolas', monospace; }
+  .slot-card .slot-delete {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: rgba(0,0,0,.6);
+    color: #ddd;
+    border: none;
+    font-size: 0.72rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .slot-card .slot-delete:hover { background: #c0392b; color: #fff; }
+
+  .keymap { margin-top: 16px; font-size: 0.78rem; color: #aaa; }
+  .keymap table { border-collapse: collapse; width: 100%; }
+  .keymap td { padding: 2px 4px; border-bottom: 1px solid #333; }
+  .keymap td:first-child { color: #fff; font-family: monospace; }
+
+  footer {
+    margin-top: 30px;
+    max-width: 760px;
+    color: #888;
+    font-size: 0.75rem;
+    text-align: center;
+    line-height: 1.6;
+  }
+  footer a { color: #a996d6; }
+
+  /* ---- debugging / visualization tool sidebars (shared base) ---- */
+  .tool-sidebar {
+    background: #23232c;
+    border-radius: 10px;
+    padding: 18px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.4);
+    font-size: 0.8rem;
+    color: #ccc;
+  }
+  .tool-sidebar h2 { font-size: 1rem; margin: 0 0 10px; color: #ddd; }
+
+  .debug-tools-sidebar {
+    width: 480px;
+    max-width: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .visual-tools-sidebar {
+    width: 480px;
+    max-width: 100%;
+  }
+
+  /* When one sidebar is hidden via its navbar toggle, let the other reclaim the freed
+     space instead of leaving a gap - standard 480px width only applies when both are shown. */
+  body.hide-visual-tools .debug-tools-sidebar,
+  body.hide-debug-tools .visual-tools-sidebar {
+    width: 800px;
+  }
+
+  .tools-tabs { display: flex; flex-direction: row; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+  .tool-tab {
+    background: #2f2f3a;
+    border: 1px solid #444;
+    color: #bbb;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    cursor: pointer;
+    text-align: left;
+  }
+  .tool-tab:hover { color: #fff; border-color: #666; }
+  .tool-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tool-tab.hidden { display: none; }
+  .tool-panel { margin-top: 10px; }
+  .tool-panel.hidden { display: none; }
+  .tool-desc { color: #999; font-size: 0.75rem; margin: 0 0 10px; line-height: 1.6; }
+  .tool-desc label { color: #ccc; margin-right: 14px; cursor: pointer; }
+  .tool-desc input[type="radio"] { accent-color: var(--accent); margin-right: 3px; }
+
+  #tileViewerCanvas {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    cursor: pointer;
+    /* Rendered at its native 401x601 size (see TV_W/TV_H in emu-gb-debug-visualizers.js) - deliberately
+       NOT scaled by CSS. Scaling it here would stretch the 1px gutter along with everything
+       else (fractional scale factors make that stretch inconsistent column-to-column, and
+       even a clean integer scale would make the gutter thicker than 1px). max-width/height:
+       auto is only a safety net so it shrinks instead of overflowing on very narrow viewports. */
+    max-width: 100%;
+    height: auto;
+    background: #000;
+    border-radius: 4px;
+    display: block;
+    cursor: crosshair;
+  }
+  .tileviewer-wrap {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+    /* inline-block sizes the wrap to exactly hug the canvas, so the hover highlight's
+       percentage-based left/top/width/height (set relative to this element) line up with the
+       canvas's actual rendered box instead of drifting if the wrap were wider than the canvas. */
+  }
+  .tileviewer-hover {
+    position: absolute;
+    border: 2px solid var(--accent);
+    border-radius: 1px;
+    pointer-events: none;
+    display: none;
+    box-sizing: border-box;
+  }
+  .canvas-hover-tooltip {
+    position: fixed;
+    display: none;
+    pointer-events: none;
+    z-index: 999;
+    background: #1b1b22;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.72rem;
+    color: #eee;
+    white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(0,0,0,.5);
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  .canvas-hover-tooltip.copied {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .ramedit-tile-preview.canvas-hover-tooltip { white-space: normal; text-align: center; }
+  .ramedit-tile-preview canvas {
+    display: block; image-rendering: pixelated;
+    border: 1px solid #333; border-radius: 2px; margin: 0 auto 4px;
+  }
+  .ramedit-tile-preview-label { color: #999; font-size: 0.64rem; }
+  .tilemap-scroll {
+    max-width: 100%;
+    border-radius: 4px;
+    background: #000;
+  }
+  #tileMapCanvas {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    height: auto;
+    display: block;
+  }
+  .oam-scroll { max-height: 360px; overflow-y: auto; border-radius: 4px; }
+
+  .oam-comp-wrap {
+    position: relative;
+    width: 100%;
+    max-width: 480px;
+    margin-bottom: 14px;
+  }
+  #oamCompCanvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 160 / 144;
+    background: #202028;
+    border-radius: 4px;
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    cursor: crosshair;
+  }
+  .oam-comp-hover {
+    position: absolute;
+    border: 2px solid var(--accent);
+    border-radius: 1px;
+    pointer-events: none;
+    display: none;
+    box-sizing: border-box;
+  }
+
+  .tileinspect-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .tileinspect-addr { width: 90px; text-align: center; }
+  #tileInspectCanvas {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    width: 128px;
+    height: 128px;
+    background: #000;
+    border: 1px solid #333;
+    border-radius: 4px;
+    display: block;
+    cursor: crosshair;
+    touch-action: none;
+  }
+  .tileinspect-palette-row { margin-bottom: 10px; }
+  .tileinspect-palette-label { font-size: 0.72rem; color: #999; }
+  .tileinspect-swatch {
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    border: 2px solid #444;
+    padding: 0;
+    cursor: pointer;
+  }
+  .tileinspect-swatch:hover { border-color: #777; }
+  .tileinspect-swatch.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .tileinspect-bytes {
+    margin-top: 10px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.72rem;
+    color: #999;
+    word-break: break-all;
+  }
+  .tileinspect-range, .tileinspect-bytes-val {
+    cursor: pointer;
+    border-radius: 3px;
+    padding: 2px 4px;
+    margin: -2px -4px;
+    transition: background .15s, color .15s;
+  }
+  .tileinspect-range:hover, .tileinspect-bytes-val:hover { background: #2c2c36; color: #eee; }
+  .tileinspect-range.copied, .tileinspect-bytes-val.copied {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .tileinspect-write-row { margin-top: 10px; margin-bottom: 0; }
+  .tileinspect-bytes-input {
+    flex: 1;
+    min-width: 0;
+    font-family: 'Consolas', monospace;
+    font-size: 0.78rem;
+  }
+  .tileinspect-paste-status {
+    margin-top: 6px;
+    font-size: 0.72rem;
+    min-height: 1.1em;
+  }
+  .tileinspect-paste-status.ok { color: #6fcf7c; }
+  .tileinspect-paste-status.err { color: #e8794b; }
+  table.oam-table { border-collapse: collapse; width: 100%; font-family: 'Consolas', monospace; font-size: 0.72rem; }
+  table.oam-table th {
+    text-align: left;
+    color: #999;
+    padding: 5px 8px;
+    border-bottom: 1px solid #444;
+    position: sticky;
+    top: 0;
+    background: #23232c;
+  }
+  table.oam-table td { padding: 4px 8px; border-bottom: 1px solid #333; color: #ddd; vertical-align: middle; }
+  table.oam-table tr.offscreen td { color: #666; }
+  table.oam-table tbody tr { cursor: pointer; transition: background .15s; }
+  table.oam-table tbody tr:hover td { background: #2c2c36; }
+  table.oam-table tbody tr.row-copied td { background: var(--accent); color: #fff; }
+  table.oam-table canvas {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    width: 24px;
+    height: 24px;
+    background: #111;
+    border-radius: 2px;
+    display: block;
+  }
+  .palette-grid { display: flex; gap: 24px; align-items: flex-start; }
+  .palette-col { display: flex; flex-direction: column; gap: 14px; flex: 1 1 0; min-width: 0; }
+  .palette-col-title { margin: 0 0 2px; font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; color: #777; }
+  .palette-block { background: #1b1b22; border-radius: 8px; padding: 12px 14px; min-width: 0; }
+  .palette-block h3 { margin: 0 0 6px; font-size: 0.82rem; color: #eee; }
+  .palette-block .reg-val { color: #888; font-size: 0.7rem; margin-bottom: 10px; font-family: 'Consolas', monospace; }
+
+  .scanline-block { background: #1b1b22; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
+  .scanline-block h3 { margin: 0 0 10px; font-size: 0.82rem; color: #eee; }
+  .scanline-block canvas { display: block; width: 100%; height: 46px; border-radius: 4px; }
+
+  /* ---- frame activity: full-width panel below the 3-column layout ---- */
+  .frame-activity-panel {
+    background: #23232c;
+    border-radius: 10px;
+    padding: 18px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.4);
+    font-size: 0.8rem;
+    color: #ccc;
+    width: 100%;
+    max-width: 1900px;
+    margin-top: 24px;
+  }
+  .frame-activity-panel h2 { font-size: 1rem; margin: 0 0 10px; color: #ddd; }
+  .frame-activity-row { display: flex; gap: 24px; flex-wrap: wrap; align-items: stretch; }
+  .frame-activity-block { flex: 1; min-width: 360px; margin-bottom: 0; }
+  .frame-activity-block canvas { height: 90px; cursor: pointer; }
+  .frame-activity-block-full { flex: 1 1 100%; min-width: 100%; margin-top: 24px; }
+  .frame-activity-block-full canvas { height: 46px; cursor: default; }
+  #frameAnatomyCanvas { cursor: pointer; }
+  .frame-anatomy-stats {
+    display: flex; flex-wrap: wrap; gap: 6px 16px;
+    margin-top: 10px; font-size: 0.72rem; color: #bbb;
+  }
+  .frame-anatomy-stats b { color: #eee; }
+  .scanline-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; font-size: 0.7rem; color: #aaa; }
+  .scanline-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .scanline-legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .scanline-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin-top: 4px; }
+  .scanline-stat { background: #1b1b22; border-radius: 8px; padding: 8px 10px; }
+  .scanline-stat .label { font-size: 0.66rem; color: #888; text-transform: uppercase; letter-spacing: .04em; }
+  .scanline-stat .value { font-size: 0.88rem; color: #eee; font-family: 'Consolas', monospace; margin-top: 2px; }
+  .scanline-ref { font-size: 0.72rem; color: #888; line-height: 1.7; margin-top: 12px; }
+  .scanline-ref b { color: #ccc; }
+  .frame-activity-note { font-size: 0.72rem; color: #999; line-height: 1.5; margin: 0 0 10px; }
+
+  .scope-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+  .scope-block { background: #1b1b22; border-radius: 8px; padding: 10px 12px; }
+  .scope-block h3 {
+    margin: 0 0 8px; font-size: 0.82rem; color: #eee;
+    display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  }
+  .scope-sub { font-size: 0.68rem; color: #888; font-weight: normal; white-space: nowrap; }
+  .scope-title { display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .scope-mute-btn {
+    flex-shrink: 0;
+    background: none;
+    border: 1px solid #444;
+    border-radius: 5px;
+    color: #ccc;
+    font-size: 0.78rem;
+    line-height: 1;
+    padding: 3px 6px;
+    cursor: pointer;
+    transition: border-color .15s, opacity .15s, background .15s;
+  }
+  .scope-mute-btn:hover { border-color: var(--accent); }
+  .scope-mute-btn.muted { opacity: 0.55; border-color: #b93a3a; background: rgba(185, 58, 58, .15); }
+  .scope-block.muted canvas { opacity: 0.35; }
+  .scope-block canvas { display: block; width: 100%; height: 80px; background: #000; border-radius: 4px; }
+  .swatch-row { display: flex; gap: 6px; }
+
+  .layers-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
+  .layer-block { background: #1b1b22; border-radius: 8px; padding: 10px 12px; }
+  .layer-block h3 {
+    margin: 0 0 8px; font-size: 0.82rem; color: #eee;
+    display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  }
+  .layer-title { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+  .layer-status { font-size: 0.68rem; color: #4ade80; font-weight: normal; white-space: nowrap; }
+  .layer-status.off { color: #b93a3a; }
+  .layer-block.dimmed canvas { opacity: 0.4; }
+  .layer-block canvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 160 / 144;
+    background: transparent;
+    border-radius: 4px;
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+  }
+  .swatch { width: 40px; text-align: center; }
+  .swatch .chip { width: 40px; height: 40px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); }
+  .swatch .label { font-size: 0.65rem; color: #999; margin-top: 4px; font-family: 'Consolas', monospace; }
+
+  .layer-download-btn {
+    display: flex; align-items: center; justify-content: center;
+    margin-top: 8px; margin-left: auto;
+    width: 26px; height: 26px;
+    background: #2f2f3a; border: 1px solid #444; color: #bbb;
+    border-radius: 6px; cursor: pointer; padding: 0;
+  }
+  .layer-download-btn:hover { color: #fff; border-color: #666; }
+  .layer-download-btn:disabled { color: #555; border-color: #333; cursor: not-allowed; }
+  .layer-download-btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; }
+
+  /* ---- CPU step / breakpoint controls ---- */
+  .cpu-debug-controls {
+    margin: 14px 0 6px;
+    padding: 12px 14px;
+    background: #1b1b22;
+    border-radius: 8px;
+  }
+  .cpu-debug-controls.hidden { display: none; }
+  .cdc-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .cdc-row:last-child { margin-bottom: 0; }
+  .cdc-row label { font-size: 0.75rem; color: #bbb; display: inline-flex; align-items: center; gap: 6px; }
+  .cdc-row input[type="text"] {
+    width: 64px;
+    background: #111;
+    border: 1px solid #444;
+    color: #eee;
+    border-radius: 4px;
+    padding: 5px 7px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.75rem;
+  }
+  .cdc-row input[type="text"]:focus { outline: none; border-color: var(--accent); }
+  button.ui-btn.small { padding: 6px 10px; font-size: 0.75rem; }
+  button.ui-btn.ghost { background: transparent; border: 1px solid #555; color: #bbb; }
+  button.ui-btn.ghost:hover { background: transparent; border-color: #888; color: #fff; }
+  .cdc-status { font-size: 0.75rem; color: #e8c15a; font-family: 'Consolas', monospace; min-height: 1.2em; }
+
+  /* When the CPU debug controls live in the navbar (moved there via JS), lay everything out
+     as a single compact row instead of the stacked/wrapped layout used in the sidebar. */
+  .navbar .cpu-debug-controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+    margin: 0;
+    padding: 2px 10px;
+    gap: 14px;
+  }
+  .navbar .cdc-row { margin-bottom: 0; flex-wrap: nowrap; flex-shrink: 0; gap: 6px; }
+  .navbar .cdc-row label { white-space: nowrap; }
+  .navbar .cdc-row input[type="text"] { width: 56px; }
+  .navbar .cdc-status { white-space: nowrap; min-height: 0; }
+  .navbar .cdc-row button.ui-btn.small { padding: 4px 8px; font-size: 0.7rem; }
+
+  /* ---- live disassembly / execution trace panels ---- */
+  .disasm-list, .trace-list {
+    background: #111;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.75rem;
+    line-height: 1.65;
+    max-height: 340px;
+    overflow-y: auto;
+  }
+  /* Execution trace's height is set explicitly in px by JS (syncTraceListHeight(), only
+     while the trace tab is active) to match the neighboring main-content / visual-tools
+     columns - no taller, and with no inner scrollbar in the common case. This intentionally
+     only affects the trace panel: the disassembler/registers/memory-map/MBC-banking panels
+     keep their normal compact height and are never stretched. */
+  .trace-list {
+    max-height: 340px; /* fallback until JS sizes it on first activation */
+  }
+  .trace-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-bottom: 6px;
+  }
+  .trace-frozen-note {
+    color: #e8c46b;
+    font-size: 0.7rem;
+    font-style: italic;
+    margin-right: auto;
+  }
+  .autoscroll-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    color: #aaa;
+    cursor: pointer;
+    user-select: none;
+  }
+  .autoscroll-toggle .switch { width: 28px; height: 15px; }
+  .autoscroll-toggle .toggle-thumb { width: 9px; height: 9px; }
+  .autoscroll-toggle input:checked + .toggle-track .toggle-thumb { transform: translateX(13px); }
+  .event-log-level-row {
+    display: flex;
+    align-items: center;
+    font-size: 0.8rem;
+    color: #ccc;
+    margin-bottom: 8px;
+  }
+  .disasm-line { padding: 1px 5px; border-radius: 3px; white-space: nowrap; color: #9fd6ff; }
+  .disasm-line.current { background: var(--accent); color: #fff; font-weight: bold; }
+  .stack-sp-readout {
+    font-family: 'Consolas', monospace;
+    font-size: 0.78rem;
+    color: #ddd;
+    background: #1b1b22;
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+  }
+  .stack-line-below { color: #6d6d78; }
+  .trace-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 12px;
+    padding: 2px 5px;
+    border-radius: 3px;
+  }
+  .trace-line.latest { background: #2f2f3a; }
+  .trace-code { color: #7fd67f; white-space: nowrap; flex: 0 0 auto; }
+  .trace-line.latest .trace-code { color: #fff; }
+  .trace-diff {
+    color: #e8c46b;
+    white-space: nowrap;
+    flex: 0 0 auto;
+    font-size: 0.72rem;
+  }
+  .trace-repeat {
+    color: #aaa;
+    background: #2a2a33;
+    border-radius: 3px;
+    padding: 0 5px;
+    font-size: 0.68rem;
+    flex: 0 0 auto;
+  }
+  .trace-explain {
+    color: #888;
+    font-family: 'Segoe UI', Tahoma, Verdana, sans-serif;
+    font-style: italic;
+    font-size: 0.7rem;
+    white-space: normal;
+  }
+  .trace-empty, .disasm-empty { color: #777; padding: 2px 5px; }
+
+  /* ---- Event Log panel ---- */
+  select.ui-select {
+    background: #1b1b22;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 0.75rem;
+  }
+  select.ui-select:hover { border-color: #888; }
+  .event-log-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin-bottom: 8px;
+    font-size: 0.72rem;
+    color: #aaa;
+  }
+  .event-log-filters label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .event-log-filters input { accent-color: var(--accent); }
+  .event-log-list {
+    background: #111;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.75rem;
+    line-height: 1.65;
+    max-height: 340px;
+    overflow-y: auto;
+  }
+  .event-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 10px;
+    padding: 2px 6px;
+    border-left: 3px solid #555;
+    border-radius: 2px;
+  }
+  .event-line.level-info  { border-left-color: var(--accent); }
+  .event-line.level-debug { border-left-color: #777; }
+  .event-line.level-trace { border-left-color: #3a3a3a; }
+  .event-frame { color: #666; white-space: nowrap; flex: 0 0 auto; font-size: 0.7rem; }
+  .event-time {
+    color: #8fd6ff;
+    white-space: nowrap;
+    flex: 0 0 auto;
+    font-size: 0.72rem;
+    font-weight: bold;
+    min-width: 62px;
+    display: inline-block;
+  }
+  .event-time-wall {
+    color: #666;
+    white-space: nowrap;
+    flex: 0 0 auto;
+    font-size: 0.68rem;
+  }
+  .event-comp {
+    white-space: nowrap;
+    flex: 0 0 auto;
+    font-weight: bold;
+    font-size: 0.7rem;
+    border-radius: 3px;
+    padding: 0 5px;
+  }
+  .event-comp-CPU    { color: #9fd6ff; }
+  .event-comp-PPU    { color: #c9a0f5; }
+  .event-comp-APU    { color: #f5a0c9; }
+  .event-comp-Timer  { color: #e8c46b; }
+  .event-comp-MBC    { color: #7fd67f; }
+  .event-comp-System { color: #bbbbbb; }
+  .event-detail { color: #ccc; white-space: normal; }
+  .event-empty { color: #777; padding: 2px 5px; }
+
+  /* ---- CPU Registers editor panel ---- */
+  .reg-editor { display: flex; flex-direction: column; gap: 14px; }
+  .reg-group {
+    background: #1b1b22;
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .reg-group-title {
+    margin: 0 0 8px;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #999;
+    font-weight: 600;
+  }
+  .reg-pairs { display: flex; flex-wrap: wrap; gap: 14px 18px; align-items: flex-end; }
+  .reg-pair { display: flex; flex-direction: column; gap: 6px; }
+  .reg-row { display: flex; align-items: center; gap: 8px; }
+  .reg-row label {
+    font-family: 'Consolas', monospace;
+    font-size: 0.75rem;
+    color: #bbb;
+    width: 16px;
+    flex-shrink: 0;
+  }
+  .reg-input {
+    width: 62px;
+    background: #111;
+    border: 1px solid #444;
+    color: #eee;
+    border-radius: 4px;
+    padding: 5px 7px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+  }
+  .reg-input.reg-input-16 { width: 76px; }
+  .reg-input:focus { outline: none; border-color: var(--accent); }
+  .reg-input:disabled { opacity: 0.45; cursor: not-allowed; border-color: #333; }
+  .reg-derived {
+    font-family: 'Consolas', monospace;
+    font-size: 0.68rem;
+    color: #7fa8d6;
+    background: #111;
+    border-radius: 4px;
+    padding: 3px 7px;
+    text-align: center;
+  }
+  .reg-flags-row { display: flex; flex-wrap: wrap; gap: 18px; }
+  .reg-flag-item { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .reg-flag-label {
+    font-family: 'Consolas', monospace;
+    font-size: 0.78rem;
+    color: #ccc;
+    font-weight: 600;
+  }
+  .reg-state-row { display: flex; flex-wrap: wrap; gap: 22px; margin-bottom: 4px; }
+  .reg-state-item { display: flex; align-items: center; gap: 10px; }
+  .reg-state-item .reg-flag-label { font-size: 0.75rem; }
+  .reg-note {
+    color: #888;
+    font-family: 'Segoe UI', Tahoma, Verdana, sans-serif;
+    font-style: italic;
+    font-size: 0.7rem;
+    line-height: 1.5;
+    margin: 8px 0 0;
+  }
+  .reg-note.reg-warning { color: #e0a05a; }
+  .reg-paused-note {
+    color: #e8c46b;
+    font-size: 0.72rem;
+    background: #2a2410;
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin: 0 0 4px;
+  }
+  .reg-io-readout {
+    font-family: 'Consolas', monospace;
+    font-size: 0.72rem;
+    color: #888;
+  }
+
+  /* ---- Interrupts panel ---- */
+  .int-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.8rem;
+    background: #1b1b22;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+  }
+  .int-ime { padding: 2px 8px; border-radius: 999px; font-weight: 600; font-size: 0.75rem; }
+  .int-ime.on { background: #2e5a3a; color: #7be29a; }
+  .int-ime.off { background: #402c2c; color: #e0a0a0; }
+  .int-reg { color: #ccc; }
+  .int-halted { color: #e8c46b; font-style: italic; font-size: 0.75rem; }
+  .int-table { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
+  .int-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
+    align-items: center;
+    gap: 10px;
+    background: #1b1b22;
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 0.78rem;
+  }
+  .int-row-firing { outline: 1px solid var(--accent); background: #2a2135; }
+  .int-name { color: #eee; }
+  .int-vector { color: #888; font-family: 'Consolas', monospace; font-size: 0.72rem; }
+  .int-badge {
+    font-family: 'Consolas', monospace;
+    font-size: 0.68rem;
+    padding: 2px 7px;
+    border-radius: 999px;
+    text-align: center;
+  }
+  .int-badge.int-on { background: #34343f; color: #9fd6ff; }
+  .int-badge.int-pending { background: #5a4a2e; color: #e8c46b; }
+  .int-badge.int-off { background: #2a2a30; color: #666; }
+  .int-log-heading { font-size: 0.85rem; margin: 0 0 6px; color: #ddd; }
+  .int-log {
+    background: #111;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.72rem;
+    line-height: 1.65;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .int-log-empty { color: #777; padding: 2px 5px; }
+  .int-log-line { padding: 1px 5px; color: #9fd6ff; white-space: nowrap; }
+
+  /* ---- Memory Map strip ---- */
+  .memmap-strip {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    height: 460px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #333;
+  }
+  .mem-region {
+    position: relative;
+    display: flex;
+    flex-direction: row;
+    justify-content: flex-start;
+    align-items: center;
+    text-align: left;
+    color: #111;
+    font-family: 'Consolas', monospace;
+    border-bottom: 1px solid rgba(0,0,0,.35);
+    overflow: hidden;
+    cursor: default;
+    transition: filter .1s;
+    padding: 0 10px;
+    gap: 8px;
+    white-space: nowrap;
+  }
+  .mem-region:last-child { border-bottom: none; }
+  .mem-region .mem-label { font-size: 0.72rem; font-weight: 700; line-height: 1.25; }
+  .mem-region .mem-range { font-size: 0.62rem; opacity: .75; line-height: 1.2; }
+  .mem-region .mem-bank { font-size: 0.6rem; font-weight: 700; margin-left: auto; background: rgba(0,0,0,.25); border-radius: 3px; padding: 0 4px; flex-shrink: 0; }
+  .mem-region.mem-flash { animation: memFlashAnim .55s ease-out; z-index: 2; }
+  @keyframes memFlashAnim {
+    0%   { filter: brightness(2.3) saturate(1.3); box-shadow: inset 0 0 0 2px #fff, 0 0 14px 2px rgba(255,255,255,.85); }
+    100% { filter: brightness(1); box-shadow: none; }
+  }
+  .memmap-readout {
+    margin-top: 10px;
+    padding: 8px 12px;
+    background: #111;
+    border-radius: 6px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.75rem;
+    color: #ddd;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .memmap-readout .mm-swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; flex-shrink: 0; }
+  .memmap-readout .mm-type-read { color: #7fd67f; }
+  .memmap-readout .mm-type-write { color: #ff9d6b; }
+
+  /* ---- MBC Banking visualizer ---- */
+  .banking-windows { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .bank-window {
+    flex: 1 1 200px;
+    background: #1b1b22;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .bank-window .bw-range { font-family: 'Consolas', monospace; font-size: 0.72rem; color: #999; }
+  .bank-window .bw-arrow { color: #666; font-size: 0.8rem; margin: 4px 0; }
+  .bank-window .bw-target {
+    font-family: 'Consolas', monospace;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #fff;
+    transition: color .1s;
+  }
+  .bank-window .bw-note { font-size: 0.68rem; color: #888; margin-top: 4px; }
+  .bank-window.bw-flash { animation: bwFlashAnim .55s ease-out; }
+  @keyframes bwFlashAnim {
+    0%   { background: var(--accent); box-shadow: 0 0 14px 2px rgba(107,79,160,.8); }
+    100% { background: #1b1b22; box-shadow: none; }
+  }
+  .banking-section { margin-bottom: 16px; }
+  .banking-section h3 { margin: 0 0 8px; font-size: 0.82rem; color: #eee; display: flex; align-items: baseline; gap: 8px; }
+  .banking-sub { font-size: 0.68rem; color: #888; font-weight: normal; }
+  .bank-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    max-height: 150px;
+    overflow-y: auto;
+    padding: 2px;
+  }
+  .bank-empty { color: #777; font-size: 0.75rem; padding: 4px 0; }
+  .bank-tile {
+    width: 34px;
+    height: 30px;
+    border-radius: 4px;
+    background: #26262f;
+    border: 1px solid #3a3a45;
+    color: #999;
+    font-family: 'Consolas', monospace;
+    font-size: 0.65rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: filter .1s;
+  }
+  .bank-tile.bank-fixed { border-style: dashed; opacity: .7; }
+  .bank-tile.bank-active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 700;
+    box-shadow: 0 0 0 2px rgba(107,79,160,.4);
+  }
+  .bank-tile.bank-flash { animation: bankTileFlashAnim .55s ease-out; }
+  @keyframes bankTileFlashAnim {
+    0%   { filter: brightness(2.2); box-shadow: 0 0 12px 2px rgba(255,255,255,.85); }
+    100% { filter: brightness(1); }
+  }
+  .banking-log {
+    margin-top: 4px;
+    padding: 8px 12px;
+    background: #111;
+    border-radius: 6px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.72rem;
+    color: #e8c15a;
+    min-height: 1.2em;
+  }
+
+  /* ---- RTC (MBC3 real-time clock) ---- */
+  .rtc-empty { color: #777; font-size: 0.8rem; padding: 24px 8px; text-align: center; }
+  .rtc-card {
+    background: #1b1b22;
+    border-radius: 8px;
+    padding: 18px;
+    margin-bottom: 16px;
+  }
+  .rtc-clock-row { margin-bottom: 10px; }
+  .rtc-clock-row:last-child { margin-bottom: 0; }
+  .rtc-clock-label {
+    font-size: 0.68rem;
+    color: #777;
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 2px;
+  }
+  .rtc-clock {
+    font-family: 'Consolas', monospace;
+    font-size: 1.9rem;
+    letter-spacing: 1px;
+    color: #fff;
+    text-align: center;
+  }
+  .rtc-clock .rtc-days { font-size: 1.1rem; color: #999; margin-right: 8px; }
+  .rtc-flags { display: flex; justify-content: center; gap: 8px; margin-top: 10px; }
+  .rtc-flag {
+    font-size: 0.68rem;
+    padding: 3px 10px;
+    border-radius: 10px;
+    background: #34343f;
+    color: #888;
+    border: 1px solid #444;
+  }
+  .rtc-flag.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .rtc-flag.warn.active { background: #b93a3a; border-color: #b93a3a; }
+  .rtc-regs {
+    margin-top: 12px;
+    text-align: center;
+    font-family: 'Consolas', monospace;
+    font-size: 0.7rem;
+    color: #777;
+  }
+  .rtc-section-title { font-size: 0.82rem; color: #eee; margin: 0 0 10px; }
+  .rtc-fields { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
+  .rtc-field label { display: block; font-size: 0.68rem; color: #999; margin-bottom: 4px; }
+  .rtc-field input {
+    width: 100%;
+    background: #101014;
+    border: 1px solid #444;
+    color: #fff;
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.9rem;
+    box-sizing: border-box;
+  }
+  .rtc-field input:focus { outline: none; border-color: var(--accent); }
+  .rtc-halt-row { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 0.8rem; color: #ccc; }
+  .rtc-halt-row input { accent-color: var(--accent); }
+  .rtc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .rtc-info { margin-top: 10px; font-size: 0.72rem; color: #999; min-height: 1.2em; }
+
+  /* ---- RAM Editor ---- */
+  .ramedit-regions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .ramedit-region-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    background: #1b1b22;
+    border: 1px solid #3a3a45;
+    border-left: 3px solid var(--region-color, #666);
+    border-radius: 6px;
+    padding: 5px 9px;
+    cursor: pointer;
+    color: #ccc;
+    font-family: inherit;
+    transition: background .1s, border-color .1s;
+  }
+  .ramedit-region-btn:hover { border-color: #666; }
+  .ramedit-region-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .ramedit-region-btn.readonly { opacity: .65; }
+  .ramedit-region-btn .ramedit-region-name { font-size: 0.72rem; font-weight: 700; }
+  .ramedit-region-btn .ramedit-region-range { font-size: 0.6rem; font-family: 'Consolas', monospace; opacity: .8; }
+  .ramedit-info {
+    font-size: 0.72rem;
+    color: #999;
+    margin-bottom: 8px;
+  }
+  .ramedit-info .ramedit-info-range { font-family: 'Consolas', monospace; color: #bbb; }
+  .ramedit-readonly-badge {
+    display: inline-block;
+    margin-left: 8px;
+    background: #3a2a2a;
+    color: #e0a05a;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .ramedit-note { margin: 4px 0 0; font-style: italic; color: #888; line-height: 1.5; }
+  .ramedit-dynamic-note { margin: 2px 0 0; color: #7fa8d6; font-family: 'Consolas', monospace; font-size: 0.68rem; }
+  .ramedit-nav-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+  .ramedit-nav-label { font-family: 'Consolas', monospace; font-size: 0.7rem; color: #999; }
+  .ramedit-jump {
+    width: 110px;
+    background: #111;
+    border: 1px solid #444;
+    color: #eee;
+    border-radius: 4px;
+    padding: 4px 7px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.72rem;
+  }
+  .ramedit-jump:focus { outline: none; border-color: var(--accent); }
+  .ramedit-body { max-height: 520px; overflow-y: auto; }
+
+  table.ramedit-hex-table { border-collapse: collapse; width: 100%; font-family: 'Consolas', monospace; font-size: 0.68rem; }
+  table.ramedit-hex-table th {
+    color: #777;
+    font-weight: 600;
+    text-align: center;
+    padding: 3px 2px;
+    border-bottom: 1px solid #333;
+    position: sticky;
+    top: 0;
+    background: #16161c;
+  }
+  table.ramedit-hex-table td { padding: 2px; text-align: center; vertical-align: middle; }
+  table.ramedit-hex-table td.ramedit-addr {
+    color: #7fa8d6; text-align: right; padding-right: 8px; white-space: nowrap;
+    cursor: pointer; border-radius: 3px; transition: background .15s, color .15s;
+  }
+  table.ramedit-hex-table td.ramedit-addr:hover { background: #2c2c36; color: #eee; }
+  table.ramedit-hex-table td.ramedit-addr.copied { background: var(--accent); color: #fff; font-weight: 600; }
+  .ramedit-cell {
+    width: 26px;
+    background: #111;
+    border: 1px solid #333;
+    color: #eee;
+    border-radius: 3px;
+    padding: 2px 0;
+    text-align: center;
+    font-family: 'Consolas', monospace;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+  }
+  .ramedit-cell:focus { outline: none; border-color: var(--accent); }
+  .ramedit-cell-ro {
+    display: inline-block;
+    width: 26px;
+    color: #666;
+    padding: 2px 0;
+  }
+  td.ramedit-ascii { color: #6a6a75; text-align: left; padding-left: 10px; white-space: pre; letter-spacing: 1px; }
+
+  .ramedit-io-list { display: flex; flex-direction: column; gap: 6px; }
+  .ramedit-io-row { background: #1b1b22; border: 1px solid #333; border-radius: 6px; padding: 7px 10px; }
+  .ramedit-io-head { display: flex; align-items: center; gap: 8px; font-family: 'Consolas', monospace; }
+  .ramedit-io-addr {
+    color: #7fa8d6; font-size: 0.72rem;
+    cursor: pointer; border-radius: 3px; padding: 1px 4px; margin: -1px -4px;
+    transition: background .15s, color .15s;
+  }
+  .ramedit-io-addr:hover { background: #2c2c36; color: #eee; }
+  .ramedit-io-addr.copied { background: var(--accent); color: #fff; font-weight: 600; }
+  .ramedit-io-name { color: #fff; font-weight: 700; font-size: 0.75rem; }
+  .ramedit-io-hex { margin-left: auto; color: #e8c15a; font-size: 0.75rem; }
+  .ramedit-io-desc { color: #888; font-size: 0.66rem; margin-top: 3px; line-height: 1.5; }
+  .ramedit-io-bits { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .ramedit-bit { display: flex; flex-direction: column; align-items: center; gap: 3px; cursor: pointer; }
+  .ramedit-bit input { accent-color: var(--accent); cursor: pointer; }
+  .ramedit-bit span { font-size: 0.6rem; color: #999; font-family: 'Consolas', monospace; max-width: 54px; text-align: center; line-height: 1.2; }
+  .ramedit-io-hexrow { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .ramedit-io-unknown-note { color: #666; font-size: 0.64rem; font-style: italic; }
+
+  /* ---- Memory Scanner ---- */
+  .memscan-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .memscan-row label { font-size: 0.72rem; color: #999; display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .memscan-row input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; }
+  .memscan-value-input {
+    background: #1b1b22; border: 1px solid #444; border-radius: 5px; color: #fff;
+    padding: 5px 8px; font-family: 'Consolas', monospace; font-size: 0.78rem; width: 110px;
+  }
+  .memscan-value-input:focus { outline: none; border-color: var(--accent); }
+  .memscan-value-input:disabled { opacity: .4; cursor: not-allowed; }
+  .memscan-regions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .memscan-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 12px; }
+  .memscan-summary {
+    font-family: 'Consolas', monospace; font-size: 0.72rem; color: #7fa8d6;
+    background: #1b1b22; border: 1px solid #333; border-radius: 6px; padding: 8px 10px; margin-bottom: 10px;
+  }
+  .memscan-summary .memscan-warn { color: #e8c15a; }
+  table.memscan-table { border-collapse: collapse; width: 100%; font-family: 'Consolas', monospace; font-size: 0.72rem; }
+  table.memscan-table th {
+    text-align: left; color: #888; font-weight: 600; font-size: 0.66rem; text-transform: uppercase;
+    letter-spacing: .04em; padding: 5px 8px; border-bottom: 1px solid #333; position: sticky; top: 0; background: #17171d;
+  }
+  table.memscan-table td { padding: 4px 8px; border-bottom: 1px solid #2a2a32; color: #ddd; vertical-align: middle; }
+  table.memscan-table tbody tr:hover td { background: #22222a; }
+  table.memscan-table td.memscan-addr { color: #7fa8d6; cursor: pointer; }
+  table.memscan-table td.memscan-addr:hover { text-decoration: underline; }
+  table.memscan-table td.memscan-region { color: #999; }
+  table.memscan-table td.memscan-cur { color: #fff; font-weight: 700; }
+  table.memscan-table td.memscan-cur.changed { color: #e8c15a; }
+  table.memscan-table td.memscan-prev { color: #777; }
+  .memscan-body { max-height: 360px; overflow-y: auto; border: 1px solid #2a2a32; border-radius: 6px; }
+  .memscan-empty { padding: 14px; text-align: center; color: #666; font-style: italic; font-size: 0.75rem; }
+  .memscan-freeze-cell { text-align: center; }
+  .memscan-freeze-cell input[type="checkbox"] { accent-color: #d9534f; cursor: pointer; }
+  .memscan-frozen-section { margin-top: 14px; }
+  .memscan-frozen-section h4 { margin: 0 0 6px; font-size: 0.78rem; color: #ccc; }
+  .memscan-frozen-row {
+    display: flex; align-items: center; gap: 8px; background: #1b1b22; border: 1px solid #333;
+    border-radius: 6px; padding: 6px 10px; margin-bottom: 5px; font-family: 'Consolas', monospace; font-size: 0.72rem;
+  }
+  .memscan-frozen-row .memscan-frozen-addr { color: #7fa8d6; min-width: 62px; }
+  .memscan-frozen-row .memscan-frozen-val { color: #d9534f; font-weight: 700; }
+  .memscan-frozen-row button { margin-left: auto; }
+
+  table.memscan-table td.memscan-name-cell { display: flex; align-items: center; gap: 4px; }
+  .memscan-name-input { width: 84px !important; padding: 4px 6px !important; }
+  .memscan-name-input.memscan-name-error { border-color: #d9534f !important; }
+  .memscan-save-btn { padding: 4px 7px !important; font-size: 0.8rem !important; line-height: 1; }
+
+  .memscan-saved-section { margin-bottom: 16px; }
+  .memscan-saved-section h4 { margin: 0 0 6px; font-size: 0.78rem; color: #ccc; }
+  .memscan-saved-row {
+    display: flex; align-items: center; gap: 8px; background: #1b1b22; border: 1px solid #333;
+    border-radius: 6px; padding: 6px 10px; margin-bottom: 5px; font-family: 'Consolas', monospace; font-size: 0.72rem;
+  }
+  .memscan-saved-row input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+  .memscan-saved-name {
+    flex: 1; color: #fff; font-weight: 700; font-family: system-ui, sans-serif; font-size: 0.76rem;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .memscan-saved-addr { color: #7fa8d6; }
+  .memscan-saved-size { color: #888; font-size: 0.64rem; }
+  .memscan-saved-value { width: 64px !important; }
+  .memscan-saved-row .ui-btn { flex-shrink: 0; }

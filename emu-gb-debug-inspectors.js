@@ -421,17 +421,95 @@ function buildRamEditNav(meta) {
   jump.className = 'ramedit-jump';
   jump.placeholder = 'go to 0x....';
   jump.spellcheck = false;
-  jump.addEventListener('keydown', e => {
-    if (e.key !== 'Enter') return;
-    const v = parseInt(jump.value.replace(/^0x/i, ''), 16);
+
+  // Parses jump.value as hex (bare or "0x"-prefixed) and pages to it if it's a valid address.
+  function commitRamEditJump() {
+    const v = parseInt(jump.value.trim().replace(/^0x/i, ''), 16);
     if (Number.isNaN(v)) return;
     const rel = Math.max(0, Math.min(meta.length - 1, v - meta.base));
     ramEditOffset = Math.max(0, Math.min(meta.length - RAMEDIT_PAGE, Math.floor(rel / 16) * 16));
     buildRamEditBody();
+  }
+  jump.addEventListener('keydown', e => { if (e.key === 'Enter') commitRamEditJump(); });
+  // Auto-jump as soon as a full 4-digit hex address has been typed, no Enter/GO needed.
+  jump.addEventListener('input', () => {
+    if (/^(0x)?[0-9a-fA-F]{4}$/i.test(jump.value.trim())) commitRamEditJump();
   });
 
-  row.appendChild(prev); row.appendChild(label); row.appendChild(next); row.appendChild(jump);
+  const go = document.createElement('button');
+  go.className = 'ui-btn small ghost';
+  go.textContent = 'GO';
+  go.addEventListener('click', commitRamEditJump);
+
+  row.appendChild(prev); row.appendChild(label); row.appendChild(next); row.appendChild(jump); row.appendChild(go);
   ramEditNavEl.appendChild(row);
+}
+
+/* ---- Hex-cell hover: after a short delay, previews the 16 bytes starting at that cell's
+   address as an 8x8 tile, using the same grayscale decode as the Tile Inspector/Sprite Sheet
+   (tileRowGrayShade, from emu-gb-debug-visualizers.js). Just a preview, not tied to any region -
+   only meaningful over VRAM tile data, but harmless (if uninformative) anywhere else. ---- */
+const RAMEDIT_TILE_PREVIEW_DELAY = 450; // ms hover delay before the tile preview appears
+
+const ramEditTilePreviewEl = document.createElement('div');
+ramEditTilePreviewEl.className = 'ramedit-tile-preview canvas-hover-tooltip';
+const ramEditTilePreviewCanvas = document.createElement('canvas');
+ramEditTilePreviewCanvas.width = 8;
+ramEditTilePreviewCanvas.height = 8;
+ramEditTilePreviewCanvas.style.width = '64px';
+ramEditTilePreviewCanvas.style.height = '64px';
+const ramEditTilePreviewCtx = ramEditTilePreviewCanvas.getContext('2d');
+const ramEditTilePreviewLabel = document.createElement('div');
+ramEditTilePreviewLabel.className = 'ramedit-tile-preview-label';
+ramEditTilePreviewEl.appendChild(ramEditTilePreviewCanvas);
+ramEditTilePreviewEl.appendChild(ramEditTilePreviewLabel);
+document.body.appendChild(ramEditTilePreviewEl);
+
+function drawRamEditTilePreview(addr) {
+  const instr = emulator.instrumentation;
+  const imgData = ramEditTilePreviewCtx.createImageData(8, 8);
+  for (let py = 0; py < 8; py++) {
+    const lo = instr.peekByte((addr + py * 2) & 0xFFFF);
+    const hi = instr.peekByte((addr + py * 2 + 1) & 0xFFFF);
+    for (let px = 0; px < 8; px++) {
+      const shade = tileRowGrayShade(lo, hi, px);
+      const idx = (py * 8 + px) * 4;
+      imgData.data[idx] = shade; imgData.data[idx + 1] = shade; imgData.data[idx + 2] = shade; imgData.data[idx + 3] = 255;
+    }
+  }
+  ramEditTilePreviewCtx.putImageData(imgData, 0, 0);
+  ramEditTilePreviewLabel.textContent = `as tile @ ${hex16(addr)}\u2013${hex16((addr + 15) & 0xFFFF)}`;
+}
+
+function positionRamEditTilePreview(clientX, clientY) {
+  ramEditTilePreviewEl.style.left = (clientX + 16) + 'px';
+  ramEditTilePreviewEl.style.top = (clientY + 16) + 'px';
+}
+
+function hideRamEditTilePreview() {
+  ramEditTilePreviewEl.style.display = 'none';
+}
+// Catch-all: a tab switch away from RAM Editor won't fire the hovered cell's mouseleave.
+document.addEventListener('mousedown', hideRamEditTilePreview);
+
+// Wires hover-and-hold-to-preview onto a single RAM Editor cell (hex input or read-only span).
+function attachRamEditTilePreview(el, addr) {
+  let showTimer = null;
+  el.addEventListener('mouseenter', (e) => {
+    const { clientX, clientY } = e;
+    showTimer = setTimeout(() => {
+      drawRamEditTilePreview(addr);
+      positionRamEditTilePreview(clientX, clientY);
+      ramEditTilePreviewEl.style.display = 'block';
+    }, RAMEDIT_TILE_PREVIEW_DELAY);
+  });
+  el.addEventListener('mousemove', (e) => {
+    if (ramEditTilePreviewEl.style.display === 'block') positionRamEditTilePreview(e.clientX, e.clientY);
+  });
+  el.addEventListener('mouseleave', () => {
+    clearTimeout(showTimer);
+    hideRamEditTilePreview();
+  });
 }
 
 // Applies a hex-cell edit through the real MMU write path.
@@ -451,10 +529,12 @@ function makeRamEditHexInput(addr) {
   input.addEventListener('input', () => { input.value = input.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 2).toUpperCase(); });
   input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
   input.addEventListener('blur', () => commitRamEditCell(input));
+  attachRamEditTilePreview(input, addr);
   return input;
 }
 
 function buildRamEditHexTable(meta) {
+  hideRamEditTilePreview(); // rebuilding removes whichever cell is being hovered
   ramEditBodyEl.innerHTML = '';
   const pageLen = Math.min(RAMEDIT_PAGE, meta.length - ramEditOffset);
   const table = document.createElement('table');
@@ -468,6 +548,8 @@ function buildRamEditHexTable(meta) {
     const tdAddr = document.createElement('td');
     tdAddr.className = 'ramedit-addr';
     tdAddr.textContent = hex16(rowAddr);
+    tdAddr.title = 'Click to copy address';
+    tdAddr.addEventListener('click', () => flashCopiedBadge(tdAddr, hex16(rowAddr)));
     tr.appendChild(tdAddr);
 
     const asciiAddrs = [];
@@ -481,6 +563,7 @@ function buildRamEditHexTable(meta) {
         const span = document.createElement('span');
         span.className = 'ramedit-cell-ro';
         span.dataset.addr = addr;
+        attachRamEditTilePreview(span, addr);
         td.appendChild(span);
       }
       tr.appendChild(td);
@@ -533,9 +616,11 @@ function buildRamEditIoTable(meta) {
 
     const head = document.createElement('div');
     head.className = 'ramedit-io-head';
-    head.innerHTML = `<span class="ramedit-io-addr">${hex16(addr)}</span>` +
+    head.innerHTML = `<span class="ramedit-io-addr" title="Click to copy address">${hex16(addr)}</span>` +
       `<span class="ramedit-io-name">${isIE ? 'IE' : (info ? info.name : '—')}</span>` +
       `<span class="ramedit-io-hex">${hex8(0)}</span>`;
+    const ioAddrEl = head.querySelector('.ramedit-io-addr');
+    ioAddrEl.addEventListener('click', () => flashCopiedBadge(ioAddrEl, hex16(addr)));
     row.appendChild(head);
 
     const descText = isIE ? 'Interrupt Enable - enables which sources can interrupt the CPU while IME is on.' : (info && info.desc);

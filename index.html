@@ -539,6 +539,12 @@
     color: #fff;
     font-weight: 600;
   }
+  .ramedit-tile-preview.canvas-hover-tooltip { white-space: normal; text-align: center; }
+  .ramedit-tile-preview canvas {
+    display: block; image-rendering: pixelated;
+    border: 1px solid #333; border-radius: 2px; margin: 0 auto 4px;
+  }
+  .ramedit-tile-preview-label { color: #999; font-size: 0.64rem; }
   .tilemap-scroll {
     max-width: 100%;
     border-radius: 4px;
@@ -1388,7 +1394,12 @@
     background: #16161c;
   }
   table.ramedit-hex-table td { padding: 2px; text-align: center; vertical-align: middle; }
-  table.ramedit-hex-table td.ramedit-addr { color: #7fa8d6; text-align: right; padding-right: 8px; white-space: nowrap; }
+  table.ramedit-hex-table td.ramedit-addr {
+    color: #7fa8d6; text-align: right; padding-right: 8px; white-space: nowrap;
+    cursor: pointer; border-radius: 3px; transition: background .15s, color .15s;
+  }
+  table.ramedit-hex-table td.ramedit-addr:hover { background: #2c2c36; color: #eee; }
+  table.ramedit-hex-table td.ramedit-addr.copied { background: var(--accent); color: #fff; font-weight: 600; }
   .ramedit-cell {
     width: 26px;
     background: #111;
@@ -1413,7 +1424,13 @@
   .ramedit-io-list { display: flex; flex-direction: column; gap: 6px; }
   .ramedit-io-row { background: #1b1b22; border: 1px solid #333; border-radius: 6px; padding: 7px 10px; }
   .ramedit-io-head { display: flex; align-items: center; gap: 8px; font-family: 'Consolas', monospace; }
-  .ramedit-io-addr { color: #7fa8d6; font-size: 0.72rem; }
+  .ramedit-io-addr {
+    color: #7fa8d6; font-size: 0.72rem;
+    cursor: pointer; border-radius: 3px; padding: 1px 4px; margin: -1px -4px;
+    transition: background .15s, color .15s;
+  }
+  .ramedit-io-addr:hover { background: #2c2c36; color: #eee; }
+  .ramedit-io-addr.copied { background: var(--accent); color: #fff; font-weight: 600; }
   .ramedit-io-name { color: #fff; font-weight: 700; font-size: 0.75rem; }
   .ramedit-io-hex { margin-left: auto; color: #e8c15a; font-size: 0.75rem; }
   .ramedit-io-desc { color: #888; font-size: 0.66rem; margin-top: 3px; line-height: 1.5; }

@@ -220,15 +220,127 @@ function createEmulator(EmulatorClass) {
 }
 let emulator = createEmulator(GBEmulator);
 
-/* ---- canvas rendering: the core only produces a framebuffer (emulator.getFramebuffer());
-   app.js turns that into pixels on screen. ---- */
-const ctx = canvas.getContext('2d');
-const imageData = ctx.createImageData(EMU_CORE_CONFIG.SCREEN.WIDTH, EMU_CORE_CONFIG.SCREEN.HEIGHT);
+/* ---- screen rendering: the core only produces a framebuffer (emulator.getFramebuffer());
+   app.js turns that into pixels on screen. Rendered via WebGL (upload framebuffer as a
+   texture each frame, draw it onto a fullscreen quad with a NEAREST-filtered sampler so
+   pixels stay crisp) with a plain canvas-2D fallback for browsers/contexts without WebGL.
+   The debug-only scanline marker is drawn on `screenOverlay`, a separate 2D canvas stacked
+   on top via CSS - simplest way to keep that per-pixel overlay without a second GL pass. ---- */
+const SCREEN_W = EMU_CORE_CONFIG.SCREEN.WIDTH;
+const SCREEN_H = EMU_CORE_CONFIG.SCREEN.HEIGHT;
+const screenOverlay = document.getElementById('screenOverlay');
+const overlayCtx = screenOverlay.getContext('2d');
 let markCurrentLine = false; // debug-only "scanline mark" navbar toggle; app-side, not a core concept
 
+// preserveDrawingBuffer: true so canvas.toBlob() (screenshots) and canvas.captureStream()
+// (clip recording) further down this file can still read back whatever was last drawn -
+// without it the browser is free to clear the GL backbuffer right after compositing.
+const gl = canvas.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: true })
+        || canvas.getContext('experimental-webgl', { alpha: false, antialias: false, preserveDrawingBuffer: true });
+
+let legacyCtx = null, legacyImageData = null; // 2D fallback, only populated if WebGL is unavailable
+let glProgram = null, glTexture = null;
+
+function compileShader(type, source) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    console.error('Screen shader compile error:', gl.getShaderInfoLog(shader));
+    gl.deleteShader(shader);
+    return null;
+  }
+  return shader;
+}
+
+function initWebGL() {
+  const vsSource = `
+    attribute vec2 aPosition;
+    attribute vec2 aTexCoord;
+    varying vec2 vTexCoord;
+    void main() {
+      gl_Position = vec4(aPosition, 0.0, 1.0);
+      vTexCoord = aTexCoord;
+    }
+  `;
+  // Flat texture2D lookup - the emulator core already does all the color/palette work, so
+  // this fragment shader has nothing to do but sample the framebuffer texture as-is.
+  const fsSource = `
+    precision mediump float;
+    varying vec2 vTexCoord;
+    uniform sampler2D uScreen;
+    void main() {
+      gl_FragColor = texture2D(uScreen, vTexCoord);
+    }
+  `;
+  const vs = compileShader(gl.VERTEX_SHADER, vsSource);
+  const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
+  glProgram = gl.createProgram();
+  gl.attachShader(glProgram, vs);
+  gl.attachShader(glProgram, fs);
+  gl.linkProgram(glProgram);
+  if (!gl.getProgramParameter(glProgram, gl.LINK_STATUS)) {
+    console.error('Screen program link error:', gl.getProgramInfoLog(glProgram));
+    glProgram = null;
+    return false;
+  }
+  gl.useProgram(glProgram);
+
+  // Fullscreen quad as a triangle strip: xy clip-space position + uv texture coord per vertex.
+  // V is flipped (1 at the top, 0 at the bottom) because the framebuffer's row 0 is the GB
+  // screen's top row, while WebGL addresses textures bottom-up.
+  const quadVerts = new Float32Array([
+    /* x,  y,   u, v */
+    -1, -1,   0, 1,
+     1, -1,   1, 1,
+    -1,  1,   0, 0,
+     1,  1,   1, 0,
+  ]);
+  const quadBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+
+  const positionLoc = gl.getAttribLocation(glProgram, 'aPosition');
+  const texCoordLoc = gl.getAttribLocation(glProgram, 'aTexCoord');
+  gl.enableVertexAttribArray(positionLoc);
+  gl.enableVertexAttribArray(texCoordLoc);
+  gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 16, 0);
+  gl.vertexAttribPointer(texCoordLoc, 2, gl.FLOAT, false, 16, 8);
+
+  glTexture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, glTexture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); // NEAREST keeps pixels crisp,
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); // matching the CSS pixelated upscale
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, SCREEN_W, SCREEN_H, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+    new Uint8Array(SCREEN_W * SCREEN_H * 4));
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0, 0, 0, 1);
+  return true;
+}
+
+if (gl) {
+  initWebGL();
+} else {
+  console.warn('WebGL is unavailable in this browser; falling back to canvas-2D screen rendering.');
+  legacyCtx = canvas.getContext('2d');
+  legacyImageData = legacyCtx.createImageData(SCREEN_W, SCREEN_H);
+}
+
 function draw() {
-  imageData.data.set(emulator.getFramebuffer());
-  ctx.putImageData(imageData, 0, 0);
+  const framebuffer = emulator.getFramebuffer();
+  if (glProgram) {
+    gl.bindTexture(gl.TEXTURE_2D, glTexture);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, SCREEN_W, SCREEN_H, gl.RGBA, gl.UNSIGNED_BYTE, framebuffer);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  } else {
+    legacyImageData.data.set(framebuffer);
+    legacyCtx.putImageData(legacyImageData, 0, 0);
+  }
+  overlayCtx.clearRect(0, 0, SCREEN_W, SCREEN_H); // clear every frame; re-drawn below only if the toggle is on
   if (markCurrentLine) drawCurrentLineMarker();
 }
 
@@ -236,14 +348,14 @@ function draw() {
 // position is visible on the actual screen output too, not just in a debug panel.
 function drawCurrentLineMarker() {
   const ly = emulator.instrumentation.readPPUState().ly;
-  if (ly > EMU_CORE_CONFIG.SCREEN.HEIGHT - 1) return; // VBlank lines are off the visible screen
-  ctx.save();
-  ctx.fillStyle = 'rgba(255, 221, 0, 0.55)';
-  ctx.fillRect(0, ly, EMU_CORE_CONFIG.SCREEN.WIDTH, 1);
-  ctx.strokeStyle = 'rgba(255, 221, 0, 0.9)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(0, Math.max(0, ly - 0.5), EMU_CORE_CONFIG.SCREEN.WIDTH, 1);
-  ctx.restore();
+  if (ly > SCREEN_H - 1) return; // VBlank lines are off the visible screen
+  overlayCtx.save();
+  overlayCtx.fillStyle = 'rgba(255, 221, 0, 0.55)';
+  overlayCtx.fillRect(0, ly, SCREEN_W, 1);
+  overlayCtx.strokeStyle = 'rgba(255, 221, 0, 0.9)';
+  overlayCtx.lineWidth = 1;
+  overlayCtx.strokeRect(0, Math.max(0, ly - 0.5), SCREEN_W, 1);
+  overlayCtx.restore();
 }
 
 /* ---- audio engine: mirrors the canvas rendering above. The core APU only produces mixed

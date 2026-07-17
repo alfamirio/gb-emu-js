@@ -121,6 +121,55 @@
   body.hide-visual-tools .visual-tools-sidebar,
   body.hide-frame-activity .frame-activity-panel { display: none; }
 
+  /* Navbar dropdown menus: group the toggles from one nav-divider section behind a single
+     trigger instead of always showing every switch inline (see wireNavMenu() in
+     emu-gb-debug-core.js). Hover-opens on pointer devices; click toggles it open for
+     touch/keyboard and keeps it open while flipping switches inside. The panel is
+     position:fixed (not absolute) because .navbar has overflow-x:auto, which per the CSS
+     overflow spec forces overflow-y to a non-visible value too, so an absolutely-positioned
+     panel would get clipped by the navbar's own bounds - JS positions it via
+     getBoundingClientRect() instead. */
+  .nav-menu { position: relative; }
+  .nav-menu-trigger {
+    display: flex; align-items: center; gap: 6px;
+    background: transparent; border: none; color: #999; cursor: pointer;
+    font: inherit; font-size: 0.82rem; padding: 6px 10px; border-radius: 6px;
+    white-space: nowrap; transition: background .15s, color .15s;
+  }
+  .nav-menu-trigger:hover,
+  .nav-menu.open .nav-menu-trigger { background: #2a2a35; color: #eee; }
+  .nav-menu-badge {
+    width: 6px; height: 6px; border-radius: 50%; background: transparent; flex-shrink: 0;
+    transition: background .15s;
+  }
+  .nav-menu-badge.on { background: var(--accent); }
+  .nav-menu-chevron { width: 9px; height: 9px; flex-shrink: 0; transition: transform .15s; }
+  .nav-menu.open .nav-menu-chevron { transform: rotate(180deg); }
+
+  .nav-menu-panel {
+    position: fixed;
+    padding-top: 8px; /* bridges the hover gap between trigger and panel */
+    z-index: 300;
+    opacity: 0; visibility: hidden; transform: translateY(-4px);
+    transition: opacity .12s, transform .12s, visibility .12s;
+    pointer-events: none;
+  }
+  .nav-menu:hover .nav-menu-panel,
+  .nav-menu.open .nav-menu-panel {
+    opacity: 1; visibility: visible; transform: translateY(0); pointer-events: auto;
+  }
+  .nav-menu-panel-inner {
+    display: flex; flex-direction: column; gap: 12px;
+    min-width: 170px;
+    background: #22222c; border: 1px solid #3a3a45; border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5);
+    padding: 12px 14px;
+  }
+  .nav-menu-panel .mode-toggle,
+  .nav-menu-panel .model-toggle { font-size: 0.82rem; }
+  .nav-menu-panel .panel-vis-toggles { flex-direction: column; align-items: flex-start; gap: 12px; }
+
+
   .page-content {
     display: flex;
     flex-direction: column;

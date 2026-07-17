@@ -40,63 +40,97 @@
     </label>
     <span class="mode-label" id="stepDebugLabelOn">Step</span>
   </div>
-  <div class="mode-toggle scanline-mark-toggle">
-    <label class="switch">
-      <input type="checkbox" id="scanlineMarkToggle">
-      <span class="toggle-track"><span class="toggle-thumb"></span></span>
-    </label>
-    <span class="mode-label" id="scanlineMarkLabelOn">Line</span>
-  </div>
-  <div class="mode-toggle layer-tint-toggle">
-    <label class="switch">
-      <input type="checkbox" id="layerTintToggle">
-      <span class="toggle-track"><span class="toggle-thumb"></span></span>
-    </label>
-    <span class="mode-label" id="layerTintLabelOn">Layers</span>
+
+  <div class="nav-menu" data-menu="view">
+    <button class="nav-menu-trigger" type="button" aria-haspopup="true" aria-expanded="false">
+      <span class="nav-menu-badge"></span>
+      <span>View</span>
+      <svg class="nav-menu-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+    </button>
+    <div class="nav-menu-panel">
+      <div class="nav-menu-panel-inner">
+        <div class="mode-toggle scanline-mark-toggle">
+          <label class="switch">
+            <input type="checkbox" id="scanlineMarkToggle">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+          <span class="mode-label" id="scanlineMarkLabelOn">Line</span>
+        </div>
+        <div class="mode-toggle layer-tint-toggle">
+          <label class="switch">
+            <input type="checkbox" id="layerTintToggle">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+          <span class="mode-label" id="layerTintLabelOn">Layers</span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <span class="nav-divider"></span>
 
-  <div class="mode-toggle dot-matrix-toggle">
-    <label class="switch">
-      <input type="checkbox" id="dotMatrixToggle">
-      <span class="toggle-track"><span class="toggle-thumb"></span></span>
-    </label>
-    <span class="mode-label" id="dotMatrixLabelOn">Shader</span>
-  </div>
+  <div class="nav-menu" data-menu="display">
+    <button class="nav-menu-trigger" type="button" aria-haspopup="true" aria-expanded="false">
+      <span class="nav-menu-badge"></span>
+      <span>Display</span>
+      <svg class="nav-menu-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+    </button>
+    <div class="nav-menu-panel">
+      <div class="nav-menu-panel-inner">
+        <div class="mode-toggle dot-matrix-toggle">
+          <label class="switch">
+            <input type="checkbox" id="dotMatrixToggle">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+          <span class="mode-label" id="dotMatrixLabelOn">Shader</span>
+        </div>
 
-  <div class="model-toggle">
-    <span class="model-label" id="modelLabelGB">GB</span>
-    <label class="switch">
-      <input type="checkbox" id="modelToggle" checked>
-      <span class="toggle-track"><span class="toggle-thumb"></span></span>
-    </label>
-    <span class="model-label active" id="modelLabelGBP">GBP</span>
+        <div class="model-toggle">
+          <span class="model-label" id="modelLabelGB">GB</span>
+          <label class="switch">
+            <input type="checkbox" id="modelToggle" checked>
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+          <span class="model-label active" id="modelLabelGBP">GBP</span>
+        </div>
+      </div>
+    </div>
   </div>
 
  <span class="nav-divider"></span>
 
-  <div class="panel-vis-toggles">
-    <div class="mode-toggle panel-vis-toggle" title="Show/hide the Debug Tools panel">
-      <label class="switch">
-        <input type="checkbox" id="debugToolsVisToggle" checked>
-        <span class="toggle-track"><span class="toggle-thumb"></span></span>
-      </label>
-      <span class="mode-label active" id="debugToolsVisLabel">Debug</span>
-    </div>
-    <div class="mode-toggle panel-vis-toggle" title="Show/hide the Visual Tools panel">
-      <label class="switch">
-        <input type="checkbox" id="visualToolsVisToggle" checked>
-        <span class="toggle-track"><span class="toggle-thumb"></span></span>
-      </label>
-      <span class="mode-label active" id="visualToolsVisLabel">Visual</span>
-    </div>
-    <div class="mode-toggle panel-vis-toggle" title="Show/hide the Frame Activity panel">
-      <label class="switch">
-        <input type="checkbox" id="frameActivityVisToggle">
-        <span class="toggle-track"><span class="toggle-thumb"></span></span>
-      </label>
-      <span class="mode-label" id="frameActivityVisLabel">Frame</span>
+  <div class="nav-menu" data-menu="panels">
+    <button class="nav-menu-trigger" type="button" aria-haspopup="true" aria-expanded="false">
+      <span class="nav-menu-badge"></span>
+      <span>Panels</span>
+      <svg class="nav-menu-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+    </button>
+    <div class="nav-menu-panel">
+      <div class="nav-menu-panel-inner">
+        <div class="panel-vis-toggles">
+          <div class="mode-toggle panel-vis-toggle" title="Show/hide the Debug Tools panel">
+            <label class="switch">
+              <input type="checkbox" id="debugToolsVisToggle" checked>
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+            <span class="mode-label active" id="debugToolsVisLabel">Debug</span>
+          </div>
+          <div class="mode-toggle panel-vis-toggle" title="Show/hide the Visual Tools panel">
+            <label class="switch">
+              <input type="checkbox" id="visualToolsVisToggle" checked>
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+            <span class="mode-label active" id="visualToolsVisLabel">Visual</span>
+          </div>
+          <div class="mode-toggle panel-vis-toggle" title="Show/hide the Frame Activity panel">
+            <label class="switch">
+              <input type="checkbox" id="frameActivityVisToggle">
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+            <span class="mode-label" id="frameActivityVisLabel">Frame</span>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 

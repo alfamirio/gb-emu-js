@@ -331,6 +331,66 @@ const applyFrameActivityVisibility = makePanelVisToggle(
   () => { drawFrameActivity(); drawFrameAnatomy(); drawLineAnatomy(); }
 );
 
+/* ---- navbar dropdown menus: each .nav-menu groups the toggles from one nav-divider section
+   behind a single trigger (see the CSS comment above .nav-menu in styles.css for why the
+   panel is positioned via JS instead of plain CSS). Wired last in this file so every
+   toggle's saved/default .checked state above has already been restored before this
+   captures each menu's "baseline" for its badge dot. ---- */
+function positionNavMenuPanel(menu) {
+  const trigger = menu.querySelector('.nav-menu-trigger');
+  const panel = menu.querySelector('.nav-menu-panel');
+  const r = trigger.getBoundingClientRect();
+  panel.style.left = Math.round(r.left) + 'px';
+  panel.style.top = Math.round(r.bottom) + 'px';
+}
+
+function closeAllNavMenus() {
+  document.querySelectorAll('.nav-menu.open').forEach((m) => {
+    m.classList.remove('open');
+    m.querySelector('.nav-menu-trigger').setAttribute('aria-expanded', 'false');
+  });
+}
+
+function wireNavMenu(menu) {
+  const trigger = menu.querySelector('.nav-menu-trigger');
+  const panel = menu.querySelector('.nav-menu-panel');
+  const badge = menu.querySelector('.nav-menu-badge');
+  const checkboxes = [...panel.querySelectorAll('input[type="checkbox"]')];
+  const initialChecked = checkboxes.map((cb) => cb.checked); // this menu's baseline, for the badge dot
+
+  // Badge dot lights up when anything inside differs from the state it had on page load, so
+  // collapsing a group behind a menu doesn't hide the fact that something's been changed.
+  function updateBadge() {
+    badge.classList.toggle('on', checkboxes.some((cb, i) => cb.checked !== initialChecked[i]));
+  }
+  checkboxes.forEach((cb) => cb.addEventListener('change', updateBadge));
+  updateBadge();
+
+  // Hover-opens via CSS (:hover); this handles click-to-toggle for touch/keyboard use, and
+  // keeps the menu open while switches inside are flipped (panel clicks don't bubble to the
+  // document-level "click outside closes everything" listener below).
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const willOpen = !menu.classList.contains('open');
+    closeAllNavMenus();
+    if (willOpen) {
+      positionNavMenuPanel(menu);
+      menu.classList.add('open');
+    }
+    trigger.setAttribute('aria-expanded', String(willOpen));
+  });
+  trigger.addEventListener('pointerenter', () => positionNavMenuPanel(menu)); // reposition before CSS hover reveals it
+  panel.addEventListener('click', (e) => e.stopPropagation());
+}
+
+document.querySelectorAll('.nav-menu').forEach(wireNavMenu);
+document.addEventListener('click', closeAllNavMenus);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAllNavMenus(); });
+// A fixed-position panel doesn't track the navbar's own horizontal scroll, so just close
+// whatever's open rather than let it drift away from its trigger.
+document.querySelector('.navbar').addEventListener('scroll', closeAllNavMenus);
+window.addEventListener('resize', closeAllNavMenus);
+
 
 /* ---- orchestration: redraw whichever tab is currently active in each sidebar ---- */
 function refreshDebugTools() {

@@ -185,7 +185,7 @@ function buildBankingPanel() {
   const ramBankTotal = getRamBankTotal(mbc);
 
   bankingDesc.innerHTML = romBytes === 0
-    ? 'Load a ROM to see its mapper and which ROM/RAM banks are currently switched in.'
+    ? 'Load a ROM to see its mapper and which banks are currently switched in.'
     : `Mapper: <b>${getMBCName(rom)}</b> &middot; ${romBankTotal} ROM bank(s) of 16KB` +
       (mbc.mbcType === 2 ? ' &middot; 512×4-bit built-in RAM (no banking)'
         : ramBankTotal ? ` &middot; up to ${ramBankTotal} RAM bank(s) of 8KB` : ' &middot; no external RAM') +
@@ -725,7 +725,7 @@ const memScanSavedListEl = document.getElementById('memScanSavedList');
 
 // Regions worth scanning for live game state, and whether each is checked by default.
 // ROM/banking/IO/IE are left out — constant, side-effecting, or better read bit-by-bit.
-const MEMSCAN_REGION_DEFAULTS = { WRAM: true, HRAM: true, OAM: false, ERAM: false, VRAM: false };
+const MEMSCAN_REGION_DEFAULTS = { WRAM: true, HRAM: true, OAM: false, ERAM: true, VRAM: false };
 const MEMSCAN_REGIONS = Object.keys(MEMSCAN_REGION_DEFAULTS).map(key => ({
   key, base: MEMORY_REGIONS[key].base, length: MEMORY_REGIONS[key].length, defaultOn: MEMSCAN_REGION_DEFAULTS[key],
 }));
@@ -775,6 +775,12 @@ function getCheatsForCurrentRom() {
   return loadCheatStore()[key]?.cheats || [];
 }
 
+// Looks up a saved cheat's name for display elsewhere (e.g. the Frozen addresses list) -
+// '' if this addr+size was frozen directly from the scan table without ever being named/saved.
+function findCheatNameForAddr(addr, size) {
+  return getCheatsForCurrentRom().find(c => c.addr === addr && c.size === size)?.name || '';
+}
+
 // Adds a new named cheat, or overwrites an existing one already saved at the same address+size.
 function saveCheatForCurrentRom(name, addr, size) {
   const key = currentRomCrc32();
@@ -794,6 +800,17 @@ function deleteCheatForCurrentRom(addr, size) {
   const store = loadCheatStore();
   if (!store[key]) return;
   store[key].cheats = store[key].cheats.filter(c => !(c.addr === addr && c.size === size));
+  saveCheatStore(store);
+}
+
+// Renames an already-saved cheat in place (same addr+size, just the label changes).
+function renameCheatForCurrentRom(addr, size, newName) {
+  const key = currentRomCrc32();
+  if (!key) return;
+  const store = loadCheatStore();
+  const entry = store[key]?.cheats.find(c => c.addr === addr && c.size === size);
+  if (!entry) return;
+  entry.name = newName;
   saveCheatStore(store);
 }
 
@@ -894,7 +911,9 @@ function drawMemScanFrozenList() {
   memScanFrozen.forEach((entry, addr) => {
     const row = document.createElement('div');
     row.className = 'memscan-frozen-row';
+    const name = findCheatNameForAddr(addr, entry.size);
     row.innerHTML = `
+      ${name ? `<span class="memscan-frozen-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>` : ''}
       <span class="memscan-frozen-addr">${hex16(addr)}</span>
       <input type="text" class="memscan-value-input" style="width:70px" value="${entry.value}">
       <button class="ui-btn small ghost" type="button">Unfreeze</button>
@@ -932,7 +951,10 @@ function drawSavedCheats() {
     row.className = 'memscan-saved-row';
     row.innerHTML = `
       <input type="checkbox" class="memscan-saved-apply" ${applied ? 'checked' : ''} title="Apply (freeze this address)">
-      <span class="memscan-saved-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+      <span class="memscan-saved-name-wrap">
+        <input type="text" class="memscan-saved-name" value="${escapeHtml(name)}" title="Click to rename">
+        <span class="memscan-saved-name-pencil" aria-hidden="true">✎</span>
+      </span>
       <span class="memscan-saved-addr">${hex16(addr)}</span>
       <span class="memscan-saved-size">${size === 1 ? '1B' : '2B'}</span>
       <input type="text" class="memscan-value-input memscan-saved-value" value="${curVal}" ${applied ? '' : 'disabled'}>
@@ -942,6 +964,15 @@ function drawSavedCheats() {
     row.querySelector('.memscan-saved-apply').addEventListener('change', e => {
       toggleMemScanFreeze(addr, size, e.target.checked);
     });
+    const nameInput = row.querySelector('.memscan-saved-name');
+    nameInput.addEventListener('change', e => {
+      const newName = e.target.value.trim();
+      if (!newName) { e.target.value = name; return; } // reject empty, revert to the saved name
+      renameCheatForCurrentRom(addr, size, newName);
+      nameInput.title = 'Click to rename';
+      if (memScanFrozen.has(addr)) drawMemScanFrozenList(); // refresh its read-only name label there too
+    });
+    nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') nameInput.blur(); });
     row.querySelector('.memscan-saved-value').addEventListener('change', e => {
       const v = parseMemScanValue(e.target.value, size);
       const frozen = memScanFrozen.get(addr);
@@ -1148,6 +1179,109 @@ drawSavedCheats();
 window.addEventListener('resize', () => {
   if (debugToolsContainer.querySelector('.tool-tab.active').dataset.tool === 'trace') syncTraceListHeight();
 });
+
+/* ---- Watchpoints: breaks emulation when a watched address's value changes, optionally only
+   when the new value also satisfies a comparison. List/add/remove/toggle logic lives here;
+   the actual break-on-write check runs in Instrumentation.checkMemWrite() (see
+   emu-gb-stats-instrumentation.js), hooked from MMU.write8() (see emu-gb-core.js) - this file
+   only needs to read state for display and call the instrumentation methods that mutate it. ---- */
+
+const memWatchAddrEl = document.getElementById('memWatchAddr');
+const memWatchSizeEl = document.getElementById('memWatchSize');
+const memWatchOpEl = document.getElementById('memWatchOp');
+const memWatchValueEl = document.getElementById('memWatchValue');
+const memWatchValueWrapEl = document.getElementById('memWatchValueWrap');
+const memWatchAddBtn = document.getElementById('memWatchAddBtn');
+const memWatchErrorEl = document.getElementById('memWatchError');
+const memWatchListEl = document.getElementById('memWatchList');
+
+memWatchOpEl.addEventListener('change', () => {
+  const needsValue = memWatchOpEl.value !== '';
+  memWatchValueEl.disabled = !needsValue;
+  memWatchValueWrapEl.style.opacity = needsValue ? '1' : '.4';
+});
+
+function showMemWatchError(msg) {
+  memWatchErrorEl.textContent = msg;
+  memWatchErrorEl.style.display = '';
+}
+
+memWatchAddBtn.addEventListener('click', () => {
+  memWatchErrorEl.style.display = 'none';
+  const addr = parseHexInput(memWatchAddrEl.value, 0xFFFF);
+  if (addr === null) { showMemWatchError('Enter a valid address (e.g. 0xC0A0 or C0A0).'); return; }
+  const size = parseInt(memWatchSizeEl.value, 10);
+  const op = memWatchOpEl.value || null;
+  let value = null;
+  if (op) {
+    value = parseMemScanValue(memWatchValueEl.value, size); // reused from the Mem Scanner: accepts decimal or 0x hex
+    if (value === null) { showMemWatchError('Enter a valid comparison value (decimal or 0x hex) for this size.'); return; }
+  }
+  emulator.instrumentation.addMemWatch({ addr, size, op, value });
+  memWatchAddrEl.value = '';
+  memWatchValueEl.value = '';
+  buildMemWatchList();
+});
+
+// Reads the same way the RAM/inspector panels do (peek8, no side effects) - matches
+// Instrumentation._readWatchValue() so the displayed "now" value matches what the
+// watchpoint itself is comparing against.
+function memWatchReadCurrent(addr, size) {
+  const lo = emulator.instrumentation.peekByte(addr);
+  return size === 2 ? (lo | (emulator.instrumentation.peekByte((addr + 1) & 0xFFFF) << 8)) : lo;
+}
+
+// Rebuilds the row list from scratch - called on add/remove/toggle, not on every redraw
+// (drawMemWatch() below handles the parts that change every frame: current value, hit count).
+function buildMemWatchList() {
+  memWatchListEl.innerHTML = '';
+  const list = [...emulator.instrumentation.memWatchpoints.values()].sort((a, b) => a.id - b.id);
+  if (list.length === 0) {
+    memWatchListEl.innerHTML = '<div class="memwatch-empty">No watchpoints set yet — add one above.</div>';
+    return;
+  }
+  list.forEach(wp => {
+    const fmt = wp.size === 2 ? hex16 : hex8;
+    const condText = wp.op ? `on change, ${wp.op} ${fmt(wp.value)}` : 'on any change';
+    const row = document.createElement('div');
+    row.className = 'memwatch-row' + (wp.enabled ? '' : ' disabled');
+    row.dataset.id = wp.id;
+    row.innerHTML = `
+      <input type="checkbox" ${wp.enabled ? 'checked' : ''}>
+      <span class="memwatch-addr">${hex16(wp.addr)}</span>
+      <span class="memwatch-size">${wp.size === 2 ? '2 bytes' : '1 byte'}</span>
+      <span class="memwatch-cond">${condText} — now <span class="memwatch-cur"></span></span>
+      <span class="memwatch-hits"></span>
+      <button class="ui-btn small ghost" type="button">Remove</button>
+    `;
+    row.querySelector('input[type="checkbox"]').addEventListener('change', (e) => {
+      emulator.instrumentation.setMemWatchEnabled(wp.id, e.target.checked);
+      buildMemWatchList();
+    });
+    row.querySelector('button').addEventListener('click', () => {
+      emulator.instrumentation.removeMemWatch(wp.id);
+      buildMemWatchList();
+    });
+    memWatchListEl.appendChild(row);
+  });
+  drawMemWatch();
+}
+
+// Live refresh: updates only the current-value and hit-count text of existing rows, so
+// toggling a checkbox or typing isn't disrupted by a full rebuild every redraw cycle.
+function drawMemWatch() {
+  memWatchListEl.querySelectorAll('.memwatch-row').forEach(row => {
+    const wp = emulator.instrumentation.memWatchpoints.get(parseInt(row.dataset.id, 10));
+    if (!wp) return;
+    const fmt = wp.size === 2 ? hex16 : hex8;
+    row.querySelector('.memwatch-cur').textContent = fmt(memWatchReadCurrent(wp.addr, wp.size));
+    const hitsEl = row.querySelector('.memwatch-hits');
+    hitsEl.textContent = `${wp.hitCount} hit${wp.hitCount === 1 ? '' : 's'}`;
+    hitsEl.classList.toggle('hit', wp.hitCount > 0);
+  });
+}
+
+buildMemWatchList();
 
 /* ---- 5. Live disassembler: decodes the bytes around PC into mnemonics ---- */
 /* ---- Frame Activity: emulated-hardware timing per frame, not JS/host timing. Left canvas

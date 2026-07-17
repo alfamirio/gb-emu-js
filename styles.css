@@ -1531,6 +1531,10 @@
     border-radius: 6px; padding: 6px 10px; margin-bottom: 5px; font-family: 'Consolas', monospace; font-size: 0.72rem;
   }
   .memscan-frozen-row .memscan-frozen-addr { color: #7fa8d6; min-width: 62px; }
+  .memscan-frozen-row .memscan-frozen-name {
+    color: #fff; font-weight: 700; font-family: system-ui, sans-serif; font-size: 0.72rem;
+    max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .memscan-frozen-row .memscan-frozen-val { color: #d9534f; font-weight: 700; }
   .memscan-frozen-row button { margin-left: auto; }
 
@@ -1546,11 +1550,53 @@
     border-radius: 6px; padding: 6px 10px; margin-bottom: 5px; font-family: 'Consolas', monospace; font-size: 0.72rem;
   }
   .memscan-saved-row input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+  .memscan-saved-name-wrap { position: relative; flex: 1; display: flex; align-items: center; min-width: 0; }
   .memscan-saved-name {
-    flex: 1; color: #fff; font-weight: 700; font-family: system-ui, sans-serif; font-size: 0.76rem;
+    flex: 1; min-width: 0; color: #fff; font-weight: 700; font-family: system-ui, sans-serif; font-size: 0.76rem;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    background: transparent; border: 1px solid transparent; border-bottom: 1px dashed #555;
+    border-radius: 4px; padding: 4px 20px 4px 6px; cursor: text;
   }
+  .memscan-saved-name:hover { border-color: #444; border-bottom-color: #888; }
+  .memscan-saved-name:focus { outline: none; border-color: var(--accent); border-bottom-style: solid; background: #1b1b22; }
+  .memscan-saved-name-pencil {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    color: #666; font-size: 0.7rem; pointer-events: none; transition: color .15s;
+  }
+  .memscan-saved-name-wrap:hover .memscan-saved-name-pencil,
+  .memscan-saved-name:focus ~ .memscan-saved-name-pencil { color: var(--accent); }
   .memscan-saved-addr { color: #7fa8d6; }
   .memscan-saved-size { color: #888; font-size: 0.64rem; }
   .memscan-saved-value { width: 64px !important; }
   .memscan-saved-row .ui-btn { flex-shrink: 0; }
+
+  /* ---- Watchpoints (memwatch) ---- */
+  .memwatch-add-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .memwatch-add-row label {
+    font-size: 0.72rem; color: #999; display: flex; align-items: center; gap: 5px;
+    white-space: nowrap; transition: opacity .15s;
+  }
+  .memwatch-input {
+    background: #1b1b22; border: 1px solid #444; border-radius: 5px; color: #fff;
+    padding: 5px 8px; font-family: 'Consolas', monospace; font-size: 0.78rem; width: 90px;
+  }
+  .memwatch-input:focus { outline: none; border-color: var(--accent); }
+  .memwatch-input:disabled { opacity: .4; cursor: not-allowed; }
+  .memwatch-error {
+    color: #d9534f; font-size: 0.72rem; background: #1b1b22; border: 1px solid #d9534f33;
+    border-radius: 6px; padding: 6px 10px; margin-bottom: 10px;
+  }
+  .memwatch-list { display: flex; flex-direction: column; gap: 5px; }
+  .memwatch-empty { padding: 14px; text-align: center; color: #666; font-style: italic; font-size: 0.75rem; }
+  .memwatch-row {
+    display: flex; align-items: center; gap: 10px; background: #1b1b22; border: 1px solid #333;
+    border-radius: 6px; padding: 7px 10px; font-family: 'Consolas', monospace; font-size: 0.74rem;
+  }
+  .memwatch-row.disabled { opacity: .45; }
+  .memwatch-row input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+  .memwatch-row .memwatch-addr { color: #7fa8d6; min-width: 64px; }
+  .memwatch-row .memwatch-size { color: #888; font-size: 0.64rem; min-width: 60px; }
+  .memwatch-row .memwatch-cond { color: #ccc; flex: 1; }
+  .memwatch-row .memwatch-hits { color: #999; font-size: 0.68rem; min-width: 58px; text-align: right; }
+  .memwatch-row .memwatch-hits.hit { color: #e8c15a; font-weight: 700; }
+  .memwatch-row button { flex-shrink: 0; }

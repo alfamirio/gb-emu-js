@@ -454,6 +454,13 @@ class Instrumentation {
     this.breakHitReason = null;
     this._bpSkipFirstMatch = false; // don't re-trigger a PC breakpoint we're already sitting on
     this.onBreakpointHit = null;
+
+    // Memory watchpoints: break when a watched address's value *changes* (not on every write -
+    // see the memwatch panel description). Keyed by id so the UI can list/toggle/remove them
+    // independently of each other, unlike the single-target PC/opcode breakpoints above.
+    this.memWatchpoints = new Map(); // id -> { id, addr, size, op, value, enabled, hitCount, lastValue }
+    this._memWatchNextId = 1;
+    this._memWatchIndex = new Map(); // addr -> [ids] - which watchpoints a write to this byte should re-check
   }
 
   pushTrace(addr, b0, b1, b2) {
@@ -515,19 +522,129 @@ class Instrumentation {
     this._bpSkipFirstMatch = false;
   }
 
-  // Pauses emulation and records why. `kind` is 'pc' (value = PC reached) or 'opcode'
-  // (value = opcode byte, extra = the PC it was fetched from).
+  // Pauses emulation and records why. `kind` is 'pc' (value = PC reached), 'opcode'
+  // (value = opcode byte, extra = the PC it was fetched from), or 'mem' (value = the
+  // watchpoint object, extra = { oldVal, newVal }).
   triggerBreakpoint(kind, value, extra) {
     const e = this.emulator;
     e._setRunning(false);
     if (e._rafId) e.scheduler?.cancelFrame(e._rafId);
     e.onAudioSuspend?.();
-    const reason = kind === 'pc'
-      ? `PC reached ${hex16(value)}`
-      : `opcode ${hex8(value)} executed at ${hex16(extra)}`;
+    let reason;
+    if (kind === 'pc') reason = `PC reached ${hex16(value)}`;
+    else if (kind === 'opcode') reason = `opcode ${hex8(value)} executed at ${hex16(extra)}`;
+    else /* 'mem' */ {
+      const fmt = value.size === 2 ? hex16 : hex8;
+      reason = `[${hex16(value.addr)}] changed ${fmt(extra.oldVal)} → ${fmt(extra.newVal)}`;
+    }
     this.breakHitReason = reason;
     this._bpSkipFirstMatch = false;
     if (this.onBreakpointHit) this.onBreakpointHit(reason);
+  }
+
+  /* ---- memory watchpoints: break when a watched address's value changes, optionally only
+     when the new value also satisfies a comparison (==, !=, >, <, >=, <=) against a target.
+     Checked from MMU.write8() (see emu-gb-core.js) - only on writes, so a byte that's
+     rewritten with its own value doesn't trigger, and only for addresses actually indexed
+     below, so this costs nothing when no watchpoints are set. Known limitation: OAM DMA
+     writes bypass write8 (like real hardware, it's a special-cased bulk copy), so a
+     watchpoint on an OAM address won't fire during a DMA transfer, only on direct CPU writes. ---- */
+
+  // Current value at a watchpoint's address, read the same way the RAM/inspector panels do
+  // (peek8, no side effects) - used both to seed lastValue and to re-check after a write.
+  _readWatchValue(addr, size) {
+    const lo = this.emulator.mmu.peek8(addr);
+    return size === 2 ? (lo | (this.emulator.mmu.peek8((addr + 1) & 0xFFFF) << 8)) : lo;
+  }
+
+  // Rebuilds the addr -> [ids] index from scratch; called after any add/remove/toggle. The
+  // list is always small (a handful of watchpoints at most), so this is cheap relative to
+  // how rarely it runs.
+  _reindexMemWatch() {
+    this._memWatchIndex = new Map();
+    for (const wp of this.memWatchpoints.values()) {
+      if (!wp.enabled) continue;
+      const addLo = () => {
+        if (!this._memWatchIndex.has(wp.addr)) this._memWatchIndex.set(wp.addr, []);
+        this._memWatchIndex.get(wp.addr).push(wp.id);
+      };
+      addLo();
+      if (wp.size === 2) {
+        const hi = (wp.addr + 1) & 0xFFFF;
+        if (!this._memWatchIndex.has(hi)) this._memWatchIndex.set(hi, []);
+        this._memWatchIndex.get(hi).push(wp.id);
+      }
+    }
+  }
+
+  // `op`/`value` may be null (any change breaks, no comparison needed).
+  addMemWatch({ addr, size, op = null, value = null }) {
+    const wp = {
+      id: this._memWatchNextId++, addr: addr & 0xFFFF, size: size === 2 ? 2 : 1,
+      op, value, enabled: true, hitCount: 0,
+    };
+    wp.lastValue = this._readWatchValue(wp.addr, wp.size);
+    this.memWatchpoints.set(wp.id, wp);
+    this._reindexMemWatch();
+    return wp;
+  }
+
+  removeMemWatch(id) {
+    this.memWatchpoints.delete(id);
+    this._reindexMemWatch();
+  }
+
+  setMemWatchEnabled(id, enabled) {
+    const wp = this.memWatchpoints.get(id);
+    if (!wp) return;
+    wp.enabled = enabled;
+    if (enabled) wp.lastValue = this._readWatchValue(wp.addr, wp.size); // resync so re-enabling doesn't fire on stale drift
+    this._reindexMemWatch();
+  }
+
+  clearMemWatchpoints() {
+    this.memWatchpoints.clear();
+    this._memWatchIndex = new Map();
+  }
+
+  // Called after a ROM (re)load: memory has been reset out from under any existing
+  // watchpoints, so their remembered lastValue would otherwise be stale and could fire a
+  // false "change" on the very next write to that address.
+  resyncMemWatchpoints() {
+    for (const wp of this.memWatchpoints.values()) wp.lastValue = this._readWatchValue(wp.addr, wp.size);
+  }
+
+  _evalMemCondition(actual, op, target) {
+    switch (op) {
+      case '==': return actual === target;
+      case '!=': return actual !== target;
+      case '>':  return actual > target;
+      case '<':  return actual < target;
+      case '>=': return actual >= target;
+      case '<=': return actual <= target;
+      default:   return true; // no condition set - any change qualifies
+    }
+  }
+
+  // Called from MMU.write8() right after `writtenAddr` is written, only when the index is
+  // non-empty for that address. Re-reads each candidate watchpoint's full value (byte or
+  // word), and only breaks if it actually differs from last time (the "change" trigger) and,
+  // if a condition is set, the new value also satisfies it.
+  checkMemWrite(writtenAddr) {
+    const ids = this._memWatchIndex.get(writtenAddr);
+    if (!ids || ids.length === 0) return;
+    for (const id of ids) {
+      const wp = this.memWatchpoints.get(id);
+      if (!wp || !wp.enabled) continue;
+      const newVal = this._readWatchValue(wp.addr, wp.size);
+      if (newVal === wp.lastValue) continue; // rewritten with the same value - not a "change"
+      const oldVal = wp.lastValue;
+      wp.lastValue = newVal;
+      if (!this._evalMemCondition(newVal, wp.op, wp.value)) continue; // changed, but doesn't match the condition
+      wp.hitCount++;
+      this.triggerBreakpoint('mem', wp, { oldVal, newVal });
+      return; // emulation is now paused; any other watchpoints get their turn on the next write
+    }
   }
 
   // Generic register/stack introspection for any CPU-state panel (register editor, stack

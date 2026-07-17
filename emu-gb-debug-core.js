@@ -124,6 +124,7 @@ const DEBUG_PANELS = {
   interrupts: { draw: () => drawInterrupts() },
   ramedit:    { draw: () => drawRamEditor() },
   memscan:    { draw: () => drawMemScan() },
+  memwatch:   { draw: () => drawMemWatch() },
 };
 const VISUAL_PANELS = {
   tiles:        { draw: () => drawTileViewer() },

@@ -179,6 +179,7 @@
       <button class="tool-tab active" data-tool="registers">Registers</button>
       <button class="tool-tab" data-tool="ramedit">RAM Editor</button>
       <button class="tool-tab" data-tool="memscan">Mem Scanner</button>
+      <button class="tool-tab" data-tool="memwatch">Watchpoints</button>
       <button class="tool-tab" data-tool="interrupts">Interrupts</button>
       <button class="tool-tab" data-tool="trace">Trace</button>
       <button class="tool-tab" data-tool="eventlog">Event Log</button>
@@ -289,8 +290,7 @@
       <p class="tool-desc">
         The five interrupt sources, in hardware priority order: V-Blank, LCD STAT, Timer, Serial, Joypad. IME (Interrupt Master
         Enable) is the CPU's own on/off switch — set by EI/RETI, cleared by DI or automatically
-        the instant an interrupt is taken. IE (0xFFFF) is which sources the game has opted
-        into; IF (0xFF0F) is which sources currently have a request pending.
+        the instant an interrupt is taken.
       </p>
       <div class="int-summary" id="intSummary">—</div>
       <div class="int-table" id="intTable"><!-- built in JS --></div>
@@ -302,8 +302,7 @@
       <p class="tool-desc">
         Scrollback of the last instructions the CPU actually executed, oldest first, most recent
         highlighted at the bottom — with a brief plain-English note on what each one does, useful
-        for seeing how a loop, call, or jump was reached. Shows the last 50; export for the full
-        buffer (up to 2000).
+        for seeing how a loop, call, or jump was reached.
       </p>
       <div class="trace-toolbar">
         <label class="autoscroll-toggle" title="When on, the list follows new instructions as they arrive (still pauses if you scroll up). Off by default so the view doesn't move on its own.">
@@ -323,7 +322,7 @@
     <div class="tool-panel hidden" id="panel-eventlog">
       <p class="tool-desc">
         Unified log of hardware and system events — CPU, PPU, APU, timer, MBC, and app-level
-        milestones. Shows the last 50; export for the full buffer (up to 2000). Each entry
+        milestones. Each entry
         pairs emulated hardware time with real wall-clock time, which diverge under turbo.
       </p>
       <div class="event-log-level-row">
@@ -362,8 +361,7 @@
     <div class="tool-panel hidden" id="panel-disasm">
       <p class="tool-desc">
         Live disassembly of the bytes around the program counter, decoded into LR35902 mnemonics
-        (not just raw hex). The highlighted line is the next instruction about to run. Use Step
-        to execute one instruction at a time, or set a breakpoint below and Run to it.
+        (not just raw hex). The highlighted line is the next instruction.
       </p>
       <div class="disasm-list" id="disasmList"><div class="disasm-empty">Load a ROM to see disassembly.</div></div>
     </div>
@@ -371,10 +369,7 @@
     <div class="tool-panel hidden" id="panel-stack">
       <p class="tool-desc">
         A window of memory around the stack pointer (SP), read out as the 16-bit words the CPU
-        actually pushes and pops — PUSH BC/DE/HL/AF, CALL, RST, and interrupts all write a
-        register pair or return address as two bytes, and POP/RET read one back the same way.
-        The Game Boy's stack grows downward: each PUSH decrements SP first, so lower addresses
-        are "deeper". The highlighted row is the current top of stack.
+        actually pushes and pops.
       </p>
       <div class="stack-sp-readout" id="stackSpReadout">—</div>
       <div class="disasm-list" id="stackList"><div class="disasm-empty">Load a ROM to see the stack.</div></div>
@@ -384,8 +379,7 @@
       <p class="tool-desc">
         The full 16-bit address space (0x0000–0xFFFF), literally top-to-bottom, one bar per
         memory region. Tiny regions (OAM, I/O, HRAM) are given a minimum height so they stay
-        visible - the hex range printed next to each bar is the real boundary. Whichever
-        bar the CPU's last memory read or write landed in flashes white.
+        visible - the hex range printed next to each bar is the real boundary.
       </p>
       <div class="memmap-strip" id="memmapStrip"><!-- built in JS --></div>
       <div class="memmap-readout" id="memmapReadout">No memory access yet — load a ROM or press Step.</div>
@@ -393,7 +387,7 @@
 
     <div class="tool-panel hidden" id="panel-banking">
       <p class="tool-desc" id="bankingDesc">
-        Load a ROM to see its mapper (MBC) and which ROM/RAM banks are currently switched in.
+        Load a ROM to see its mapper (MBC) and which banks are currently switched in.
       </p>
       <div class="banking-windows" id="bankingWindows"><!-- built in JS --></div>
       <div class="banking-section">
@@ -421,8 +415,7 @@
       <p class="tool-desc">
         Cheat Engine-style value scanner. Take a snapshot of memory, play until a stat like lives, health,
         coins, or a timer changes, then narrow down the snapshot to the addresses that changed the way you
-        expect. A few rounds of narrowing usually gets you down to one or two candidate addresses - name one
-        and save it, and it'll be waiting here ready to apply next time you load this ROM.
+        expect.
       </p>
       <div class="memscan-saved-section" id="memScanSavedSection">
         <h4>Saved cheats for this ROM</h4>
@@ -459,6 +452,44 @@
       <div class="memscan-frozen-section" id="memScanFrozenSection" style="display:none;">
         <h4>Frozen addresses (written every frame)</h4>
         <div id="memScanFrozenList"><!-- built in JS --></div>
+      </div>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-memwatch">
+      <p class="tool-desc">
+        Breaks emulation the moment a watched address's value <em>changes</em> - rewriting it with
+        the same value doesn't count. Add an optional comparison to only break when the new value
+        also satisfies it, e.g. address <code>0xDA00</code> drops <code>&lt;</code> <code>3</code> (lives hitting zero).
+      </p>
+      <div class="memwatch-add-row">
+        <label>Address
+          <input type="text" class="memwatch-input" id="memWatchAddr" placeholder="0xC0A0">
+        </label>
+        <label>Size
+          <select class="ui-select" id="memWatchSize">
+            <option value="1">1 byte</option>
+            <option value="2">2 bytes (LE)</option>
+          </select>
+        </label>
+        <label>Condition
+          <select class="ui-select" id="memWatchOp">
+            <option value="">Any change</option>
+            <option value="==">== equals</option>
+            <option value="!=">!= not equal</option>
+            <option value=">">&gt; greater than</option>
+            <option value="<">&lt; less than</option>
+            <option value=">=">&gt;= at least</option>
+            <option value="<=">&lt;= at most</option>
+          </select>
+        </label>
+        <label id="memWatchValueWrap" style="opacity:.4">Value
+          <input type="text" class="memwatch-input" id="memWatchValue" placeholder="e.g. 3" disabled>
+        </label>
+        <button class="ui-btn small" id="memWatchAddBtn">Add Watchpoint</button>
+      </div>
+      <div class="memwatch-error" id="memWatchError" style="display:none;"></div>
+      <div class="memwatch-list" id="memWatchList">
+        <div class="memwatch-empty">No watchpoints set yet - add one above.</div>
       </div>
     </div>
   </div>

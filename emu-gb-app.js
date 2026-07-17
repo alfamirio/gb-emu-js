@@ -774,7 +774,12 @@ const KEY_MAP = {
   Shift: [2, false],             // Select
   Enter: [3, false],             // Start
 };
-window.addEventListener('keydown', (e) => { const m = KEY_MAP[e.key]; if (m) { emulator.setButton(m[0], true, m[1]); e.preventDefault(); } });
+window.addEventListener('keydown', (e) => {
+  const tag = e.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return; // let typing (renaming a cheat, editing a value, etc.) through untouched
+  const m = KEY_MAP[e.key];
+  if (m) { emulator.setButton(m[0], true, m[1]); e.preventDefault(); }
+});
 window.addEventListener('keyup', (e) => { const m = KEY_MAP[e.key]; if (m) { emulator.setButton(m[0], false, m[1]); e.preventDefault(); } });
 
 

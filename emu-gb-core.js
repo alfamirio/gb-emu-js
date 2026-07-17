@@ -366,8 +366,18 @@ class MMU {
     return this.ie;
   }
 
+  // Public write entry point: does the real write via _write8Body, then - only when at least
+  // one memory watchpoint is set - lets instrumentation re-check whether this address's
+  // watched value actually changed. Kept as a thin wrapper so _write8Body's many early
+  // returns don't each need their own watchpoint-check call.
   write8(addr, val) {
     addr &= 0xFFFF; val &= 0xFF;
+    this._write8Body(addr, val);
+    const instr = this.emulator.instrumentation;
+    if (instr && instr.memWatchpoints.size > 0) instr.checkMemWrite(addr);
+  }
+
+  _write8Body(addr, val) {
     if (this.emulator.stats?.trackMemMap) this.emulator.stats.recordMemAccess(addr, this._regionForAddr(addr), 'write');
     const MEM = EMU_CORE_CONFIG.MEMORY;
     if (addr < MEM.ROMX_END) { this._handleBanking(addr, val); return; }
@@ -2010,6 +2020,7 @@ class GBEmulator {
     this.rewindFrameAcc = 0;
 
     this.romTitle = parseROMTitle(bytes);
+    this.instrumentation?.resyncMemWatchpoints();
   }
 
   /* ---- save state ----

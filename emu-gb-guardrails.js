@@ -11,8 +11,9 @@
    - Commercial-ROM filter: blocks ROMs matching a prebuilt No-Intro bloom filter, so only
      homebrew/non-commercial ROMs load. Both GB and GBC filters are checked regardless of core.
 
-   Load order: after filters/game-filter-data.js and the crc-32 library; before emu-gb-app.js
-   and emu-gb-debug-core.js.
+   Load order: after filters/game-filter-data.js and the crc-32 library (cdnjs crc-32 1.2.2,
+   which exposes a global CRC32 object with a .buf() method - not a bare crc32() function);
+   before emu-gb-app.js and emu-gb-debug-core.js.
    ========================================================================================= */
 
 const GUARDRAIL_CONFIG = {
@@ -124,23 +125,60 @@ function tickPlayTime() {
 setInterval(tickPlayTime, 500);
 
 /* ---- commercial-ROM filter: blocks ROMs matching a prebuilt No-Intro bloom filter, keeping
-   this limited to homebrew/non-commercial ROMs. Both GB and GBC filters are checked regardless of core. ---- */
+   this limited to homebrew/non-commercial ROMs. Both GB and GBC filters are checked regardless of core.
+   Filter data must be exported by the Bloom Filter Builder tool using its "BLMF" header format
+   (magic + version + hash type + m + k + CRC32 checksum) ---- */
 
 // Bloom filter used to exclude commercial games.
+//
+// Reads the "BLMF" header format written by the Bloom Filter Builder tool:
+//   [0:4]   magic      "BLMF" signature
+//   [4]     version    format version number
+//   [5]     hashType   id of the hash function used to build the filter (0 = FNV-1a salted)
+//   [6:10]  m          number of bits in the filter (uint32, little-endian)
+//   [10]    k          number of hash rounds (uint8)
+//   [11:15] checksum   CRC32 of the bit array (uint32, little-endian)
+//   [15:]   bit array
 class BloomFilter {
+    static HEADER_SIZE = 15;
+    static MAGIC = 'BLMF';
+    static HASH_TYPE_NAMES = { 0: 'FNV-1a (salted)' };
+
     constructor(arrayBuffer) {
-        // Header: 4-byte bit-array size (m) + 1-byte hash count (k), then the bit array.
-        const dataView = new DataView(arrayBuffer, 0, 5);
-        this.m = dataView.getUint32(0, true);
-        this.k = dataView.getUint8(4);
+        if (arrayBuffer.byteLength < BloomFilter.HEADER_SIZE) {
+            throw new Error(`buffer too small (${arrayBuffer.byteLength} bytes) for a valid filter header`);
+        }
 
-        this.bitArray = new Uint8Array(arrayBuffer, 5);
+        const dataView = new DataView(arrayBuffer, 0, BloomFilter.HEADER_SIZE);
+        const magic = String.fromCharCode(
+            dataView.getUint8(0), dataView.getUint8(1), dataView.getUint8(2), dataView.getUint8(3)
+        );
+        if (magic !== BloomFilter.MAGIC) {
+            throw new Error(`bad signature "${magic}" - not a recognized Bloom filter file`);
+        }
 
-        console.log(`Configured from header -> Bits (m): ${this.m}, Hashes (k): ${this.k}`);
+        this.version = dataView.getUint8(4);
+        this.hashType = dataView.getUint8(5);
+        this.m = dataView.getUint32(6, true);
+        this.k = dataView.getUint8(10);
+        this.checksum = dataView.getUint32(11, true);
+
+        this.bitArray = new Uint8Array(arrayBuffer, BloomFilter.HEADER_SIZE);
+
+        // crc-32 library (cdnjs crc-32 1.2.2) exposes CRC32.buf(), returning a signed
+        // 32-bit int; normalize to unsigned so it compares correctly against the header value.
+        const actualChecksum = CRC32.buf(this.bitArray) >>> 0;
+        this.checksumValid = actualChecksum === this.checksum;
+
+        const hashTypeName = BloomFilter.HASH_TYPE_NAMES[this.hashType] || `unknown (${this.hashType})`;
+        console.log(`Configured from header -> v${this.version}, hash=${hashTypeName}, Bits (m): ${this.m}, Hashes (k): ${this.k}, checksum ${this.checksumValid ? 'OK' : 'MISMATCH'}`);
+        if (!this.checksumValid) {
+            console.warn(`Bloom filter checksum mismatch (expected ${this.checksum.toString(16)}, got ${actualChecksum.toString(16)}) - data may be corrupted or truncated. Proceeding, but treat matches/misses from this filter with caution.`);
+        }
     }
 
     _hash(item, i) {
-        const salted = `${i}:${item.toLowerCase()}`;
+        const salted = `${i}:${item.toLowerCase().trim()}`;
         let hash = 0x811c9dc5;
         for (let j = 0; j < salted.length; j++) {
             hash ^= salted.charCodeAt(j);
@@ -186,7 +224,7 @@ if (GAME_FILTER_ENABLED) {
 // Checks `bytes` against both GB/GBC filters. Called before touching any loaded-ROM state,
 // and returns the CRC32 too so the caller can show it in its "blocked" message.
 function checkCommercialRomGate(bytes) {
-  const crc32Hex = crc32(bytes).toString(16).toUpperCase().padStart(8, '0');
+  const crc32Hex = (CRC32.buf(bytes) >>> 0).toString(16).toUpperCase().padStart(8, '0');
   const blocked = (commercialRomFilters.gb && commercialRomFilters.gb.isCommercial(crc32Hex))
     || (commercialRomFilters.gbc && commercialRomFilters.gbc.isCommercial(crc32Hex));
   return { blocked, crc32: crc32Hex };

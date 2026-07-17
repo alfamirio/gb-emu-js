@@ -347,17 +347,21 @@
                         </div>
                     </div>
                     
-                    <div class="stat-grid">
+                    <div class="stat-grid" style="grid-template-columns: repeat(3, 1fr);">
                         <div class="stat-box">Files Segmented: <span id="statFiles">0</span></div>
                         <div class="stat-box">Hashes Mapped: <span id="statCount">0</span></div>
                         <div class="stat-box">Allocated Memory: <span id="statSize">0 bytes</span></div>
                         <div class="stat-box">Optimal Hashes (k): <span id="statHashes">0</span></div>
+                        <div class="stat-box">Format Version: <span id="statVersion">–</span></div>
+                        <div class="stat-box">Hash Function: <span id="statHashFn">–</span></div>
+                        <div class="stat-box" style="grid-column: span 3;">Checksum (CRC32): <span id="statChecksum">–</span></div>
                     </div>
 
-                    <div class="btn-row-inline" id="actionRowInline" style="visibility: hidden;">
-                        <button id="downloadBtn" class="primary-bin" title="Download Active (.bin)">Active Binary (.bin)</button>
-                        <button id="downloadB64Btn" class="secondary-b64" title="Download Active Base64 (.txt)">Base64 String (.txt)</button>
-                        <button id="downloadJsBtn" class="js-bundle" title="Download Bundle (game-filter-data.js)">JS Bundle (.js)</button>
+                    <div class="btn-row-inline" id="actionRowInline" style="visibility: hidden; flex-wrap: wrap;">
+                        <button id="downloadBtn" class="primary-bin" title="Download Active (.bin)" style="flex-basis: 47%;">Binary (.bin)</button>
+                        <button id="downloadJsonBtn" class="secondary-b64" title="Download Active (.json)" style="flex-basis: 47%;">JSON (.json)</button>
+                        <button id="downloadJsBtn" class="js-bundle" title="Download Bundle (game-filter-data.js)" style="flex-basis: 47%;">JS Data (.js)</button>
+                        <button id="downloadLoaderBtn" class="js-bundle" title="Download standalone loader library (no data)" style="flex-basis: 47%; background: #9b6ede;">JS Loader (.js)</button>
                     </div>
                 </div>
             </div>
@@ -435,6 +439,92 @@
                     }
                 }
                 return true;
+            }
+        }
+
+        // --- CRC32, used to checksum the bit array so corrupt/truncated filters can be detected on load ---
+        const CRC32_TABLE = (() => {
+            const table = new Uint32Array(256);
+            for (let n = 0; n < 256; n++) {
+                let c = n;
+                for (let k = 0; k < 8; k++) {
+                    c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+                }
+                table[n] = c >>> 0;
+            }
+            return table;
+        })();
+
+        function crc32(bytes) {
+            let crc = 0xFFFFFFFF;
+            for (let i = 0; i < bytes.length; i++) {
+                crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+            }
+            return (crc ^ 0xFFFFFFFF) >>> 0;
+        }
+
+        /**
+         * BloomFilterHeader
+         * Encapsulates the fixed-size binary header written before every exported
+         * filter's bit array. Centralizing this in one class means the byte layout
+         * only needs to be defined once, instead of being hand-rolled with magic
+         * offsets everywhere a filter is packed or unpacked.
+         *
+         * Layout (15 bytes, all multi-byte fields little-endian):
+         *   [0:4]   magic      "BLMF" - signature identifying this file format
+         *   [4]     version    format version number
+         *   [5]     hashType   id of the hash function used to build the filter
+         *   [6:10]  m          number of bits in the filter (uint32)
+         *   [10]    k          number of hash rounds (uint8)
+         *   [11:15] checksum   CRC32 of the bit array (uint32)
+         */
+        class BloomFilterHeader {
+            static MAGIC = 'BLMF';
+            static VERSION = 1;
+            static HEADER_SIZE = 15;
+            static HASH_TYPES = { FNV1A_SALTED: 0 };
+            static HASH_TYPE_NAMES = { 0: 'FNV-1a (salted)' };
+
+            constructor({ m, k, hashType = BloomFilterHeader.HASH_TYPES.FNV1A_SALTED, version = BloomFilterHeader.VERSION, checksum = 0 }) {
+                this.version = version;
+                this.hashType = hashType;
+                this.m = m;
+                this.k = k;
+                this.checksum = checksum >>> 0;
+            }
+
+            get hashTypeName() {
+                return BloomFilterHeader.HASH_TYPE_NAMES[this.hashType] || `unknown (${this.hashType})`;
+            }
+
+            toBuffer() {
+                const buffer = new ArrayBuffer(BloomFilterHeader.HEADER_SIZE);
+                const view = new DataView(buffer);
+                for (let i = 0; i < 4; i++) view.setUint8(i, BloomFilterHeader.MAGIC.charCodeAt(i));
+                view.setUint8(4, this.version);
+                view.setUint8(5, this.hashType);
+                view.setUint32(6, this.m, true);
+                view.setUint8(10, this.k);
+                view.setUint32(11, this.checksum, true);
+                return new Uint8Array(buffer);
+            }
+
+            static fromBuffer(bytes) {
+                if (bytes.length < BloomFilterHeader.HEADER_SIZE) {
+                    throw new Error('Buffer too small to contain a valid Bloom filter header.');
+                }
+                const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+                const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+                if (magic !== BloomFilterHeader.MAGIC) {
+                    throw new Error('Invalid file signature — not a recognized Bloom filter file.');
+                }
+                return new BloomFilterHeader({
+                    version: view.getUint8(4),
+                    hashType: view.getUint8(5),
+                    m: view.getUint32(6, true),
+                    k: view.getUint8(10),
+                    checksum: view.getUint32(11, true)
+                });
             }
         }
 
@@ -627,10 +717,16 @@
                 activeFilter = BloomFilter.createOptimal(capacityTarget, selectedFpRate);
                 valueList.forEach(item => activeFilter.add(item));
 
+                const checksum = crc32(activeFilter.bitArray);
+                activeFilter.header = new BloomFilterHeader({ m: activeFilter.m, k: activeFilter.k, checksum });
+
                 document.getElementById('statCount').textContent = valueList.length.toLocaleString();
-                const totalBytes = activeFilter.bitArray.byteLength + 5;
+                const totalBytes = activeFilter.bitArray.byteLength + BloomFilterHeader.HEADER_SIZE;
                 document.getElementById('statSize').textContent = `${(totalBytes / 1024).toFixed(2)} KB`;
                 document.getElementById('statHashes').textContent = activeFilter.k;
+                document.getElementById('statVersion').textContent = BloomFilterHeader.VERSION;
+                document.getElementById('statHashFn').textContent = activeFilter.header.hashTypeName;
+                document.getElementById('statChecksum').textContent = '0x' + checksum.toString(16).padStart(8, '0');
             } else {
                 let cumulativeCount = 0;
                 let cumulativeBytes = 0;
@@ -645,10 +741,12 @@
                     if(capacityTarget > 0) {
                         const filterInstance = BloomFilter.createOptimal(capacityTarget, selectedFpRate);
                         localValues.forEach(v => filterInstance.add(v));
+                        const checksum = crc32(filterInstance.bitArray);
+                        filterInstance.header = new BloomFilterHeader({ m: filterInstance.m, k: filterInstance.k, checksum });
                         itemGroup.generatedFilter = filterInstance;
-                        
+
                         cumulativeCount += localValues.length;
-                        cumulativeBytes += (filterInstance.bitArray.byteLength + 5);
+                        cumulativeBytes += (filterInstance.bitArray.byteLength + BloomFilterHeader.HEADER_SIZE);
                         finalK = filterInstance.k;
                     }
                 });
@@ -660,6 +758,9 @@
                 document.getElementById('statCount').textContent = `${cumulativeCount.toLocaleString()} (Total)`;
                 document.getElementById('statSize').textContent = `${(cumulativeBytes / 1024).toFixed(2)} KB package`;
                 document.getElementById('statHashes').textContent = finalK;
+                document.getElementById('statVersion').textContent = BloomFilterHeader.VERSION;
+                document.getElementById('statHashFn').textContent = activeFilter ? activeFilter.header.hashTypeName : '–';
+                document.getElementById('statChecksum').textContent = trackingMultipleFilters.length + ' filters (see JS Loader export for per-filter checksums)';
             }
 
             document.getElementById('actionRowInline').style.visibility = "visible";
@@ -723,7 +824,9 @@
                         binaryData = base64ToUint8Array(text.trim());
                     }
                     initializeFilterFromBuffer(binaryData);
-                    statusDiv.textContent = `✓ Loaded: m=${activeFilter.m}, k=${activeFilter.k} (${activeFilter.bitArray.byteLength} array bytes)`;
+                    const h = activeFilter.header;
+                    const checksumBadge = activeFilter.checksumValid ? '✓ checksum ok' : '⚠ checksum MISMATCH';
+                    statusDiv.textContent = `✓ Loaded: m=${activeFilter.m}, k=${activeFilter.k}, v${h.version}, hash=${h.hashTypeName} (${checksumBadge})`;
                 }
                 triggerLiveVerify();
             } catch (err) {
@@ -759,12 +862,13 @@
         }
 
         function initializeFilterFromBuffer(binaryData) {
-            if (binaryData.length < 5) throw new Error("Invalid header size.");
-            const dataView = new DataView(binaryData.buffer, binaryData.byteOffset, binaryData.byteLength);
-            const m = dataView.getUint32(0, true);
-            const k = dataView.getUint8(4);
-            const bitArrayBuffer = binaryData.subarray(5);
-            activeFilter = new BloomFilter(m, k, bitArrayBuffer);
+            const header = BloomFilterHeader.fromBuffer(binaryData);
+            const bitArrayBuffer = binaryData.subarray(BloomFilterHeader.HEADER_SIZE);
+            const actualChecksum = crc32(bitArrayBuffer);
+
+            activeFilter = new BloomFilter(header.m, header.k, bitArrayBuffer);
+            activeFilter.header = header;
+            activeFilter.checksumValid = actualChecksum === header.checksum;
         }
 
         document.getElementById('crcInput').addEventListener('input', triggerLiveVerify);
@@ -786,16 +890,12 @@
                 Object.keys(importedFiltersMap).forEach(key => {
                     try {
                         const binaryData = base64ToUint8Array(importedFiltersMap[key]);
-                        if (binaryData.length >= 5) {
-                            const dataView = new DataView(binaryData.buffer, binaryData.byteOffset, binaryData.byteLength);
-                            const m = dataView.getUint32(0, true);
-                            const k = dataView.getUint8(4);
-                            const bitArrayBuffer = binaryData.subarray(5);
-                            const tempFilter = new BloomFilter(m, k, bitArrayBuffer);
-                            
-                            if (tempFilter.contains(val)) {
-                                matchingFilters.push(key);
-                            }
+                        const header = BloomFilterHeader.fromBuffer(binaryData);
+                        const bitArrayBuffer = binaryData.subarray(BloomFilterHeader.HEADER_SIZE);
+                        const tempFilter = new BloomFilter(header.m, header.k, bitArrayBuffer);
+
+                        if (tempFilter.contains(val)) {
+                            matchingFilters.push(key);
                         }
                     } catch (e) {
                         console.error(`Error scanning filter ${key}:`, e);
@@ -830,14 +930,16 @@
         }
 
         function generateCombinedBuffer(targetFilter) {
-            const headerBuffer = new ArrayBuffer(5);
-            const dataView = new DataView(headerBuffer);
-            dataView.setUint32(0, targetFilter.m, true); 
-            dataView.setUint8(4, targetFilter.k);
+            const header = new BloomFilterHeader({
+                m: targetFilter.m,
+                k: targetFilter.k,
+                checksum: crc32(targetFilter.bitArray)
+            });
+            const headerBytes = header.toBuffer();
 
-            const combinedBuffer = new Uint8Array(headerBuffer.byteLength + targetFilter.bitArray.byteLength);
-            combinedBuffer.set(new Uint8Array(headerBuffer), 0);
-            combinedBuffer.set(targetFilter.bitArray, headerBuffer.byteLength);
+            const combinedBuffer = new Uint8Array(headerBytes.byteLength + targetFilter.bitArray.byteLength);
+            combinedBuffer.set(headerBytes, 0);
+            combinedBuffer.set(targetFilter.bitArray, headerBytes.byteLength);
             return combinedBuffer;
         }
 
@@ -876,50 +978,223 @@
             }
         });
 
-        document.getElementById('downloadB64Btn').addEventListener('click', function() {
+        // Builds a { name: base64Data } map covering either the single active filter
+        // or every generated filter in a bundle. Shared by the JSON and JS Data exports
+        // so both formats always carry the same entries under the same names.
+        function buildDataMap() {
             const createSingle = document.getElementById('combineToggle').checked;
+            const dataMap = {};
             if (createSingle) {
-                if (!activeFilter) return;
-                const packedData = generateCombinedBuffer(activeFilter);
-                triggerTriggeredDownload(new Blob([bufferToBase64(packedData)]), `${activeBaseName}_b64.txt`);
+                if (!activeFilter) return dataMap;
+                dataMap[activeBaseName] = bufferToBase64(generateCombinedBuffer(activeFilter));
             } else {
-                const zip = new JSZip();
                 trackingMultipleFilters.forEach(item => {
                     if (item.generatedFilter) {
-                        const packed = generateCombinedBuffer(item.generatedFilter);
-                        zip.file(`${item.name}_b64.txt`, bufferToBase64(packed));
+                        dataMap[item.name] = bufferToBase64(generateCombinedBuffer(item.generatedFilter));
                     }
                 });
-                zip.generateAsync({type:"blob"}).then(blob => triggerTriggeredDownload(blob, "bloom_filters_base64.zip"));
             }
+            return dataMap;
+        }
+
+        document.getElementById('downloadJsonBtn').addEventListener('click', function() {
+            const dataMap = buildDataMap();
+            if (Object.keys(dataMap).length === 0) return;
+            const text = JSON.stringify(dataMap, null, 2);
+            triggerTriggeredDownload(new Blob([text], {type: "application/json"}), "bloom-filter-data.json");
         });
 
         document.getElementById('downloadJsBtn').addEventListener('click', function() {
-            const createSingle = document.getElementById('combineToggle').checked;
-            
-            if (createSingle) {
-                if (!activeFilter) return;
-                const packed = generateCombinedBuffer(activeFilter);
-                const text = `window.GAME_FILTER_DATA = {\n  custom_filter: "${bufferToBase64(packed)}"\n};`;
-                triggerTriggeredDownload(new Blob([text], {type: "application/javascript"}), "game-filter-data.js");
-            } else {
-                let lines = [];
-                lines.push("window.GAME_FILTER_DATA = {");
-                
-                const properties = [];
-                trackingMultipleFilters.forEach(item => {
-                    if (item.generatedFilter) {
-                        const packed = generateCombinedBuffer(item.generatedFilter);
-                        properties.push(`  "${item.name}": "${bufferToBase64(packed)}"`);
-                    }
-                });
-                
-                lines.push(properties.join(",\n"));
-                lines.push("};");
-                
-                const singleJsContent = lines.join("\n");
-                triggerTriggeredDownload(new Blob([singleJsContent], {type: "application/javascript"}), "game-filter-data.js");
+            const dataMap = buildDataMap();
+            const keys = Object.keys(dataMap);
+            if (keys.length === 0) return;
+
+            const properties = keys.map(name => `  "${name}": "${dataMap[name]}"`);
+            const text = `window.GAME_FILTER_DATA = {\n${properties.join(",\n")}\n};`;
+            triggerTriggeredDownload(new Blob([text], {type: "application/javascript"}), "game-filter-data.js");
+        });
+        function generateLoaderScript() {
+            return `/**
+ * bloom-filter-loader.js
+ * Standalone, dependency-free loader for Bloom filters exported by the
+ * Universal Bloom Filter Tool. This file has no data baked in - pair it with
+ * whichever data file you exported from the tool's "Binary", "JSON", or
+ * "JS Data" buttons and pick the matching method below.
+ *
+ * Paired with "Binary (.bin)" - a raw packed filter, single filter only:
+ *   <script src="bloom-filter-loader.js"><\\/script>
+ *   <script>
+ *     BloomFilterLoader.loadFilter('bloom-filter-data.bin').then(filter => {
+ *       console.log(filter.contains('some-value'));
+ *       console.log(filter.checksumValid); // true if the data wasn't corrupted
+ *     });
+ *   <\\/script>
+ *
+ * Paired with "JSON (.json)" - a { name: base64Data } map (one entry if you
+ * built a single filter, one entry per item if you built a bundle):
+ *   BloomFilterLoader.loadBundle('bloom-filter-data.json').then(bundle => {
+ *     console.log(bundle.get('romset1').contains('some-value'));
+ *   });
+ *
+ * Paired with "JS Data (.js)" - e.g. game-filter-data.js containing
+ * window.GAME_FILTER_DATA = { romset1: "...", romset2: "..." }:
+ *   BloomFilterLoader.loadJsBundle('game-filter-data.js').then(bundle => {
+ *     console.log(bundle.get('romset1').contains('some-value'));
+ *   });
+ *
+ * Or let the loader pick the right method from the file extension (.bin/.json/.js):
+ *   BloomFilterLoader.load('game-filter-data.js').then(result => { ... });
+ */
+(function (global) {
+    'use strict';
+
+    // CRC32 - must match the algorithm used to build these filters
+    const CRC32_TABLE = (() => {
+        const table = new Uint32Array(256);
+        for (let n = 0; n < 256; n++) {
+            let c = n;
+            for (let k = 0; k < 8; k++) {
+                c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
             }
+            table[n] = c >>> 0;
+        }
+        return table;
+    })();
+
+    function crc32(bytes) {
+        let crc = 0xFFFFFFFF;
+        for (let i = 0; i < bytes.length; i++) {
+            crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+        }
+        return (crc ^ 0xFFFFFFFF) >>> 0;
+    }
+
+    // Header - must match BloomFilterHeader in the builder tool
+    const HEADER_SIZE = 15;
+    const HASH_TYPE_NAMES = { 0: 'FNV-1a (salted)' };
+
+    function parseHeader(bytes) {
+        if (bytes.length < HEADER_SIZE) throw new Error('Buffer too small for a valid Bloom filter header.');
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+        if (magic !== 'BLMF') throw new Error('Not a recognized Bloom filter file (bad signature).');
+        return {
+            version: view.getUint8(4),
+            hashType: view.getUint8(5),
+            m: view.getUint32(6, true),
+            k: view.getUint8(10),
+            checksum: view.getUint32(11, true)
+        };
+    }
+
+    class LoadedBloomFilter {
+        constructor(header, bitArray, checksumValid) {
+            this.version = header.version;
+            this.hashType = header.hashType;
+            this.hashTypeName = HASH_TYPE_NAMES[header.hashType] || 'unknown (' + header.hashType + ')';
+            this.m = header.m;
+            this.k = header.k;
+            this.checksum = header.checksum;
+            this.checksumValid = checksumValid;
+            this.bitArray = bitArray;
+        }
+        _hash(item, i) {
+            const salted = i + ':' + String(item).toLowerCase().trim();
+            let hash = 0x811c9dc5;
+            for (let j = 0; j < salted.length; j++) {
+                hash ^= salted.charCodeAt(j);
+                hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+            }
+            return Math.abs(hash) % this.m;
+        }
+        contains(item) {
+            for (let i = 0; i < this.k; i++) {
+                const bitPosition = this._hash(item, i);
+                if ((this.bitArray[Math.floor(bitPosition / 8)] & (1 << (bitPosition % 8))) === 0) return false;
+            }
+            return true;
+        }
+    }
+
+    function bufferFromBase64(base64String) {
+        const binaryString = atob(base64String);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+        return bytes;
+    }
+
+    function buildFromBuffer(bytes) {
+        const header = parseHeader(bytes);
+        const bitArray = bytes.subarray(HEADER_SIZE);
+        const checksumValid = crc32(bitArray) === header.checksum;
+        return new LoadedBloomFilter(header, bitArray, checksumValid);
+    }
+
+    async function loadFilter(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('Failed to fetch filter data: ' + res.status + ' ' + res.statusText);
+        const buffer = new Uint8Array(await res.arrayBuffer());
+        return buildFromBuffer(buffer);
+    }
+
+    async function loadBundle(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('Failed to fetch filter bundle: ' + res.status + ' ' + res.statusText);
+        const json = await res.json();
+        const bundle = new Map();
+        for (const name of Object.keys(json)) {
+            bundle.set(name, buildFromBuffer(bufferFromBase64(json[name])));
+        }
+        return bundle;
+    }
+
+    function parseJsBundleText(text) {
+        // Strips a leading "window.SOME_NAME = " (or "const x = ", "var x = ", etc.)
+        // assignment down to the bare object literal, and any trailing semicolon.
+        const clearText = text.replace(/^[\s\S]*?=\s*\{/, '{').replace(/\}[\s\S]*$/, '}');
+        try {
+            return new Function('return ' + clearText + ';')();
+        } catch (e) {
+            // Fallback for minified/unusual formatting: pull out "key": "base64" pairs directly.
+            const obj = {};
+            const matches = text.matchAll(/"([^"]+)"\s*:\s*"([^"]+)"/g);
+            for (const match of matches) obj[match[1]] = match[2];
+            return obj;
+        }
+    }
+
+    async function loadJsBundle(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('Failed to fetch filter bundle script: ' + res.status + ' ' + res.statusText);
+        const text = await res.text();
+        const parsed = parseJsBundleText(text);
+        const keys = Object.keys(parsed || {});
+        if (keys.length === 0) throw new Error('No filter entries found in JS bundle.');
+
+        const bundle = new Map();
+        for (const name of keys) {
+            bundle.set(name, buildFromBuffer(bufferFromBase64(parsed[name])));
+        }
+        return bundle;
+    }
+
+    // Convenience: auto-detect format from the file extension.
+    async function load(url) {
+        const ext = url.split('?')[0].split('.').pop().toLowerCase();
+        if (ext === 'json') return loadBundle(url);
+        if (ext === 'js') return loadJsBundle(url);
+        return loadFilter(url);
+    }
+
+    global.BloomFilterLoader = { loadFilter, loadBundle, loadJsBundle, load };
+
+})(typeof window !== 'undefined' ? window : globalThis);
+`;
+        }
+
+        document.getElementById('downloadLoaderBtn').addEventListener('click', function() {
+            const text = generateLoaderScript();
+            triggerTriggeredDownload(new Blob([text], {type: "application/javascript"}), "bloom-filter-loader.js");
         });
     </script>
 </body>

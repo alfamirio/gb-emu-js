@@ -2147,6 +2147,28 @@ class GBEmulator {
     if (this.onFrame) this.onFrame(this.stats?.frameStats);
   }
 
+  // Runs until the PPU's mode changes (2 OAM Search -> 3 Pixel Transfer -> 0 H-Blank -> next
+  // line's 2, or the 2/3/0 cycle -> 1 V-Blank and eventually back out of it), then redraws.
+  // Unlike stepLine(), this lands exactly on a mode boundary rather than a scanline boundary -
+  // useful for watching a STAT interrupt fire the instant its triggering mode begins, since
+  // that's the moment games sync raster effects (mid-frame SCX/palette writes, sprite
+  // toggling, etc.) to. Stepping out of Mode 1 covers all 10 V-Blank lines in one go, since
+  // mode stays 1 for the whole of V-Blank. Capped at one frame's cycles so it can't spin
+  // forever if the LCD is off (mode is then permanently forced to 0 - see PPU.step()).
+  stepMode() {
+    if (this.running) this.pause();
+    this._setRunning(true);
+    const startMode = this.ppu.mode;
+    let cyclesSpent = 0;
+    while (this.ppu.mode === startMode && cyclesSpent < GBEmulator.CYCLES_PER_FRAME) {
+      const cycles = this._stepInstruction();
+      if (!this.running) break; // a breakpoint fired mid-step
+      cyclesSpent += cycles;
+    }
+    this._setRunning(false);
+    if (this.onFrame) this.onFrame(this.stats?.frameStats);
+  }
+
   // Runs exactly one full frame (same budget runFrame() uses for normal play), then redraws.
   stepFrame() {
     if (this.running) this.pause();

@@ -260,6 +260,7 @@ const rewindInfo = document.getElementById('rewindInfo');
 // Step/breakpoint debugging controls refs
 const btnStep = document.getElementById('btnStep');
 const btnStepLine = document.getElementById('btnStepLine');
+const btnStepMode = document.getElementById('btnStepMode');
 const btnStepFrame = document.getElementById('btnStepFrame');
 const btnStep1s = document.getElementById('btnStep1s');
 const bpStatus = document.getElementById('bpStatus');
@@ -500,7 +501,7 @@ async function loadROMBytes(bytes) {
   selectedFrameStatsIndex = null; // follow the latest frame again for this newly-loaded ROM
   selectedAnatomyLine = null;     // clear any pinned scanline from the previous ROM
   btnPause.disabled = false; btnReset.disabled = false;
-  btnStep.disabled = false; btnStepLine.disabled = false; btnStepFrame.disabled = false;
+  btnStep.disabled = false; btnStepLine.disabled = false; btnStepMode.disabled = false; btnStepFrame.disabled = false;
   btnStep1s.disabled = false;
   updateRewindButton();
   bpStatus.textContent = 'Ready.';
@@ -676,6 +677,13 @@ btnStepLine.addEventListener('click', () => {
   emulator.stepLine();
   btnPause.textContent = '▶ Start';
   bpStatus.textContent = `Stepped to line LY=${emulator.instrumentation.readPPUState().ly} — PC=${hex16(emulator.instrumentation.readRegisters().PC)}`;
+});
+
+btnStepMode.addEventListener('click', () => {
+  emulator.stepMode();
+  btnPause.textContent = '▶ Start';
+  const p = emulator.instrumentation.readPPUState();
+  bpStatus.textContent = `Stepped to Mode ${p.mode} (${PPU_MODE_NAMES[p.mode]}) at LY=${p.ly} — PC=${hex16(emulator.instrumentation.readRegisters().PC)}`;
 });
 
 btnStepFrame.addEventListener('click', () => {

@@ -11,6 +11,12 @@
      7. GBEmulator - glues everything together and drives the main loop
 
    New to GB internals? Start with the CPU: opcodes decode as bit fields, same as real hardware.
+
+   ---- Known simplifications (accepted trade-offs, not oversights) ----
+   - HALT bug not modeled (HALT with IME=0 + pending interrupt should double-fetch the next
+     opcode). Affects a few commercial games.
+   - Timer doesn't reproduce the DIV-write falling-edge glitch (spurious extra TIMA tick).
+   - OAM DMA / CGB HDMA-GDMA complete instantly instead of stalling the CPU for real duration.
    ========================================================================================= */
 
 /* ============================== 0. Emulation core config =============================== */
@@ -1009,7 +1015,8 @@ class PPU {
       case 2: // OAM search
         if (this.modeClock >= MODE.OAM_SEARCH) {
           this.modeClock -= MODE.OAM_SEARCH;
-          this.mode = 3;
+          this.mode = 3; this._setStatMode(3); // no STAT interrupt source for mode 3, but the
+                                                // register's mode bits still need to reflect it
           // Length is fixed for the rest of this scanline the instant mode 3 starts (real
           // hardware locks in sprite/window/SCX penalties here), so compute it once now
           // rather than re-deriving it when mode 3 ends.
@@ -2149,12 +2156,17 @@ class GBEmulator {
 
   // Runs until the PPU's mode changes (2 OAM Search -> 3 Pixel Transfer -> 0 H-Blank -> next
   // line's 2, or the 2/3/0 cycle -> 1 V-Blank and eventually back out of it), then redraws.
-  // Unlike stepLine(), this lands exactly on a mode boundary rather than a scanline boundary -
-  // useful for watching a STAT interrupt fire the instant its triggering mode begins, since
+  // Unlike stepLine(), this lands on a mode boundary rather than a scanline boundary - useful
+  // for watching a STAT interrupt fire close to the instant its triggering mode begins, since
   // that's the moment games sync raster effects (mid-frame SCX/palette writes, sprite
-  // toggling, etc.) to. Stepping out of Mode 1 covers all 10 V-Blank lines in one go, since
-  // mode stays 1 for the whole of V-Blank. Capped at one frame's cycles so it can't spin
-  // forever if the LCD is off (mode is then permanently forced to 0 - see PPU.step()).
+  // toggling, etc.) to. PPU state only advances once per whole CPU instruction (see
+  // stepHardware()), so this can overshoot the boundary by whatever's left of the instruction
+  // that crossed it (a handful of T-cycles, occasionally ~20 after an interrupt dispatch) -
+  // "Cycles into mode" in the scanline visualizer won't read exactly 0 right after stepping.
+  // It never overshoots by more than one instruction, so a whole mode can't be skipped.
+  // Stepping out of Mode 1 covers all 10 V-Blank lines in one go, since mode stays 1 for the
+  // whole of V-Blank. Capped at one frame's cycles so it can't spin forever if the LCD is off
+  // (mode is then permanently forced to 0 - see PPU.step()).
   stepMode() {
     if (this.running) this.pause();
     this._setRunning(true);

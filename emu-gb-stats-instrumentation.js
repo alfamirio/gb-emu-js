@@ -520,7 +520,7 @@ class Instrumentation {
   triggerBreakpoint(kind, value, extra) {
     const e = this.emulator;
     e._setRunning(false);
-    if (e._rafId) cancelAnimationFrame(e._rafId);
+    if (e._rafId) e.scheduler?.cancelFrame(e._rafId);
     e.onAudioSuspend?.();
     const reason = kind === 'pc'
       ? `PC reached ${hex16(value)}`

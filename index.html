@@ -187,6 +187,7 @@
       <button class="tool-tab" data-tool="disasm">Disasm</button>
       <button class="tool-tab" data-tool="memmap">Mem Map</button>
       <button class="tool-tab" data-tool="banking">MBC Banks</button>
+      <button class="tool-tab" data-tool="linkcable">Link Cable</button>
     </div>
 
     <div class="tool-panel" id="panel-registers">
@@ -399,6 +400,25 @@
         <div class="bank-grid" id="ramBankGrid"><div class="bank-empty">No ROM loaded.</div></div>
       </div>
       <div class="banking-log" id="bankingLog">No banking writes observed yet.</div>
+    </div>
+
+    <div class="tool-panel hidden" id="panel-linkcable">
+      <p class="tool-desc">
+        Real Game Boys trade one byte at a time over two registers: SB (0xFF01) holds the byte,
+        SC (0xFF02) controls the transfer - bit 7 starts it, bit 0 picks who drives the clock
+        (1 = this side is master, 0 = it waits on the other side). Which end is master flips
+        transfer-by-transfer, decided by each game's own code, not by who clicked Host here.
+        A real cable shifts bits one at a time at ~8KHz; a network link can't reproduce that
+        over a round trip, so each transfer below is one atomic byte swap instead - still real
+        enough to trigger the genuine Serial interrupt (bit 3, vector 0x58; see the Interrupts
+        tab) exactly like hardware would.
+      </p>
+      <h3 class="int-log-heading">Connection quality</h3>
+      <div class="int-summary" id="linkCableStats">No traffic yet.</div>
+      <h3 class="int-log-heading">Serial registers (live)</h3>
+      <div class="int-summary" id="linkCableRegs">—</div>
+      <h3 class="int-log-heading">Recent transfers</h3>
+      <div class="int-log" id="linkCableXferLog"><div class="int-log-empty">No transfers yet.</div></div>
     </div>
 
     <div class="tool-panel hidden" id="panel-ramedit">

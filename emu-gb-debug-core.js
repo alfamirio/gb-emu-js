@@ -122,6 +122,7 @@ const DEBUG_PANELS = {
   memmap:     { draw: () => drawMemMap(), tracksAccess: 'memmap' },
   banking:    { draw: () => drawBanking(), tracksAccess: 'memmap' },
   interrupts: { draw: () => drawInterrupts() },
+  linkcable:  { draw: () => drawLinkCable() },
   ramedit:    { draw: () => drawRamEditor() },
   memscan:    { draw: () => drawMemScan() },
   memwatch:   { draw: () => drawMemWatch() },

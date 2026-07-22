@@ -43,6 +43,11 @@ const intSummary = document.getElementById('intSummary');
 const intTable = document.getElementById('intTable');
 const intLog = document.getElementById('intLog');
 
+/* ---- 7b. Link Cable panel refs (emu-gb-linkcable.js supplies the `linkCable` transport) ---- */
+const linkCableStats = document.getElementById('linkCableStats');
+const linkCableRegs = document.getElementById('linkCableRegs');
+const linkCableXferLog = document.getElementById('linkCableXferLog');
+
 /* ---- 8. Execution trace panel refs ---- */
 const traceList = document.getElementById('traceList');
 const btnExportTrace = document.getElementById('btnExportTrace');
@@ -1597,6 +1602,56 @@ function drawInterrupts() {
         `<div class="int-log-line">frame ${e.frame}&nbsp;&nbsp;${INTERRUPT_SOURCES[e.bit].name} → ${hex16(INTERRUPT_SOURCES[e.bit].vector)}` +
         `&nbsp;&nbsp;(from ${hex16(e.pcBefore)})</div>`
       ).join('');
+}
+
+/* ---- Link Cable panel: decodes the real SB/SC serial registers live, plus the transfer
+   log kept by emu-gb-linkcable.js's LinkCableTransport (byte-atomic network stand-in for
+   the real bit-clocked shift register) ---- */
+function drawLinkCable() {
+  if (!lastROMBytes) {
+    linkCableStats.innerHTML = 'No traffic yet.';
+    linkCableRegs.innerHTML = '—';
+    linkCableXferLog.innerHTML = '<div class="int-log-empty">No transfers yet.</div>';
+    return;
+  }
+
+  const st = linkCable.stats;
+  if (st.masterAttempts === 0 && st.packetsReceived === 0) {
+    linkCableStats.innerHTML = 'No traffic yet.';
+  } else {
+    const rtts = st.rttSamples;
+    const lastRtt = rtts.length ? Math.round(rtts[rtts.length - 1]) : null;
+    const avgRtt = rtts.length ? Math.round(rtts.reduce((a, b) => a + b, 0) / rtts.length) : null;
+    const minRtt = rtts.length ? Math.round(Math.min(...rtts)) : null;
+    const maxRtt = rtts.length ? Math.round(Math.max(...rtts)) : null;
+    const lossPct = st.masterAttempts ? Math.round((st.masterTimedOut / st.masterAttempts) * 100) : 0;
+
+    linkCableStats.innerHTML =
+      `<span class="int-reg">RTT ${lastRtt != null ? lastRtt + 'ms' : '—'} last ` +
+      `(avg ${avgRtt != null ? avgRtt + 'ms' : '—'}, range ${minRtt != null ? minRtt : '—'}-${maxRtt != null ? maxRtt : '—'}ms)</span>` +
+      `<span class="int-badge ${lossPct > 0 ? 'int-pending' : 'int-on'}">${st.masterTimedOut}/${st.masterAttempts} timed out (${lossPct}%)</span>` +
+      `<span class="int-reg">${st.packetsSent} sent / ${st.packetsReceived} received</span>`;
+  }
+
+  const mbc = emulator.instrumentation.readMBCState();
+  const sb = mbc.io[0x01];
+  const sc = mbc.io[0x02];
+  const transferActive = (sc & 0x80) !== 0;
+  const internalClock = (sc & 0x01) !== 0;
+  const roleLabel = !transferActive ? 'Idle' : internalClock ? 'Master (driving clock)' : 'Slave (waiting on partner)';
+
+  linkCableRegs.innerHTML =
+    `<span class="int-reg">SB=${hex8(sb)}</span>` +
+    `<span class="int-reg">SC=${hex8(sc)}</span>` +
+    `<span class="int-badge ${transferActive ? 'int-pending' : 'int-off'}">${roleLabel}</span>`;
+
+  const log = linkCable.transferLog;
+  linkCableXferLog.innerHTML = log.length === 0
+    ? '<div class="int-log-empty">No transfers yet - connect via the Link Cable panel, then start a game/feature that uses it.</div>'
+    : log.slice().reverse().map(e => {
+        const latency = e.role === 'master' ? (e.timedOut ? ' (timed out)' : e.rtt != null ? ` (${Math.round(e.rtt)}ms)` : '') : '';
+        return `<div class="int-log-line">${e.role} — sent ${hex8(e.sent)}, received ${hex8(e.received)}${latency}</div>`;
+      }).join('');
 }
 
 /* ---- Stack panel: a window of 16-bit words around SP, row-aligned to SP itself ---- */

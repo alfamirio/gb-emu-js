@@ -28,6 +28,7 @@
 
 class LinkCableTransport {
   static MASTER_TIMEOUT_MS = 1500; // how long a master transfer waits for a reply before giving up (line floats high, like a real disconnected cable)
+  static MAX_RTT_SAMPLES = 20;     // rolling window used for the avg/min/max RTT readout
 
   constructor() {
     this.peer = null;
@@ -36,8 +37,33 @@ class LinkCableTransport {
     this.status = 'disconnected'; // 'disconnected' | 'hosting' | 'connecting' | 'connected'
     this.onStatusChange = null;   // (status, detail) => void; wired up by the UI below
 
-    this._pendingMaster = null;   // { resolve, timer } - our own in-flight masterTransfer()
+    this._pendingMaster = null;   // { resolve, sentByte, timer, sentAt } - our own in-flight masterTransfer()
     this._armedSlave = null;      // { localByte, resolve } - waiting on a partner-initiated transfer
+
+    // Rolling log of completed byte exchanges, for the educational "Link Cable" debug tab
+    // (emu-gb-debug-inspectors.js). Not used by the transport logic itself.
+    this.transferLog = [];
+    this.MAX_LOG_ENTRIES = 50;
+
+    // Latency/packet stats for the same tab - reset whenever host()/connectTo() starts a
+    // fresh connection attempt, so stale numbers from a previous partner don't linger.
+    this._freshStats();
+  }
+
+  _freshStats() {
+    this.stats = {
+      packetsSent: 0,       // wire messages we've sent (both 'xfer' and 'xferReply')
+      packetsReceived: 0,   // wire messages we've received
+      masterAttempts: 0,    // transfers we initiated as master
+      masterAcked: 0,       // ...that got a reply before the timeout
+      masterTimedOut: 0,    // ...that didn't (partner busy/gone - real disconnected hardware reads 0xFF the same way)
+      rttSamples: [],       // rolling window of round-trip times (ms) for acked master transfers
+    };
+  }
+
+  _pushRtt(rtt) {
+    this.stats.rttSamples.push(rtt);
+    if (this.stats.rttSamples.length > LinkCableTransport.MAX_RTT_SAMPLES) this.stats.rttSamples.shift();
   }
 
   _setStatus(status, detail) {
@@ -60,6 +86,7 @@ class LinkCableTransport {
   // Generates our own ID and waits for someone to connect to it.
   host() {
     this.disconnect();
+    this._freshStats();
     this._ensurePeer();
     this._setStatus('hosting');
   }
@@ -67,6 +94,7 @@ class LinkCableTransport {
   // Connects out to someone else's ID (from their host() screen).
   connectTo(remoteId) {
     this.disconnect();
+    this._freshStats();
     this._ensurePeer();
     this._setStatus('connecting', { remoteId });
     // peer.connect() before our own peer has finished its handshake with the signaling
@@ -101,28 +129,52 @@ class LinkCableTransport {
   }
 
   _resolvePending(fallbackByte) {
-    if (this._pendingMaster) {
-      clearTimeout(this._pendingMaster.timer);
-      const { resolve } = this._pendingMaster;
-      this._pendingMaster = null;
-      resolve(fallbackByte);
-    }
-    this._armedSlave = null;
+    this._resolveMaster(fallbackByte, true);
+    this._armedSlave = null; // no partner-initiated transfer actually completed - nothing to log
+  }
+
+  _logTransfer(role, sentByte, receivedByte, meta = {}) {
+    this.transferLog.push({ role, sent: sentByte, received: receivedByte, t: performance.now(), rtt: meta.rtt ?? null, timedOut: !!meta.timedOut });
+    if (this.transferLog.length > this.MAX_LOG_ENTRIES) this.transferLog.shift();
   }
 
   /* ---- the two methods MMU._writeSerialControl() calls ---- */
 
   masterTransfer(byte, resolve) {
-    if (!this.conn || !this.conn.open) { resolve(0xFF); return; } // no partner attached - line floats high
-    if (this._pendingMaster) { clearTimeout(this._pendingMaster.timer); this._pendingMaster.resolve(0xFF); } // shouldn't normally overlap; don't leak the old one
-    const timer = setTimeout(() => {
-      if (!this._pendingMaster) return;
-      const { resolve: r } = this._pendingMaster;
-      this._pendingMaster = null;
-      r(0xFF);
-    }, LinkCableTransport.MASTER_TIMEOUT_MS);
-    this._pendingMaster = { resolve, timer };
+    this.stats.masterAttempts++;
+    if (!this.conn || !this.conn.open) {
+      // no partner attached - line floats high, same as real disconnected hardware
+      this.stats.masterTimedOut++;
+      this._logTransfer('master', byte, 0xFF, { timedOut: true });
+      resolve(0xFF);
+      return;
+    }
+    if (this._pendingMaster) this._resolveMaster(0xFF, true); // shouldn't normally overlap; don't leak the old one
+    const sentAt = performance.now();
+    const timer = setTimeout(() => this._resolveMaster(0xFF, true), LinkCableTransport.MASTER_TIMEOUT_MS);
+    this._pendingMaster = { resolve, sentByte: byte, timer, sentAt };
     this.conn.send({ type: 'xfer', byte });
+    this.stats.packetsSent++;
+  }
+
+  // Single choke point for finishing our own in-flight masterTransfer(), whether the reply
+  // arrived over the wire, we timed out, or the connection dropped mid-transfer - so every
+  // path logs the exchange (and its round-trip time) exactly once.
+  _resolveMaster(replyByte, timedOut = false) {
+    if (!this._pendingMaster) return;
+    const { resolve, sentByte, timer, sentAt } = this._pendingMaster;
+    clearTimeout(timer);
+    this._pendingMaster = null;
+    if (timedOut) {
+      this.stats.masterTimedOut++;
+      this._logTransfer('master', sentByte, replyByte, { timedOut: true });
+    } else {
+      const rtt = performance.now() - sentAt;
+      this.stats.masterAcked++;
+      this._pushRtt(rtt);
+      this._logTransfer('master', sentByte, replyByte, { rtt });
+    }
+    resolve(replyByte);
   }
 
   armSlave(localByte, resolve) {
@@ -131,18 +183,21 @@ class LinkCableTransport {
 
   _onData(msg) {
     if (!msg || typeof msg !== 'object') return;
+    this.stats.packetsReceived++;
     if (msg.type === 'xfer') {
       // Partner started a transfer. Reply with whatever we have armed, or 0xFF if our own
       // ROM hasn't reached its transfer point yet (matches real disconnected-side behavior).
       const armed = this._armedSlave;
       this._armedSlave = null;
-      this.conn.send({ type: 'xferReply', byte: armed ? armed.localByte : 0xFF });
-      armed?.resolve(msg.byte);
-    } else if (msg.type === 'xferReply' && this._pendingMaster) {
-      clearTimeout(this._pendingMaster.timer);
-      const { resolve } = this._pendingMaster;
-      this._pendingMaster = null;
-      resolve(msg.byte);
+      const replyByte = armed ? armed.localByte : 0xFF;
+      this.conn.send({ type: 'xferReply', byte: replyByte });
+      this.stats.packetsSent++;
+      if (armed) {
+        this._logTransfer('slave', replyByte, msg.byte);
+        armed.resolve(msg.byte);
+      }
+    } else if (msg.type === 'xferReply') {
+      this._resolveMaster(msg.byte);
     }
   }
 }

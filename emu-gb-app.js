@@ -45,6 +45,9 @@ function createEmulator(EmulatorClass) {
     stats: new CoreStats(),
     instrumentation: new Instrumentation(),
     scheduler: new RafScheduler(),
+    // `linkCable` (emu-gb-linkcable.js) is a singleton, so it survives core-toggle/ROM-reload
+    // recreation here - the network connection doesn't drop just because the emulator did.
+    serialLink: typeof linkCable !== 'undefined' ? linkCable : null,
   });
 }
 let emulator = createEmulator(GBEmulator);

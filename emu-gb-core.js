@@ -525,6 +525,7 @@ class MMU {
       case 0x41: this.io[reg] = (this.io[reg] & 0x07) | (val & 0xF8); return; // STAT: low 3 bits are hw-controlled
       case 0x44: this.io[reg] = 0; return; // writing LY resets it
       case 0x46: this._doDMA(val); return; // OAM DMA
+      case 0x02: this._writeSerialControl(val); return; // SC - kicks off a serial transfer
       default:   this.io[reg] = val; return;
     }
   }
@@ -533,6 +534,42 @@ class MMU {
   // and blocks memory access meanwhile; done instantly here.
   _doDMA(val) {
     performOAMDMA(this, val);
+  }
+
+  /* ---- serial port (SB @0xFF01 / SC @0xFF02) -------------------------------------------
+     SB is a plain latch (handled by the default read/write case above - no special logic
+     needed there). SC bit 0 selects the clock source (1 = internal/master, 0 = external/
+     slave) and bit 7 starts a transfer. Real hardware shifts one bit per clock pulse over
+     ~8 T-cycle-ish periods; since a network link cable (emu-gb-linkcable.js, optional -
+     `this.emulator.serialLink` is null if nothing is attached) can't reproduce that
+     bit-clocked timing over the wire, transfers are modeled as an atomic byte exchange:
+     master sends its SB byte and awaits a reply; slave arms to receive one and replies
+     with whatever it had latched into SB. Either side with nothing plugged in (or no
+     partner attached) reads back 0xFF, matching a floating/disconnected real cable. ---- */
+  _writeSerialControl(val) {
+    this.io[0x02] = val;
+    if ((val & 0x80) === 0) return; // no transfer requested
+
+    const link = this.emulator.serialLink;
+    if (val & 0x01) { // internal clock: we're the master, driving this transfer
+      const outByte = this.io[0x01];
+      if (link && typeof link.masterTransfer === 'function') {
+        link.masterTransfer(outByte, (replyByte) => this._completeSerialTransfer(replyByte));
+      } else {
+        this._completeSerialTransfer(0xFF); // nothing attached - line floats high
+      }
+    } else if (link && typeof link.armSlave === 'function') {
+      // external clock: we're the slave, waiting for a partner-initiated transfer to clock
+      // our latched SB out and their byte in. If no link module is attached, real
+      // disconnected hardware just leaves bit7 set until software gives up on it.
+      link.armSlave(this.io[0x01], (receivedByte) => this._completeSerialTransfer(receivedByte));
+    }
+  }
+
+  _completeSerialTransfer(receivedByte) {
+    this.io[0x01] = receivedByte & 0xFF;
+    this.io[0x02] &= 0x7F; // clear the transfer-start flag
+    this.emulator.requestInterrupt(3); // Serial interrupt (vector 0x58)
   }
 }
 
@@ -1904,7 +1941,7 @@ class GBEmulator {
 
   // `stats`/`instrumentation`/`scheduler` are injected; GBEmulator never constructs them
   // and no-ops (via `?.`) if left null.
-  constructor({ stats = null, instrumentation = null, scheduler = null } = {}) {
+  constructor({ stats = null, instrumentation = null, scheduler = null, serialLink = null } = {}) {
     this.mmu = new MMU(this);
     this.cpu = new CPU(this.mmu);
     this.ppu = new PPU(this);
@@ -1912,6 +1949,11 @@ class GBEmulator {
     this.joypad = new Joypad(this);
     this.apu = new APU(this);
     this.scheduler = scheduler;
+
+    // Optional network link-cable transport (emu-gb-linkcable.js); null-safe everywhere
+    // it's touched (MMU._writeSerialControl). Injected the same way as stats/instrumentation
+    // so it survives core-toggle/ROM-reload recreation via createEmulator() in emu-gb-app.js.
+    this.serialLink = serialLink;
 
     this.running = false;
     this.onRunStateChange = null; // called with the new boolean whenever _setRunning() flips this.running

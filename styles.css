@@ -191,13 +191,13 @@
   .main-row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
 
   /* ---- screen ---- */
+  .screen-column { display: flex; flex-direction: column; gap: 10px; width: 540px; max-width: 90vw; }
   .screen-bezel {
     background: #333;
     border-radius: 10px;
     padding: 22px 22px 30px;
     box-shadow: 0 10px 30px rgba(0,0,0,.5), inset 0 3px 8px rgba(0,0,0,.6);
-    width: 540px;
-    max-width: 90vw;
+    width: 100%;
   }
   .screen-label {
     display: flex;
@@ -288,6 +288,28 @@
   #playTime.playtime-green { color: #6fcf7a; background: #16261a; }
   #playTime.playtime-amber { color: #e0b23a; background: #2a2312; }
   #playTime.playtime-red { color: #fff; background: #b93a3a; font-weight: 600; }
+
+  .panel-divider { border: none; border-top: 1px solid #333; margin: 14px 0; }
+  .link-cable-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 0.8rem; color: #ccc; }
+  .link-cable-header .badge { font-size: 0.68rem; padding: 2px 8px; }
+  .link-cable-row { display: flex; gap: 6px; align-items: center; }
+  .link-cable-row .ui-btn.small { padding: 5px 8px; font-size: 0.72rem; flex: 0 0 auto; }
+  .link-cable-row input[type="text"] {
+    flex: 1;
+    min-width: 0;
+    background: #1c1c1c;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #eee;
+    padding: 5px 7px;
+    font-size: 0.75rem;
+  }
+  .link-cable-row input[type="text"]:focus { outline: none; border-color: var(--accent); }
+  .link-cable-my-id-row { font-size: 0.72rem; color: #bbb; display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+  .link-cable-my-id-row code { background: #1c1c1c; border: 1px solid #444; border-radius: 4px; padding: 1px 5px; color: #eee; }
+  #linkCableStatus.linkcable-green { color: #6fcf7a; background: #16261a; }
+  #linkCableStatus.linkcable-amber { color: #e0b23a; background: #2a2312; }
+  #linkCableStatus.linkcable-red { color: #e08a8a; background: #2a1616; }
   .file-drop {
     /* The label wraps its text onto two lines via <br>. As an inline element (the
        default for <label>), a border on content that spans multiple lines gets drawn
@@ -468,10 +490,17 @@
   }
   .slot-card .slot-delete:hover { background: #c0392b; color: #fff; }
 
-  .keymap { margin-top: 16px; font-size: 0.78rem; color: #aaa; }
-  .keymap table { border-collapse: collapse; width: 100%; }
-  .keymap td { padding: 2px 4px; border-bottom: 1px solid #333; }
-  .keymap td:first-child { color: #fff; font-family: monospace; }
+  .keymap-compact {
+    background: #23232c;
+    border-radius: 10px;
+    padding: 10px 14px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.4);
+    font-size: 0.78rem;
+    color: #aaa;
+    line-height: 1.5;
+    text-align: center;
+  }
+  .keymap-compact b { color: #fff; font-family: monospace; font-weight: 600; }
 
   footer {
     margin-top: 30px;

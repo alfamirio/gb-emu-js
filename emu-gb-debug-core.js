@@ -332,6 +332,12 @@ const applyFrameActivityVisibility = makePanelVisToggle(
   'frameActivityVisToggle', 'frameActivityVisLabel', 'hide-frame-activity', 'showFrameActivity',
   () => { drawFrameActivity(); drawFrameAnatomy(); drawLineAnatomy(); }
 );
+const applySavedStatesVisibility = makePanelVisToggle(
+  'savedStatesVisToggle', 'savedStatesVisLabel', 'hide-saved-states', 'showSavedStates'
+);
+const applyInputRecordingVisibility = makePanelVisToggle(
+  'inputRecordingVisToggle', 'inputRecordingVisLabel', 'hide-input-recording', 'showInputRecording'
+);
 
 /* ---- navbar dropdown menus: each .nav-menu groups the toggles from one nav-divider section
    behind a single trigger (see the CSS comment above .nav-menu in styles.css for why the

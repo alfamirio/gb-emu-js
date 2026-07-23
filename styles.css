@@ -120,6 +120,8 @@
   body.hide-debug-tools .debug-tools-sidebar,
   body.hide-visual-tools .visual-tools-sidebar,
   body.hide-frame-activity .frame-activity-panel { display: none; }
+  body.hide-saved-states #savedStatesPanel,
+  body.hide-input-recording #tasPanel { display: none; }
 
   /* Navbar dropdown menus: group the toggles from one nav-divider section behind a single
      trigger instead of always showing every switch inline (see wireNavMenu() in

@@ -136,6 +136,36 @@
 
   <span class="nav-divider"></span>
 
+  <div class="nav-menu" data-menu="tools">
+    <button class="nav-menu-trigger" type="button" aria-haspopup="true" aria-expanded="false">
+      <span class="nav-menu-badge"></span>
+      <span>Tools</span>
+      <svg class="nav-menu-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+    </button>
+    <div class="nav-menu-panel">
+      <div class="nav-menu-panel-inner">
+        <div class="panel-vis-toggles">
+          <div class="mode-toggle panel-vis-toggle" title="Show/hide the Saved States panel">
+            <label class="switch">
+              <input type="checkbox" id="savedStatesVisToggle" checked>
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+            <span class="mode-label active" id="savedStatesVisLabel">States</span>
+          </div>
+          <div class="mode-toggle panel-vis-toggle" title="Show/hide the Input Recording panel">
+            <label class="switch">
+              <input type="checkbox" id="inputRecordingVisToggle">
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+            <span class="mode-label" id="inputRecordingVisLabel">Recording</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <span class="nav-divider"></span>
+
   <div class="mode-toggle" title="Force which emulation core runs the loaded ROM">
     <span class="mode-label active" id="coreLabelGB">GB</span>
     <label class="switch">
@@ -599,7 +629,7 @@
     </div>
 
     <!-- Saved states: quick actions + slot grid, all in one place -->
-    <div class="save-panel">
+    <div class="save-panel" id="savedStatesPanel">
       <h2>Saved States <span class="badge" id="slotCount">0/10</span></h2>
       <div class="btn-row">
         <button class="ui-btn" id="btnSaveState" disabled>💾 Save ([)</button>

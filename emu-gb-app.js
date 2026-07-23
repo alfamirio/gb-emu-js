@@ -21,6 +21,7 @@ const APP_CONFIG = {
   VOLUME_DEFAULT: 50,
   VOLUME_MAX_GAIN: 0.6,               // gain at slider=100%; keeps max volume well under full-scale
   TURBO_SPEED: 2,                     // emulation speed multiplier the T hotkey toggles to
+  REWIND_AUTO_START_DELAY_MS: 2000,  // emulation wait time after a rewind before it resumes
   SCREENSHOT_WEBP_QUALITY: 0.80,      // canvas.toBlob() quality for the screenshot feature
   RECORDING_TIMER_LABEL_INTERVAL_MS: 500, // how often the video/audio recording timer label updates
   VIDEO_CAPTURE_FPS: 30,              // frame rate requested from canvas.captureStream() for clips
@@ -485,6 +486,7 @@ async function loadROMBytes(bytes) {
   }
 
   lastROMBytes = bytes;
+  clearPendingRewindAutoStart();
   ensureEmulatorMatchesCoreToggle();
   emulator.loadROM(bytes);
   emulator.stats?.logEvent('System', 'info', 'rom-loaded', `ROM loaded: ${getROMTitle(bytes)}`);
@@ -615,6 +617,7 @@ fileInput.addEventListener('change', (e) => { if (e.target.files[0]) handleROMFi
 window.addEventListener('drop', (e) => { if (e.dataTransfer.files[0]) handleROMFile(e.dataTransfer.files[0]); });
 
 btnPause.addEventListener('click', () => {
+  clearPendingRewindAutoStart();
   if (emulator.running) {
     emulator.pause();
     btnPause.textContent = '▶ Start';
@@ -630,6 +633,7 @@ btnPause.addEventListener('click', () => {
 // CPU/PPU/banking/RTC state but leaves cartRAM untouched, mirroring a power-cycle.
 function resetEmulator(statusMsg) {
   if (!lastROMBytes) return;
+  clearPendingRewindAutoStart();
   emulator.loadROM(lastROMBytes);
   refreshBankingAndRtcPanels();
   if (stepDebugToggle.checked) {
@@ -662,11 +666,34 @@ setInterval(updateRewindButton, 250); // buffer grows in the background while pl
 btnRewind.addEventListener('click', () => {
   const ok = emulator.rewind();
   if (ok) {
+    resyncJoypadFromHeldKeys();
     btnPause.textContent = '▶ Start';
     bpStatus.textContent = `Rewound ${emulator.REWIND_SNAPSHOT_INTERVAL_SECONDS}s — PC=${hex16(emulator.instrumentation.readRegisters().PC)}`;
+    armRewindAutoStart();
   }
   updateRewindButton();
 });
+
+// rewind() always leaves the emulator paused so you can look around; if nothing else happens
+// within REWIND_AUTO_START_DELAY_MS it resumes on its own, so rewinding mid-game doesn't mean
+// reaching for Start/P every single time. Rewinding again just pushes the timer back out
+// rather than stacking; any other explicit action (manual Start/Pause, Reset, a new ROM)
+// cancels it via clearPendingRewindAutoStart() so it can't override something done on purpose.
+let rewindAutoStartTimer = null;
+function clearPendingRewindAutoStart() {
+  if (rewindAutoStartTimer) { clearTimeout(rewindAutoStartTimer); rewindAutoStartTimer = null; }
+}
+function armRewindAutoStart() {
+  clearPendingRewindAutoStart();
+  rewindAutoStartTimer = setTimeout(() => {
+    rewindAutoStartTimer = null;
+    if (!lastROMBytes || emulator.running) return; // ROM changed, or already resumed some other way
+    emulator.start();
+    btnPause.textContent = '⏸ Pause';
+    bpStatus.textContent = 'Resumed after rewind.';
+    refreshDebugTools();
+  }, APP_CONFIG.REWIND_AUTO_START_DELAY_MS);
+}
 
 /* ---- step / breakpoint debugger: each stepping method fires the emulator's onFrame hook
    itself (wired in wireEmulatorCallbacks()), so only click-specific status text is needed here. ---- */
@@ -769,6 +796,28 @@ window.addEventListener('keydown', (e) => {
   setSpeed(emulator.speed === APP_CONFIG.TURBO_SPEED ? 1 : APP_CONFIG.TURBO_SPEED);
 });
 
+// Rewind (R) / Reset (Alt+R) / Mute (M) / Start-Pause (P) hotkeys. Reset needs the Alt
+// modifier since - unlike Rewind's non-destructive single step back - it power-cycles the
+// ROM immediately with no confirmation, same as the button; a bare key next to the
+// D-Pad/action cluster would make that too easy to trigger by accident. All four just
+// delegate to their existing buttons, so .click() is a no-op exactly when the button itself
+// would be (e.g. Rewind/Reset with no ROM loaded) and the on-screen state (button label,
+// status text) stays in sync for free.
+window.addEventListener('keydown', (e) => {
+  const tag = e.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  if (!['r', 'R', 'm', 'M', 'p', 'P'].includes(e.key)) return;
+  // Ctrl/Cmd+R is the browser's page-refresh shortcut - let it through untouched rather than
+  // swallowing it as Rewind (Alt+R for Reset is unaffected, since that combo means something
+  // different to the browser and isn't reserved).
+  if (e.ctrlKey || e.metaKey) return;
+  e.preventDefault();
+  if ((e.key === 'r' || e.key === 'R') && e.altKey) btnReset.click();
+  else if (e.key === 'r' || e.key === 'R') btnRewind.click();
+  else if (e.key === 'm' || e.key === 'M') soundControls.btnMute.click();
+  else btnPause.click();
+});
+
 // Keyboard input
 const KEY_MAP = {
   ArrowRight: [0, true], ArrowLeft: [1, true], ArrowUp: [2, true], ArrowDown: [3, true],
@@ -777,13 +826,32 @@ const KEY_MAP = {
   Shift: [2, false],             // Select
   Enter: [3, false],             // Start
 };
+// Physical keys currently held down (tracked separately from the emulator's own joypad
+// register), so it can be resynced after loading a save state - the joypad state is part of
+// what a snapshot captures, so restoring one can otherwise leave a direction "stuck" pressed
+// according to whatever was held down at the moment it was saved, even though the real key
+// isn't down anymore (or wasn't the direction actually being held right now).
+const heldKeys = new Set();
+function resyncJoypadFromHeldKeys() {
+  for (let bit = 0; bit < 4; bit++) { emulator.setButton(bit, false, true); emulator.setButton(bit, false, false); }
+  for (const key of heldKeys) {
+    const m = KEY_MAP[key];
+    if (m) emulator.setButton(m[0], true, m[1]);
+  }
+}
 window.addEventListener('keydown', (e) => {
   const tag = e.target.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA') return; // let typing (renaming a cheat, editing a value, etc.) through untouched
   const m = KEY_MAP[e.key];
-  if (m) { emulator.setButton(m[0], true, m[1]); e.preventDefault(); }
+  if (m) { heldKeys.add(e.key); emulator.setButton(m[0], true, m[1]); e.preventDefault(); }
 });
-window.addEventListener('keyup', (e) => { const m = KEY_MAP[e.key]; if (m) { emulator.setButton(m[0], false, m[1]); e.preventDefault(); } });
+window.addEventListener('keyup', (e) => {
+  const m = KEY_MAP[e.key];
+  if (m) { heldKeys.delete(e.key); emulator.setButton(m[0], false, m[1]); e.preventDefault(); }
+});
+// Keys held when focus leaves the window (e.g. alt-tabbing away) never get a keyup event,
+// which would otherwise leave both heldKeys and the joypad register stuck pressed.
+window.addEventListener('blur', () => { heldKeys.clear(); resyncJoypadFromHeldKeys(); });
 
 
 /* ---- Save / load states: up to MAX_SLOTS snapshots per ROM in localStorage. [/Save
@@ -903,6 +971,7 @@ function applyLoadedState(state) {
   const wasRunning = emulator.running;
   emulator.pause();
   emulator.loadSaveState(state);
+  resyncJoypadFromHeldKeys();
   draw();        // repaint immediately from the restored framebuffer
   updateRtcTabAvailability();
   refreshDebugTools();

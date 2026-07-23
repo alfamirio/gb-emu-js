@@ -438,6 +438,8 @@
     border-radius: 10px;
   }
   .hotkey-hint { font-size: 0.68rem; color: #888; line-height: 1.5; margin: 8px 0 12px; }
+  .tas-options { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 10px; }
+  .tas-toggle.mode-toggle { font-size: 0.75rem; }
   .slot-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
   .slot-empty { grid-column: 1 / -1; font-size: 0.78rem; color: #777; text-align: center; padding: 24px 8px; }
 

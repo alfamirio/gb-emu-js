@@ -622,6 +622,40 @@
         <div class="slot-empty" id="slotEmpty">No saved states yet for this ROM.</div>
       </div>
     </div>
+
+    <!-- Input recording & playback ("TAS-lite"): records a button-press sequence from a
+         save-state snapshot, then replays it deterministically. Pairs with Saved States
+         above - every recording embeds the state it starts from. -->
+    <div class="save-panel" id="tasPanel">
+      <h2>Input Recording <span class="badge" id="tasFrameCount">0 frames</span></h2>
+      <div class="btn-row">
+        <button class="ui-btn" id="btnTasRecord" disabled>⏺ Record</button>
+        <button class="ui-btn" id="btnTasPlay" disabled>▶ Play</button>
+        <button class="ui-btn" id="btnTasStop" disabled>⏹ Stop</button>
+        <button class="ui-btn" id="btnTasExport" disabled>⬇ Export .json</button>
+        <label class="ui-btn disabled" id="btnTasImportLabel">
+          ⬆ Import .json
+          <input type="file" id="tasImportInput" accept="application/json,.json" style="display:none;">
+        </label>
+      </div>
+      <div class="tas-options" id="tasOptions">
+        <div class="mode-toggle tas-toggle">
+          <label class="switch">
+            <input type="checkbox" id="tasFromSnapshot" checked>
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+          <span class="mode-label" id="tasFromSnapshotLabel">Reset to recorded start state</span>
+        </div>
+        <div class="mode-toggle tas-toggle" title="When 'Reset to recorded start state' is off, Play applies the recording on top of the current game state, mid-play, instead of resetting to it.">
+          <label class="switch">
+            <input type="checkbox" id="tasLoop">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+          <span class="mode-label" id="tasLoopLabel">Loop (repeat the combo - handy for grinding/boring stretches)</span>
+        </div>
+      </div>
+      <div class="state-info" id="tasInfo">No recording yet.</div>
+    </div>
   </div>
 
   <!-- Visualization tools -->
@@ -1009,6 +1043,7 @@
 <script src="emu-gb-guardrails.js"></script>
 <script src="emu-gb-linkcable.js"></script>
 <script src="emu-gb-app.js"></script>
+<script src="emu-gb-tas.js"></script>
 <script src="emu-gb-debug-core.js"></script>
 <script src="emu-gb-debug-visualizers.js"></script>
 <script src="emu-gb-debug-inspectors.js"></script>

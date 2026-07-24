@@ -6,9 +6,10 @@ A Game Boy emulator written in plain JavaScript, with two selectable cores: **DM
 Alongside normal emulation, it exposes the machine's internals as you go:
 
 * **Live execution traces:** step through decoded instructions as the CPU fetches and runs them, with registers/flags updated in real time.
-* **Memory inspection:** browse live RAM/VRAM/OAM/I/O contents and an interactive map of the full `0x0000`–`0xFFFF` address space.
-* **MBC bank-switching visualizer:** watch cartridge ROM/RAM banks swap in and out as a game writes to mapper control registers.
-* **PPU/CPU debug panel:** trace register flags and other live status details while a ROM runs.
+* **Memory inspection:** browse live RAM/VRAM/OAM/I/O contents and an interactive map of the full `0x0000`–`0xFFFF` address space, plus a Memory Scanner with saved cheats.
+* **MBC bank-switching visualizer:** watch cartridge ROM/RAM banks swap in and out as a game writes to mapper control registers, including an MBC3 RTC (clock) viewer.
+* **PPU/CPU debug panel:** trace register flags and other live status details while a ROM runs, plus an Event Log of hardware events.
+* **Graphics/audio visualizers:** VRAM tile viewer, tile map + tile inspector/editor, BG/window/sprite layer viewer, OAM/sprite inspector, palette viewer, per-channel audio oscilloscope, and scanline timeline.
 
 ## Features
 
@@ -17,6 +18,8 @@ Alongside normal emulation, it exposes the machine's internals as you go:
 * **PPU:** background, window, and sprite layers with real hardware line limits (10 sprites/line, etc.); CGB adds 2 VRAM banks, 8 background/8 sprite color palettes, and HDMA/GDMA transfers.
 * **Peripherals:** hardware timers (`DIV`/`TIMA`/`TMA`/`TAC`) and joypad register logic, identical on both cores.
 * **Audio:** all four APU channels (2 pulse, 1 wave, 1 noise) synthesized live via Web Audio.
+* **TAS-lite input recording/playback:** record joypad input per frame from a save-state snapshot, then replay it deterministically; JSON export/import for sharing recordings.
+* **Network link cable:** connect two browsers over WebRTC (PeerJS) to exchange serial-port bytes, for link-cable features like trading or linked battles.
 * **Zero dependencies:** a single standalone HTML/JS page with the full debug/visualizer UI built in.
 
 ## Scope limitations
